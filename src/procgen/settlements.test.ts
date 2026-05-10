@@ -99,10 +99,15 @@ describe('siteSettlements — counts and kinds', () => {
     // can't accommodate the full request.
     expect(towns.length).toBeGreaterThanOrEqual(Math.floor(12 * 0.8));
     expect(towns.length).toBeLessThanOrEqual(12);
-    expect(villages.length).toBeGreaterThanOrEqual(Math.floor(60 * 0.8));
-    expect(villages.length).toBeLessThanOrEqual(60);
-    expect(hamlets.length).toBeGreaterThanOrEqual(Math.floor(40 * 0.8));
-    expect(hamlets.length).toBeLessThanOrEqual(40);
+    // v1.5 §C9: villages and hamlets are disaggregated 3x and 5x respectively
+    // (each historical "aggregated entity" is now multiple real entities).
+    // Caller-requested counts are interpreted as the aggregated-entity
+    // baseline; procgen emits `count * factor` entities (subject to grid
+    // accommodation, hence the ±20% shortfall band).
+    expect(villages.length).toBeGreaterThanOrEqual(Math.floor(60 * 3 * 0.8));
+    expect(villages.length).toBeLessThanOrEqual(60 * 3);
+    expect(hamlets.length).toBeGreaterThanOrEqual(Math.floor(40 * 5 * 0.8));
+    expect(hamlets.length).toBeLessThanOrEqual(40 * 5);
   });
 });
 
@@ -274,7 +279,10 @@ describe('siteSettlements — cluster geography', () => {
     expect(inCluster / small.length).toBeGreaterThanOrEqual(0.7);
   });
 
-  it('no two settlements share an anchor hex', () => {
+  it('no two cities/towns/villages share an anchor hex (hamlets may stack on a village)', () => {
+    // Per docs/05 §"Same-hex coexistence" hamlets are allowed to share a
+    // hex with a village (the Roman *pagus* pattern, up to ~5 satellites).
+    // The larger-tier settlements still must hold unique anchors.
     const grid = makeGrid('overlap', 80, 80);
     const sites = siteSettlements({
       seed: 'overlap',
@@ -286,13 +294,14 @@ describe('siteSettlements — cluster geography', () => {
     });
     const seen = new Set<string>();
     for (const s of sites) {
+      if (s.kind === 'hamlet') continue;
       const k = hexKey(s.anchor);
       expect(seen.has(k)).toBe(false);
       seen.add(k);
     }
   });
 
-  it('no settlement urban hex lands on another settlement', () => {
+  it('hamlets that share a hex with a village cap at MAX_SAMEHEX_HAMLETS (5)', () => {
     const grid = makeGrid('overlap2', 80, 80);
     const sites = siteSettlements({
       seed: 'overlap2',
@@ -302,13 +311,26 @@ describe('siteSettlements — cluster geography', () => {
       villageCount: 40,
       hamletCount: 20,
     });
-    const usedUrban = new Set<string>();
+    // Per-hex hamlet count must not exceed the *pagus* cap.
+    const hamletsPerHex = new Map<string, number>();
     for (const s of sites) {
+      if (s.kind !== 'hamlet') continue;
       for (const h of s.urbanHexes) {
         const k = hexKey(h);
-        expect(usedUrban.has(k)).toBe(false);
-        usedUrban.add(k);
+        hamletsPerHex.set(k, (hamletsPerHex.get(k) ?? 0) + 1);
       }
+    }
+    for (const [, count] of hamletsPerHex) {
+      expect(count).toBeLessThanOrEqual(5);
+    }
+    // City/town/capital urban hexes never have a hamlet on them.
+    const denseCoreHexes = new Set<string>();
+    for (const s of sites) {
+      if (s.kind !== 'capital' && s.kind !== 'city' && s.kind !== 'town') continue;
+      for (const h of s.urbanHexes) denseCoreHexes.add(hexKey(h));
+    }
+    for (const k of hamletsPerHex.keys()) {
+      expect(denseCoreHexes.has(k)).toBe(false);
     }
   });
 });

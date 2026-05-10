@@ -66,6 +66,22 @@ describe('tickCarrierWithGrid — basic movement', () => {
     expect(next.arrived).toBe(true);
   });
 
+  it('same-hex spawn+destination is a 0-day arrival (docs/15 §C9 same-hex coexistence)', () => {
+    // The pagus pattern: a village + multiple hamlets share a hex. News
+    // carried between two same-hex settlements arrives within the same tick.
+    // We verify (a) createNewsCarrier marks arrived=true when spawn=dest,
+    // and (b) tickCarrierWithGrid leaves an already-arrived carrier intact.
+    const g = createGrid();
+    fillRect(g, 0, 5, 0, 5);
+    const sharedHex = hex(2, 2);
+    const c = makeCarrier(sharedHex, sharedHex);
+    expect(c.arrived).toBe(true);
+    expect(c.position).toEqual(sharedHex);
+    const next = tickCarrierWithGrid({ carrier: c, grid: g, season: 'summer', today: 5 as Day });
+    expect(next.arrived).toBe(true);
+    expect(next.position).toEqual(sharedHex);
+  });
+
   it('a carrier moves toward destination through the grid', () => {
     const g = createGrid();
     fillRect(g, 0, 30, 0, 5, { road: 'roman' });

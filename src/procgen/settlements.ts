@@ -52,6 +52,24 @@ export interface SettlementSiteOpts {
   readonly clusterRadiusHexes?: number;
 }
 
+/**
+ * v1.5 §C9 disaggregation factors. The v1 procgen treated each requested
+ * "village" entity as 2-5 real-world villages and each "hamlet" as 2-3 real
+ * hamlets. Per docs/04 §"Sizing the realistic hinterland" we never aggregate;
+ * each real village/hamlet is its own entity. We multiply the *requested*
+ * counts by these factors so existing callers (burn-in, debug scripts)
+ * continue to express "world scale" in v1 units while procgen emits the
+ * realistic entity count internally.
+ */
+const VILLAGE_DISAGG_FACTOR = 3;
+const HAMLET_DISAGG_FACTOR = 5;
+/**
+ * Maximum hamlets that can share an urban hex with a village (the Roman
+ * *pagus* pattern: one larger village + up to 4-5 satellite hamlets on the
+ * same fertile patch). Per docs/05 §"Same-hex coexistence".
+ */
+const MAX_SAMEHEX_HAMLETS = 5;
+
 const isWaterTile = (t: Terrain): boolean => t === 'lake' || t === 'river' || t === 'coast';
 
 /**
@@ -301,9 +319,21 @@ export const siteSettlements = (opts: SettlementSiteOpts): readonly SettlementSi
   const hexes = allHexes(grid);
   if (hexes.length === 0) return [];
 
-  // Used hex set (anchors and urban hexes) to prevent overlap.
+  // Used hex set (anchors and urban hexes) to prevent overlap for the larger
+  // tiers (cities, towns, villages). Hamlets are allowed to share a hex per
+  // docs/05 §"Same-hex coexistence" and tracked separately via `hamletShare`.
   const used = new Set<string>();
+  // Counts how many hamlets currently sit on each hex. A hex with a village
+  // (or city/town) on it can host up to MAX_SAMEHEX_HAMLETS hamlets; an
+  // empty hex can also host that many hamlets clustered together.
+  const hamletShare = new Map<string, number>();
   const sites: SettlementSite[] = [];
+
+  // Apply v1.5 §C9 disaggregation factors so caller-requested counts
+  // (which historically were "aggregated entities") translate to one
+  // entity per real village + one per real hamlet.
+  const targetVillages = Math.max(0, Math.floor(opts.villageCount * VILLAGE_DISAGG_FACTOR));
+  const targetHamlets = Math.max(0, Math.floor(opts.hamletCount * HAMLET_DISAGG_FACTOR));
 
   // ----- Cities -----
   const cityScores = hexes
@@ -364,12 +394,14 @@ export const siteSettlements = (opts: SettlementSiteOpts): readonly SettlementSi
   // ----- Villages -----
   // Villages are clustered: for each city, gather candidate hexes within
   // clusterRadius, score them, and pick a target slice. We round-robin across
-  // cities so cluster sizes stay balanced.
-  const villageSpacing = 3;
+  // cities so cluster sizes stay balanced. Per v1.5 §C9 we lift the village
+  // density (no more 2-5 real-villages-per-entity collapsing); we also relax
+  // the inter-village spacing so the realistic count fits in the cluster.
+  const villageSpacing = 2;
   const villageRng = rng.derive('villages');
   const cityCount = cityAnchors.length;
-  if (opts.villageCount > 0 && cityCount > 0) {
-    const perCity = Math.ceil(opts.villageCount / cityCount);
+  if (targetVillages > 0 && cityCount > 0) {
+    const perCity = Math.ceil(targetVillages / cityCount);
     // Pre-score each cluster.
     const clusterCandidates: { hex: Hex; score: number }[][] = cityAnchors.map((anchor) => {
       const cands: { hex: Hex; score: number }[] = [];
@@ -384,9 +416,9 @@ export const siteSettlements = (opts: SettlementSiteOpts): readonly SettlementSi
     });
     let placed = 0;
     let pass = 0;
-    while (placed < opts.villageCount && pass < perCity) {
+    while (placed < targetVillages && pass < perCity) {
       let progress = false;
-      for (let c = 0; c < cityCount && placed < opts.villageCount; c++) {
+      for (let c = 0; c < cityCount && placed < targetVillages; c++) {
         const list = clusterCandidates[c];
         if (list === undefined) continue;
         // Find the next candidate that respects min-spacing from other anchors.
@@ -405,6 +437,9 @@ export const siteSettlements = (opts: SettlementSiteOpts): readonly SettlementSi
               }
               continue;
             }
+            // Hamlets are allowed to coexist with villages on the same hex per
+            // docs/05; spacing checks only apply to other villages/towns.
+            if (s.kind === 'hamlet') continue;
             if (hexDistance(next.hex, s.anchor) < villageSpacing) {
               okSpacing = false;
               break;
@@ -430,43 +465,80 @@ export const siteSettlements = (opts: SettlementSiteOpts): readonly SettlementSi
   }
 
   // ----- Hamlets -----
-  // Hamlets fill the remaining suitable hexes. Most cluster around cities
-  // (ride the road network for trade); ~20% land in wilderness as frontier
-  // hamlets per docs/07. We bias the score by inverse distance to the
-  // nearest city anchor to push the bulk into clusters.
-  const hamletSpacing = 2;
+  // Hamlets fill the remaining suitable hexes. Per docs/05 §"Same-hex
+  // coexistence" they may share a hex with a village (the Roman *pagus*
+  // pattern: one larger village + up to ~4 satellite hamlets) or sit on an
+  // empty fertile patch. Most cluster around cities (ride the road network
+  // for trade); a minority land in wilderness as frontier hamlets per
+  // docs/07. Scoring biases for: nearby city, on-or-adjacent-to a village.
   const hamletRng = rng.derive('hamlets');
-  if (opts.hamletCount > 0) {
+  if (targetHamlets > 0) {
+    // Index existing village hexes for the *pagus* bonus.
+    const villageHexKeys = new Set<string>();
+    const villageNeighbors = new Set<string>();
+    for (const s of sites) {
+      if (s.kind !== 'village') continue;
+      villageHexKeys.add(hexKey(s.anchor));
+      for (const n of hexNeighbors(s.anchor)) villageNeighbors.add(hexKey(n));
+    }
     const hamletScores = hexes
       .map((h) => {
         const base = scoreSecondarySite(h, grid);
         if (base <= 0) return { hex: h, score: 0 };
-        if (cityAnchors.length === 0) return { hex: h, score: base };
-        // Distance bonus: +3 inside clusterRadius, scaled down to 0 at 2x radius.
-        const d = Math.min(...cityAnchors.map((c) => hexDistance(h, c)));
-        const bonus =
-          d <= clusterRadius ? 3 : Math.max(0, 3 * (1 - (d - clusterRadius) / clusterRadius));
-        return { hex: h, score: base + bonus };
+        let score = base;
+        // City-distance bonus.
+        if (cityAnchors.length > 0) {
+          const d = Math.min(...cityAnchors.map((c) => hexDistance(h, c)));
+          const bonus =
+            d <= clusterRadius ? 3 : Math.max(0, 3 * (1 - (d - clusterRadius) / clusterRadius));
+          score += bonus;
+        }
+        const k = hexKey(h);
+        // Pagus bonus: same hex as a village is the strongest preference,
+        // adjacent hex is second-strongest. Without this hamlets disperse
+        // across all suitable terrain instead of clustering around villages.
+        if (villageHexKeys.has(k)) score += 5;
+        else if (villageNeighbors.has(k)) score += 2;
+        return { hex: h, score };
       })
-      .filter((c) => c.score > 0 && !used.has(hexKey(c.hex)))
+      // Don't filter by `used` — we want to consider hexes already occupied
+      // by a village (same-hex hamlet) and apply the same-hex limit below.
+      .filter((c) => c.score > 0)
       .sort((a, b) => b.score - a.score);
     let placed = 0;
     for (const cand of hamletScores) {
-      if (placed >= opts.hamletCount) break;
-      if (used.has(hexKey(cand.hex))) continue;
-      // Spacing against existing small settlements.
+      if (placed >= targetHamlets) break;
+      const k = hexKey(cand.hex);
+      // Same-hex coexistence: a hex can host at most one village + up to
+      // MAX_SAMEHEX_HAMLETS hamlets. We allow stacking on village hexes
+      // (or empty hexes) but not on city/town/capital urban hexes — those
+      // are the dense built-up cores and don't host satellite hamlets.
+      const occupants = sites.filter((s) =>
+        s.urbanHexes.some((u) => hexKey(u) === k),
+      );
+      const blocked = occupants.some(
+        (s) => s.kind === 'capital' || s.kind === 'city' || s.kind === 'town',
+      );
+      if (blocked) continue;
+      const existingHamlets = hamletShare.get(k) ?? 0;
+      if (existingHamlets >= MAX_SAMEHEX_HAMLETS) continue;
+      // Spacing against city/town anchors only — same-hex hamlets next to
+      // a village are explicitly allowed; hamlets near other hamlets are
+      // also fine because they're often dependent on the same fertile patch.
       let okSpacing = true;
       for (const s of sites) {
-        const minDist =
-          s.kind === 'capital' || s.kind === 'city' || s.kind === 'town' ? 2 : hamletSpacing;
-        if (hexDistance(cand.hex, s.anchor) < minDist) {
+        if (s.kind !== 'capital' && s.kind !== 'city' && s.kind !== 'town') continue;
+        if (hexDistance(cand.hex, s.anchor) < 2) {
           okSpacing = false;
           break;
         }
       }
       if (!okSpacing) continue;
       const pop = pickPopulation(hamletRng.derive(`pop-${placed}`), 'hamlet');
-      used.add(hexKey(cand.hex));
+      hamletShare.set(k, existingHamlets + 1);
+      // Don't mark `used` for hamlets — additional hamlets / a village could
+      // still share this hex (though village placement runs *before* this
+      // pass, so in practice village-hex hamlets land on already-used hexes).
       sites.push({
         kind: 'hamlet',
         anchor: cand.hex,
