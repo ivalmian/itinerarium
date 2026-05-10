@@ -52,6 +52,7 @@ import type { Patrol } from '../sim/conflict/patrol.js';
 import type { BanditCamp } from '../sim/bandit/camp.js';
 import {
   actorId,
+  banditCampId,
   buildingId,
   characterId,
   factionId,
@@ -66,7 +67,8 @@ import {
   type SettlementId,
 } from '../sim/types.js';
 import type { HexGrid } from '../sim/world/grid.js';
-import { hexEquals, hexKey, hexesWithinRange, type Hex } from '../sim/world/hex.js';
+import { hexDistance, hexEquals, hexKey, hexesWithinRange, type Hex } from '../sim/world/hex.js';
+import { createCamp } from '../sim/bandit/camp.js';
 import type { SettlementSite } from './settlements.js';
 
 // --- Public types -----------------------------------------------------------
@@ -864,6 +866,14 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
     seedStarterBuildings(ctx, settlement);
   }
 
+  // Phase 10: initial bandit camps in wilderness (per docs/12 §"Bandit
+  // emergence in the tick loop"). Procgen places ~1 small camp per
+  // settled cluster in a forest/hill hex within 3-8 hexes of a road.
+  // Without this seed, banditry never bootstraps because the recruit-
+  // from-idle-pop fraction is tiny.
+  const banditCamps = new Map<BanditCampId, BanditCamp>();
+  seedInitialBanditCamps(ctx, opts.grid, opts.settlementSites, banditCamps);
+
   return {
     day: 0,
     grid: opts.grid,
@@ -873,11 +883,100 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
     characters: ctx.characters,
     caravans: new Map<CaravanId, Caravan>(),
     patrols: new Map<string, Patrol>(),
-    banditCamps: new Map<BanditCampId, BanditCamp>(),
+    banditCamps,
     newsCarriers: new Map<string, NewsCarrier>(),
     reputation: createReputationTable(),
     bySite: opts.settlementSites,
   };
+};
+
+/**
+ * Phase 10 — seed a few initial bandit camps in wilderness near the
+ * settled clusters. Each camp gets its own bandit_camp Actor + a
+ * Faction + a named leader, plus the BanditCamp record itself in
+ * world.banditCamps. Without these, banditry never bootstraps.
+ */
+const seedInitialBanditCamps = (
+  ctx: BuildContext,
+  grid: HexGrid,
+  sites: readonly SettlementSite[],
+  banditCamps: Map<BanditCampId, BanditCamp>,
+): void => {
+  const rng = ctx.rng.derive('initial-bandits');
+  // Aim for ~1 camp per city site (≈1 per cluster).
+  const targets = sites.filter((s) => s.kind === 'city' || s.kind === 'capital');
+  if (targets.length === 0) return;
+  const settlementHexKeys = new Set<string>();
+  for (const s of sites) {
+    for (const u of s.urbanHexes) settlementHexKeys.add(hexKey(u));
+  }
+  for (const target of targets) {
+    // Find a wilderness hex (forest/hills) within ~6-12 hexes of the city
+    // anchor that isn't a settlement hex. Spiral outward; first match wins.
+    const center = target.anchor;
+    const candidates: Hex[] = [];
+    for (const ring of [6, 8, 10, 12]) {
+      for (const h of hexesWithinRange(center, ring)) {
+        if (hexDistance(h, center) < ring - 2) continue; // outer ring only
+        if (settlementHexKeys.has(hexKey(h))) continue;
+        const tile = grid.get(h);
+        if (tile === undefined) continue;
+        if (tile.terrain !== 'forest' && tile.terrain !== 'dense_forest' && tile.terrain !== 'hills') {
+          continue;
+        }
+        candidates.push(h);
+      }
+      if (candidates.length > 0) break;
+    }
+    if (candidates.length === 0) continue;
+    const hex = rng.pick(candidates);
+
+    // Spawn the camp.
+    const aId = actorId(nextId('actor'));
+    const fId = factionId(nextId('faction'));
+    const leaderId = characterId(nextId('char'));
+    const campId = banditCampId(nextId('camp'));
+    const leaderName = generateFullName(rng, 'male');
+    const actor = createActor({
+      id: aId,
+      kind: 'bandit_camp',
+      name: `${leaderName}'s band`,
+      treasury: rng.int(20, 100),
+    });
+    const leader = createCharacter({
+      id: leaderId,
+      name: leaderName,
+      age: rng.int(28, 50),
+      sex: 'male',
+      class: 'plebeian',
+      faction: fId,
+      role: 'bandit_leader',
+      location: hex,
+    });
+    const faction = createFaction({
+      id: fId,
+      actor: aId,
+      name: `${leaderName}'s band`,
+      members: [leaderId],
+    });
+    addActor(ctx, actor);
+    addFaction(ctx, faction);
+    addCharacter(ctx, leader);
+
+    const camp = createCamp({
+      id: campId,
+      name: `${leaderName}'s band`,
+      hex,
+      ownerActor: aId,
+      banditCount: rng.int(8, 18),
+      hangersOnCount: rng.int(2, 6),
+      weaponsPerBandit: 0.4,
+      armorPerBandit: 0.15,
+      averageHealth: 0.85,
+      treasury: actor.treasury,
+    });
+    banditCamps.set(campId, camp);
+  }
 };
 
 // --- helpers ----------------------------------------------------------------

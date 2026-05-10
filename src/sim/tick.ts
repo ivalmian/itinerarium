@@ -35,6 +35,9 @@
 import { allBuildings } from './buildings/catalog.js';
 import { tickCaravanMovement } from './caravan/movement.js';
 import { planCaravanRoute } from './caravan/ai.js';
+import { decideCampAction, recruit, type BanditCamp } from './bandit/camp.js';
+import { resolveAmbush } from './conflict/ambush.js';
+import type { Caravan } from './caravan/caravan.js';
 import {
   aggregateDemand,
   comfortDemand,
@@ -65,7 +68,7 @@ import {
   type Settlement,
 } from './world/settlement.js';
 import { dayOfYearToSeason, type Season } from './world/terrain.js';
-import { hexEquals, type Hex } from './world/hex.js';
+import { hexDistance, hexEquals, type Hex } from './world/hex.js';
 import {
   resourceId,
   type ActorId,
@@ -185,7 +188,7 @@ export const tick = (inputs: TickInputs): TickResult => {
   demographicsPhase(world, today, rng.derive('demographics'), events);
 
   // --- Phase 6: Politics ---------------------------------------------------
-  politicsPhase(world, rng.derive('politics'), today);
+  politicsPhase(world, rng.derive('politics'), today, events);
 
   // --- Annual hook (after the day's main work, before incrementing day) ----
   // The "year boundary" is when (day + 1) % YEAR_DAYS === 0 — i.e. the day
@@ -803,7 +806,12 @@ const demographicsPhase = (world: WorldState, today: Day, rng: Rng, events: Tick
 
 // --- Phase 6: Politics ------------------------------------------------------
 
-const politicsPhase = (world: WorldState, rng: Rng, today: Day): void => {
+const politicsPhase = (
+  world: WorldState,
+  rng: Rng,
+  today: Day,
+  events: TickEvent[],
+): void => {
   // Reputation decay applies once per tick; entries below ε are pruned.
   world.reputation.decayTick(REPUTATION_HALF_LIFE_DAYS);
   // Caravan re-planning: every NPC caravan sitting at its destination
@@ -813,6 +821,10 @@ const politicsPhase = (world: WorldState, rng: Rng, today: Day): void => {
   // the v1 baseline issue (see docs/06 §"Caravan lifecycle in the tick
   // loop").
   caravanReplanPhase(world, rng.derive('caravan-replan'), today);
+  // Bandit emergence + decisions + raid resolution. Without this loop,
+  // the seeded bandit camps are inert decorations — see docs/12
+  // §"Bandit emergence in the tick loop".
+  banditPhase(world, rng.derive('bandit'), today, events);
 };
 
 const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day): void => {
@@ -874,6 +886,345 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day): void => {
       if (filtered.length > 0) {
         const pick = rngHere.pick(filtered);
         c.destination = { q: pick.hex.q, r: pick.hex.r };
+      }
+    }
+  }
+};
+
+// --- Bandit phase -----------------------------------------------------------
+
+/**
+ * Per-camp last-success tracker. WeakMap by camp id string so it survives
+ * camp re-creation through `recruit()` (which returns a new BanditCamp with
+ * the same id). Stores the day on which the camp last had a successful
+ * raid; used by `decideCampAction` to favour `lay_low` after a fresh hit.
+ */
+const lastSuccessfulRaidDay: Map<BanditCampId, Day> = new Map();
+
+/**
+ * Per-camp recruit-pressure tracker (active multiplier after a recruit_drive
+ * action). Counts down toward 1 each day. Used by recruitFromIdle.
+ */
+const recruitDriveMultiplier: Map<BanditCampId, number> = new Map();
+
+const RECRUIT_RANGE_HEXES = 50;
+const BASE_RECRUIT_FRAC_PER_DAY = 0.0005;
+const POOR_VILLAGE_RECRUIT_BOOST = 4;
+
+const banditPhase = (
+  world: WorldState,
+  rng: Rng,
+  today: Day,
+  events: TickEvent[],
+): void => {
+  if (world.banditCamps === undefined || world.banditCamps.size === 0) return;
+
+  // Step 1: bandit decisions + raid resolution.
+  for (const [campId, camp] of [...world.banditCamps]) {
+    if (camp.banditCount <= 0) {
+      world.banditCamps.delete(campId);
+      continue;
+    }
+    const subRng = rng.derive(`camp-${String(campId)}`);
+
+    // Build the inputs for decideCampAction.
+    const knownNearbyCaravans: {
+      hex: Hex;
+      estimatedCargoValue: number;
+      guards: number;
+    }[] = [];
+    for (const c of world.caravans.values()) {
+      if (hexDistance(c.position, camp.hex) > 8) continue;
+      // Skip caravans currently at a settlement (urban hex) — too risky,
+      // bandits prefer the road. We approximate "urban" by checking a
+      // settlement anchor.
+      const atSettlement = [...world.settlements.values()].some((s) =>
+        hexEquals(s.anchor, c.position),
+      );
+      if (atSettlement) continue;
+      knownNearbyCaravans.push({
+        hex: c.position,
+        estimatedCargoValue: estimateCargoValue(c),
+        guards: countGuards(c),
+      });
+    }
+
+    const lastDay = lastSuccessfulRaidDay.get(campId) ?? -1000;
+    const daysSinceLastSuccessfulRaid = today - lastDay;
+
+    const action = decideCampAction({
+      camp,
+      knownNearbyCaravans,
+      knownNearbyPatrols: [], // v1: no patrols yet
+      knownFriendlySettlements: [], // v1: no fence relationships yet
+      daysSinceLastSuccessfulRaid,
+      rng: subRng.derive('decide'),
+    });
+
+    applyCampAction(world, campId, camp, action, today, subRng.derive('act'), events);
+  }
+
+  // Step 2: recruitment from settlements with idle pop / hardship.
+  recruitFromIdle(world, rng.derive('recruit'), today);
+
+  // Step 3: starvation desertion (camps with empty loot lose bandits).
+  applyBanditStarvation(world, rng.derive('starve'), today);
+
+  // Step 4: decay recruit drives.
+  for (const [campId, mult] of [...recruitDriveMultiplier]) {
+    const next = mult <= 1.05 ? 1 : mult - 0.1;
+    if (next <= 1) recruitDriveMultiplier.delete(campId);
+    else recruitDriveMultiplier.set(campId, next);
+  }
+};
+
+const estimateCargoValue = (c: Caravan): number => {
+  // Coarse: sum of cargo weights ≈ proxy for value. 1 unit cargo ≈ 1 coin.
+  let v = 0;
+  for (const qty of c.cargo.values()) v += qty;
+  v += c.treasury * 0.5; // treasury is coin, slightly less prized than goods
+  return v;
+};
+
+const countGuards = (c: Caravan): number => {
+  let guards = 0;
+  for (const m of c.crew) {
+    if (m.kind === 'soldier' || m.kind === 'caravan_guard') guards += m.count;
+  }
+  return guards;
+};
+
+const applyCampAction = (
+  world: WorldState,
+  campId: BanditCampId,
+  camp: BanditCamp,
+  action: ReturnType<typeof decideCampAction>,
+  today: Day,
+  rng: Rng,
+  events: TickEvent[],
+): void => {
+  if (world.banditCamps === undefined) return;
+  switch (action.type) {
+    case 'lay_low':
+      return;
+    case 'recruit_drive':
+      recruitDriveMultiplier.set(campId, 2);
+      return;
+    case 'move_camp': {
+      // Walk one hex toward the target.
+      const from = camp.hex;
+      const dq = Math.sign(action.toHex.q - from.q);
+      const dr = Math.sign(action.toHex.r - from.r);
+      const stepHex = { q: from.q + dq, r: from.r + dr };
+      // Only step if the destination tile exists and is wilderness.
+      const tile = world.grid.get(stepHex);
+      if (tile === undefined) return;
+      const moved: BanditCamp = { ...camp, hex: stepHex };
+      world.banditCamps.set(campId, moved);
+      return;
+    }
+    case 'raid_caravan': {
+      const target = findCaravanAtHex(world, action.targetHex);
+      if (target === null) return;
+      const tile = world.grid.get(target.position);
+      if (tile === undefined) return;
+      const result = resolveAmbush({
+        attacker: camp,
+        target,
+        ambushHexTerrain: tile.terrain,
+        rng: rng.derive('ambush'),
+      });
+
+      // Apply caravan casualties: remove crew, animals (animals deferred —
+      // caravan model doesn't separate them yet; v1 just records the loss).
+      let deathsRemaining = result.caravanCasualties.crewDeaths;
+      for (const m of target.crew) {
+        if (deathsRemaining <= 0) break;
+        const take = Math.min(m.count, deathsRemaining);
+        m.count -= take;
+        deathsRemaining -= take;
+      }
+      // Remove zero-count crew entries to keep validation invariants.
+      target.crew = target.crew.filter((m) => m.count > 0);
+
+      // Transfer cargo from caravan to camp loot.
+      for (const [resId, qty] of result.cargoTaken) {
+        const have = target.cargo.get(resId) ?? 0;
+        const newQty = have - qty;
+        if (newQty <= 1e-9) target.cargo.delete(resId);
+        else target.cargo.set(resId, newQty);
+        const lootHave = camp.loot.get(resId) ?? 0;
+        camp.loot.set(resId, lootHave + qty);
+      }
+      target.treasury = Math.max(0, target.treasury - result.coinTaken);
+      camp.treasury += result.coinTaken;
+
+      // Apply bandit casualties → new camp record.
+      const banditDeaths = result.banditCasualties.deaths;
+      const remaining = Math.max(0, camp.banditCount - banditDeaths);
+      const updated: BanditCamp = { ...camp, banditCount: remaining };
+      if (remaining <= 0) world.banditCamps.delete(campId);
+      else world.banditCamps.set(campId, updated);
+
+      if (result.outcome === 'attacker_won' || result.outcome === 'caravan_fled') {
+        lastSuccessfulRaidDay.set(campId, today);
+      }
+
+      let cargoLost = 0;
+      for (const qty of result.cargoTaken.values()) cargoLost += qty;
+      if (cargoLost > 0 || result.coinTaken > 0 || result.caravanCasualties.crewDeaths > 0) {
+        events.push({
+          type: 'caravan_robbed',
+          caravan: target.id,
+          by: campId,
+          cargoLost,
+        });
+      }
+      return;
+    }
+    case 'raid_settlement':
+      // Implemented in a follow-up — needs T38 raid + defender garrison.
+      return;
+    case 'fence_loot':
+    case 'bribe_settlement':
+      // No-op in v1 — fence/bribe machinery comes online when settlement
+      // sub-faction relationships are wired (docs/12 §"Bandit-aligned
+      // sub-factions in cities"). Skipping is safe; the action is still
+      // recorded in the rng stream so determinism is preserved.
+      return;
+  }
+};
+
+const findCaravanAtHex = (world: WorldState, hex: Hex): Caravan | null => {
+  for (const c of world.caravans.values()) {
+    if (hexEquals(c.position, hex)) return c;
+  }
+  return null;
+};
+
+const recruitFromIdle = (world: WorldState, rng: Rng, _today: Day): void => {
+  if (world.banditCamps === undefined || world.banditCamps.size === 0) return;
+  for (const settlement of world.settlements.values()) {
+    if (settlement.population.total() === 0) continue;
+    const adults = adultPopulation(settlement);
+    if (adults <= 0) continue;
+    // Pressure pool ≈ adults × jobless fraction. v1 proxy: 5% of adults
+    // are "idle-ish" by default; 20% in settlements with food shortfall.
+    const isPoor = (faminePressure.get(settlement)?.consecutiveShortageDays ?? 0) >= 1;
+    const pressureFraction = isPoor ? 0.2 : 0.05;
+    const pressurePool = adults * pressureFraction;
+    if (pressurePool <= 0) continue;
+
+    // Find the nearest camp within RECRUIT_RANGE_HEXES.
+    let nearest: { id: BanditCampId; dist: number } | null = null;
+    for (const [campId, camp] of world.banditCamps) {
+      const d = hexDistance(camp.hex, settlement.anchor);
+      if (d > RECRUIT_RANGE_HEXES) continue;
+      if (nearest === null || d < nearest.dist) nearest = { id: campId, dist: d };
+    }
+    if (nearest === null) continue;
+
+    let frac = BASE_RECRUIT_FRAC_PER_DAY;
+    if (isPoor) frac *= POOR_VILLAGE_RECRUIT_BOOST;
+    const driveMult = recruitDriveMultiplier.get(nearest.id) ?? 1;
+    frac *= driveMult;
+
+    const expected = pressurePool * frac;
+    // Stochastic recruit count (Poisson-ish via uniform jitter).
+    const noise = rng.derive(`pool-${String(settlement.id)}`).next();
+    const newRecruits = Math.floor(expected + noise);
+    if (newRecruits <= 0) continue;
+
+    const actuallyTake = Math.min(newRecruits, Math.floor(adults * 0.01));
+    if (actuallyTake <= 0) continue;
+    drainAdultsFromSettlement(settlement, actuallyTake);
+    const camp = world.banditCamps.get(nearest.id);
+    if (camp === undefined) continue;
+    world.banditCamps.set(nearest.id, recruit(camp, actuallyTake));
+  }
+};
+
+const drainAdultsFromSettlement = (settlement: Settlement, count: number): void => {
+  let remaining = count;
+  // Prefer the working-age bands.
+  const order: readonly string[] = [
+    '20-24',
+    '25-29',
+    '15-19',
+    '30-34',
+    '35-39',
+    '40-44',
+    '45-49',
+    '50-54',
+  ];
+  for (const ageStr of order) {
+    if (remaining <= 0) break;
+    const age = ageStr as unknown as Parameters<Settlement['population']['totalByAgeBand']>[0];
+    const inBand = settlement.population.totalByAgeBand(age);
+    if (inBand <= 0) continue;
+    const take = Math.min(remaining, inBand);
+    let drained = 0;
+    const snap: Array<[Parameters<Settlement['population']['set']>[0], number]> = [];
+    for (const [key, c] of settlement.population.cohorts()) {
+      if (key.age === age && c > 0) snap.push([key, c]);
+    }
+    for (const [key, c] of snap) {
+      if (drained >= take) break;
+      const share = Math.max(1, Math.floor((c / inBand) * take));
+      const drop = Math.min(share, c, take - drained);
+      if (drop <= 0) continue;
+      settlement.population.set(key, c - drop);
+      drained += drop;
+    }
+    remaining -= drained;
+  }
+};
+
+const applyBanditStarvation = (world: WorldState, rng: Rng, _today: Day): void => {
+  if (world.banditCamps === undefined) return;
+  for (const [campId, camp] of [...world.banditCamps]) {
+    let lootKg = 0;
+    for (const [resId, qty] of camp.loot) {
+      const def = getResource(resId);
+      lootKg += qty * def.weightKgPerUnit;
+    }
+    const dailyNeedKg = camp.banditCount * 0.4;
+    if (lootKg >= dailyNeedKg) {
+      // Consume from the highest-weight food first (grain prefers to be
+      // eaten before luxuries).
+      let remaining = dailyNeedKg;
+      const eatable: ResourceId[] = [
+        resourceId('food.grain'),
+        resourceId('food.bread'),
+        resourceId('food.flour'),
+        resourceId('food.legumes'),
+        resourceId('food.cheese'),
+        resourceId('food.salted_meat'),
+        resourceId('food.salted_fish'),
+      ];
+      for (const id of eatable) {
+        if (remaining <= 0) break;
+        const have = camp.loot.get(id) ?? 0;
+        if (have <= 0) continue;
+        const def = getResource(id);
+        const haveKg = have * def.weightKgPerUnit;
+        const takeKg = Math.min(haveKg, remaining);
+        const takeUnits = takeKg / Math.max(1e-9, def.weightKgPerUnit);
+        const newQty = have - takeUnits;
+        if (newQty > 1e-9) camp.loot.set(id, newQty);
+        else camp.loot.delete(id);
+        remaining -= takeKg;
+      }
+    } else {
+      // Starvation: 5% desert per day at zero food, scaled.
+      const shortfallFrac = 1 - lootKg / Math.max(1, dailyNeedKg);
+      const desertRate = 0.05 * shortfallFrac;
+      const noise = rng.derive(`starve-${String(campId)}`).next();
+      const desertCount = Math.floor(camp.banditCount * desertRate + noise);
+      if (desertCount > 0) {
+        const remaining = Math.max(0, camp.banditCount - desertCount);
+        if (remaining < 3) world.banditCamps.delete(campId);
+        else world.banditCamps.set(campId, { ...camp, banditCount: remaining });
       }
     }
   }

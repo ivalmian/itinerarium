@@ -175,31 +175,119 @@ factor — see [03 — Production](03-production.md) for `build_walls`).
 
 ## Bandit emergence in the tick loop (locked)
 
-Per-day, in the politics phase, after consumption:
+Bandits aren't just an ambient hazard — they're a **social
+phenomenon emerging from the population's pressure points**, and
+they have real political character. Each camp has a leader, a
+reputation, and friends in low places.
 
-1. **Recruitment from idle**: for each settlement, count adults with
-   `idle` job role + adults whose subsistence is unmet for 14+
-   consecutive days (prospective recruits — rural poor, jobless urban
-   plebs). A small fraction (default ~0.0005/day = ~18%/year) of this
-   pool defects to wilderness banditry. They are removed from the
-   settlement's pool and added to the nearest existing bandit camp
-   within ~50 hexes, OR a new camp is founded in a nearby wilderness
-   forest/hills hex if no camp is nearby.
-2. **Camp population dynamics**: each camp ages, has its own
-   subsistence consumption (rations from loot or raiding), and may
-   die out from starvation if it can't raid successfully.
-3. **Camp decisions**: for each camp, call `decideCampAction(camp,
-   inputs)` (T16). Translate decision:
-   - `raid_caravan` → emit pendingBattle; resolve via T45 ambush
-   - `raid_settlement` → emit pendingBattle; resolve via T38 raid
-   - `recruit_drive` → next-day recruit rate doubles
-   - `move_camp` → update camp.hex
-   - `lay_low` → no-op
-   - `bribe_settlement` → coin transfer + reputation +0.1
-   - `fence_loot` → liquidate loot at corrupt settlement at 60% price
-4. **Initial seeding**: procgen places 1 small bandit camp per cluster
-   in wilderness near a road chokepoint. They're already there at
-   day 0; not a cold-start problem.
+### Per-day mechanics
+
+1. **Recruitment from pressure points**: for each settlement, count
+   the recruitment pool = `idle` adults + adults unmet on
+   subsistence for 14+ consecutive days + recently-freed slaves
+   with no patron + demobilised soldiers (post-war, future).
+   A baseline fraction (default ~0.0005/day) defects to wilderness
+   banditry. **Successful nearby bands recruit faster** — if a
+   camp within ~30 hexes has a successful raid in the past 30 days,
+   that camp's recruitment fraction triples (word gets out: "Caelius
+   is rich now"). **Poor villages contribute disproportionately**:
+   a settlement with subsistence shortfall recruits at 4× rate
+   relative to a prosperous one.
+2. **Joining vs. founding**: defectors walk to the nearest existing
+   camp within ~50 hexes if it has space; otherwise a new camp is
+   founded in a wilderness forest/hills hex within 5–15 hexes of
+   the settlement.
+3. **Camp population dynamics**: each camp consumes daily rations
+   from its loot stockpile (~0.4 kg grain-equivalent per bandit per
+   day). When loot food runs out, the camp must raid or starve.
+   Starving bandits desert (~5%/day at zero food); a camp with
+   <3 bandits left dissolves and any remaining members rejoin
+   nearby plebeians.
+4. **Camp decisions**: for each camp, call `decideCampAction(camp,
+   inputs)` (T16). Translate the action:
+   - `raid_caravan(targetHex)` → emit pendingBattle; resolve via
+     T45 ambush at the caravan's hex
+   - `raid_settlement(targetSettlement)` → emit pendingBattle;
+     resolve via T38 raid
+   - `recruit_drive` → next-week recruit rate from nearby
+     settlements doubles
+   - `move_camp(toHex)` → walk one hex/day toward toHex
+   - `lay_low` → no-op (used when patrols active nearby)
+   - `bribe_settlement(s, amount)` → coin from camp to settlement's
+     city_corp/headman; reputation Camp→Settlement +0.1, the
+     settlement now actively misinforms patrols looking for the
+     camp
+   - `fence_loot(through)` → camp-to-settlement loot transfer at
+     60% local clearing price; settlement's actor pays coin, gets
+     stolen goods. Bandit-aligned cities retain the goods quietly;
+     others may actually be undercover patrol fronts.
+5. **Initial seeding**: procgen places 1 small bandit camp per
+   settled cluster in a forest/hills hex within 6–12 hexes of a
+   city. They're already there at day 0; the world doesn't have to
+   wait years for the first camp to bootstrap.
+
+### Battles aren't total annihilation
+
+Per docs/13 §"Battle survivor system": every combat resolution
+emits structured survivor records. `fled_escaped` survivors become
+real news carriers walking to their nearest friendly settlement at
+~20 hexes/day, carrying first-hand knowledge of the engagement.
+**Killing every witness is hard.** Even an "attacker_won" outcome
+typically leaves 1-3 fled_escaped survivors who reach a settlement
+4-10 days later and update reputations.
+
+This means:
+- A successful raid on a Vibian caravan with 3 escapees is known
+  to Family Vibian by day +5, Family Vibian's allies by day +12,
+  the governor by day +20 (depending on geography).
+- A patrol that wins a skirmish but lets some bandits escape gives
+  the surviving bandits intel on patrol strength + tactics.
+- A massacre with NO survivors still generates **indirect rumor**
+  (a missing caravan eventually triggers an investigation), just
+  slower and less specific.
+
+### Bandit-aligned sub-factions in cities
+
+Bandits aren't isolated wilderness folk — they have FRIENDS in
+the cities. Specifically:
+
+- **Fences**: in every city of size ≥small, there's a small
+  bandit-aligned faction (a "merchant" who buys stolen goods at
+  60% price, no questions). Faction is procgen-named (often
+  associated with the docks or a specific minor patrician
+  family). Fences pay in coin from their own treasury; coin is
+  laundered back into the legitimate market.
+- **Patron of bandits**: occasionally a real patrician family
+  has a covert relationship with a bandit camp — paying for
+  raids on their rivals, or buying back their own goods at a
+  discount when raided "by mistake". This creates rivalries
+  visible in the family-vs-family reputation table.
+- **Bribed officials**: governor / city watch officers can have
+  high reputation with specific camps (per the bribery action
+  above) — when they hear about that camp's raid, they "see
+  nothing" and don't dispatch patrols. The cost is reputation
+  damage to themselves with the victims.
+
+### Successful bandit careers (flavor + emergent)
+
+Specific bandits become characters with histories:
+
+- A camp leader who has 5+ successful raids and >100 bandits
+  becomes a **regional warlord**. Patrician families may
+  negotiate with them; the governor may treat them as a
+  rebellion.
+- A long-running camp (>2 years) that's been raided by the
+  governor and reformed gets a `notable_bandit` tag — they're
+  famous, news of them spreads further, recruits from further
+  away, but also makes them a higher-priority patrol target.
+- A camp leader killed in battle is replaced by their lieutenant
+  (per docs/11 character succession); the new leader inherits
+  reduced reputation (the heir didn't personally make the
+  reputation), so the camp may temporarily go quiet.
+
+These are emergent properties: the named-character + reputation
+machinery already supports them; the politics phase just needs to
+emit the right events and check the thresholds.
 
 ## Patrol dispatch in the tick loop (locked)
 
