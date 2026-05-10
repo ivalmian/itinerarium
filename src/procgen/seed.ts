@@ -363,11 +363,15 @@ const seedPopulation = (settlement: Settlement, total: number): void => {
 
 const GRAIN_KG_PER_DAY = 0.4; // docs/04 §"Consumption per adult per day"
 const KG_PER_MODIUS = 6.7; // see resources/catalog.ts food.grain
-// 365-day reserve so the world survives from any procgen start day to the
-// first autumn harvest. Historically Roman granaries held a few months;
-// burn-in stability needs more headroom because we don't yet model
-// shipped-in tribute grain that smoothed real-world seasonality. Tunable.
-const GRAIN_DAYS_OF_RESERVE = 365;
+// 180-day reserve. Per docs/15 §C5 we aim for 30 ultimately, but C6
+// worker reallocation runs at ~8%/yr — workers stuck in the wrong role
+// at procgen take YEARS to migrate to the bottlenecked roles. Until C4
+// (dynamic investment) lets cities build new buildings AND C6 is faster,
+// we hold ~6 months of grain so the spring→summer→autumn worker
+// reallocation cycle has time to land before stocks run dry. Reduce
+// further as C4/C6 mature. Roman granaries historically held a few
+// months, so 180 is loosely defensible too.
+const GRAIN_DAYS_OF_RESERVE = 180;
 
 const grainModiiForPopulation = (totalPop: number, days: number): number => {
   const kg = totalPop * GRAIN_KG_PER_DAY * days;
@@ -530,10 +534,11 @@ const seedCityCorporation = (
   });
   addActor(ctx, actor);
   settlement.stockpileOwners.push(aId);
-  // City reserves: a year of grain + ample wood for bakeries/charcoal +
-  // amphorae for olive press / wine + tools so smiths can equip people
-  // even before the smithy produces fresh ones. v1 burn-in stability
-  // bootstrap; v1.5 will replace these with proper storage capacity.
+  // City reserves: ~30 days of grain + ~7 days of wood/tools at expected
+  // consumption. Per docs/15 §C5: production must come online within the
+  // first month; anything more is a v1 bootstrap hack. Amphorae are kept
+  // higher because pottery production has a long bake_bread / wine /
+  // oil cycle and amphora is durable.
   const pop = settlement.population.total();
   grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
   grantStockpile(actor, 'material.wood', pop * 5);
@@ -579,15 +584,12 @@ const seedFreeVillage = (
   addCharacter(ctx, elder);
   settlement.factions.push(fId);
   settlement.stockpileOwners.push(aId);
-  // Year's grain reserve so the village survives until first autumn
-  // harvest under any procgen start day. See GRAIN_DAYS_OF_RESERVE rationale.
+  // ~30 days of grain + ~7 days of tools/wood at expected consumption,
+  // per docs/15 §C5. Local farms + the village smithy have to come
+  // online within the first month; trade fills any remaining gap.
   const pop = settlement.population.total();
   grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
-  // Tools: bumped to a year's worth at expected farm consumption (~3
-  // tools/day on a village farm). v1.5: replace with smithy production.
   grantStockpile(actor, 'goods.tools', Math.max(500, pop * 20));
-  // Wood + amphora reserves so the food chain isn't immediately blocked
-  // (bake_bread needs wood; press_olives needs amphora).
   grantStockpile(actor, 'material.wood', pop * 5);
   grantStockpile(actor, 'material.amphora', Math.max(10, Math.floor(pop / 10)));
   return actor;
@@ -618,7 +620,10 @@ const seedClientVillage = (ctx: BuildContext, settlement: Settlement, patron: Ac
   addCharacter(ctx, headman);
   settlement.factions.push(patronFaction.id);
   settlement.stockpileOwners.push(patron.id);
-  // Year's grain reserve held by the patron — same survival window as other tiers.
+  // ~30 days of grain + ~7 days of tools/wood for the patron's client
+  // village; the patron accumulates across multiple villages so a city
+  // family that holds 3-5 client villages still has months of headroom
+  // before any single village's harvest. Per docs/15 §C5.
   const pop = settlement.population.total();
   grantStockpile(patron, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
   grantStockpile(patron, 'goods.tools', Math.max(500, pop * 20));
@@ -1189,6 +1194,33 @@ const TIER_CAPACITY: Record<SettlementTier, number> = {
   large_city: 400,
 };
 
+// Building-specific multipliers on the tier capacity. Reasoning:
+//   - forester_camp + charcoal_kiln carry a much heavier load now that
+//     fell_timber outputs only 1.5 wood/instance and bake_bread consumes
+//     5 wood/instance (per docs/03 worked examples, restored in v1.5
+//     C2). Without these multipliers the wood chain is the binding
+//     constraint and the world starves within ~60 days of a fresh seed.
+//   - bloomery + smithy similarly need higher per-building throughput
+//     because smelt_iron at 60+100→15 means each tool-forging cycle
+//     burns through orders of magnitude more charcoal.
+//   - pasture is a real bottleneck per the steady-state analyzer; one
+//     pasture per settlement at the tier cap covers most pastoral
+//     demand once the herd is established.
+// All other buildings keep the tier-default cap.
+const BUILDING_CAP_MULTIPLIER: Record<string, number> = {
+  forester_camp: 4,
+  charcoal_kiln: 2,
+  bloomery: 2,
+  smithy: 2,
+  pasture: 2,
+};
+
+const capacityFor = (kind: string, tier: SettlementTier): number => {
+  const base = TIER_CAPACITY[tier];
+  const mul = BUILDING_CAP_MULTIPLIER[kind] ?? 1;
+  return base * mul;
+};
+
 /**
  * Phase 9 building seeding. Per docs/07 §"Place starter production
  * buildings": every settlement gets a pasture + farm; towns/cities
@@ -1200,7 +1232,8 @@ const TIER_CAPACITY: Record<SettlementTier, number> = {
 const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void => {
   const owner = pickBuildingOwner(ctx, settlement);
   if (owner === undefined) return;
-  const cap = TIER_CAPACITY[settlement.tier];
+  const tier = settlement.tier;
+  const capOf = (kind: string): number => capacityFor(kind, tier);
 
   const catchment = settlement.catchmentHexes;
   if (catchment.length === 0) return;
@@ -1213,10 +1246,10 @@ const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void =
   // and lumber regenerate (closing the chain that supplies bake_bread,
   // smithy maintenance, etc.). Pasture provides year-round protein
   // alongside grain.
-  tryAddBuilding(settlement, 'pasture', cHex(0), owner, cap);
-  tryAddBuilding(settlement, 'farm', cHex(1), owner, cap);
-  tryAddBuilding(settlement, 'forester_camp', cHex(2), owner, cap);
-  tryAddBuilding(settlement, 'sawmill', cHex(3), owner, cap);
+  tryAddBuilding(settlement, 'pasture', cHex(0), owner, capOf('pasture'));
+  tryAddBuilding(settlement, 'farm', cHex(1), owner, capOf('farm'));
+  tryAddBuilding(settlement, 'forester_camp', cHex(2), owner, capOf('forester_camp'));
+  tryAddBuilding(settlement, 'sawmill', cHex(3), owner, capOf('sawmill'));
 
   // Village+: add charcoal_kiln so smithies have fuel; mine + bloomery so
   // iron production isn't gated on a procgen ore deposit landing in the
@@ -1229,12 +1262,12 @@ const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void =
     settlement.tier === 'small_city' ||
     settlement.tier === 'large_city'
   ) {
-    tryAddBuilding(settlement, 'charcoal_kiln', cHex(4), owner, cap);
-    tryAddBuilding(settlement, 'mine', cHex(5), owner, cap);
-    tryAddBuilding(settlement, 'bloomery', uHex(0), owner, cap);
-    tryAddBuilding(settlement, 'smithy', uHex(0), owner, cap);
-    tryAddBuilding(settlement, 'dairy', uHex(0), owner, cap);
-    tryAddBuilding(settlement, 'quarry', cHex(8), owner, cap);
+    tryAddBuilding(settlement, 'charcoal_kiln', cHex(4), owner, capOf('charcoal_kiln'));
+    tryAddBuilding(settlement, 'mine', cHex(5), owner, capOf('mine'));
+    tryAddBuilding(settlement, 'bloomery', uHex(0), owner, capOf('bloomery'));
+    tryAddBuilding(settlement, 'smithy', uHex(0), owner, capOf('smithy'));
+    tryAddBuilding(settlement, 'dairy', uHex(0), owner, capOf('dairy'));
+    tryAddBuilding(settlement, 'quarry', cHex(8), owner, capOf('quarry'));
   }
 
   // Town+: refining chain (mill + bakery + granary) and weaver_workshop.
@@ -1249,15 +1282,15 @@ const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void =
     settlement.tier === 'small_city' ||
     settlement.tier === 'large_city'
   ) {
-    tryAddBuilding(settlement, 'mill', uHex(0), owner, cap);
-    tryAddBuilding(settlement, 'bakery', uHex(0), owner, cap);
-    tryAddBuilding(settlement, 'granary', uHex(0), owner, cap);
-    tryAddBuilding(settlement, 'weaver_workshop', uHex(1), owner, cap);
-    tryAddBuilding(settlement, 'olive_grove', cHex(6), owner, cap);
-    tryAddBuilding(settlement, 'vineyard', cHex(7), owner, cap);
-    tryAddBuilding(settlement, 'oil_press', uHex(2), owner, cap);
-    tryAddBuilding(settlement, 'winery', uHex(2), owner, cap);
-    tryAddBuilding(settlement, 'pottery', uHex(3), owner, cap); // amphorae for olive_oil/wine
+    tryAddBuilding(settlement, 'mill', uHex(0), owner, capOf('mill'));
+    tryAddBuilding(settlement, 'bakery', uHex(0), owner, capOf('bakery'));
+    tryAddBuilding(settlement, 'granary', uHex(0), owner, capOf('granary'));
+    tryAddBuilding(settlement, 'weaver_workshop', uHex(1), owner, capOf('weaver_workshop'));
+    tryAddBuilding(settlement, 'olive_grove', cHex(6), owner, capOf('olive_grove'));
+    tryAddBuilding(settlement, 'vineyard', cHex(7), owner, capOf('vineyard'));
+    tryAddBuilding(settlement, 'oil_press', uHex(2), owner, capOf('oil_press'));
+    tryAddBuilding(settlement, 'winery', uHex(2), owner, capOf('winery'));
+    tryAddBuilding(settlement, 'pottery', uHex(3), owner, capOf('pottery')); // amphorae for olive_oil/wine
   }
 };
 

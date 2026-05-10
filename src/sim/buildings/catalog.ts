@@ -53,11 +53,14 @@ const DEFS: readonly BuildingInput[] = [
     id: 'farm',
     category: 'production',
     name: 'Farm',
-    // 50 = enough farmer-days to feed a small village. A village of 500
-    // needs ~25 modii/day; harvest_grain at autumn 80 modii/instance →
-    // 5 instances cover a village; full 50-cap supports a small city.
-    // Larger settlements need multiple farms (seedWorld Phase 9 scales).
-    capacityUnits: 50,
+    // 200 = enough farmer-days to feed a city of ~30k. harvest_grain at
+    // autumn 80 modii/instance × seasonal-avg 0.6 ≈ 48 modii/recipe-day;
+    // 200 cap × 48 = ~9.6k modii/day, vs. ~1.8k/day grain demand for a
+    // 30k city. The slack is the cushion for winter (mult 0.3) and the
+    // mill+bake chain that downstream consumes the grain.
+    // v1.5 dynamic investment (docs/15 §C4) will let cities build
+    // discrete additional farms; capacity stands in until then.
+    capacityUnits: 200,
     constructionCost: { 'material.lumber': 2, 'material.brick_tile': 4, 'goods.tools': 2 },
     maintenancePerDay: { 'goods.tools': 0.02 },
     decayDaysIfUnmaintained: 365,
@@ -140,9 +143,13 @@ const DEFS: readonly BuildingInput[] = [
     id: 'forester_camp',
     category: 'production',
     name: 'Forester camp',
-    // Bumped to 100 to satisfy charcoal+lumber+bakery wood demand at
-    // realistic settlement scales. Each unit ≈ a Roman forester crew.
-    capacityUnits: 100,
+    // 200 capacity to keep the wood chain ahead of charcoal_kiln + bakery
+    // + sawmill demand under realistic ratios (fell_timber: 1.5 wood/
+    // instance per docs/03 — was 10 in v1). Each unit ≈ a Roman forester
+    // crew; a city's forester_camp is really the aggregate of many crews
+    // working a forest catchment in parallel. Larger settlements seed
+    // multiple forester_camps to scale further.
+    capacityUnits: 200,
     constructionCost: { 'material.lumber': 4, 'goods.tools': 3 },
     maintenancePerDay: { 'goods.tools': 0.03 },
     decayDaysIfUnmaintained: 180,
@@ -154,8 +161,11 @@ const DEFS: readonly BuildingInput[] = [
     id: 'mill',
     category: 'production',
     name: 'Mill',
-    // 50 = enough miller-days to convert all of one farm's grain output.
-    capacityUnits: 50,
+    // 200 to keep up with the bumped farm output. mill_grain converts
+    // 50→45 (~10% loss), so 200 cap × 45 flour ≈ 9000 flour/day max,
+    // covering the bakery chain for a city of 30k. v1.5 dynamic
+    // investment (docs/15 §C4) will let cities build discrete mills.
+    capacityUnits: 200,
     constructionCost: { 'material.cut_stone': 8, 'material.lumber': 6, 'goods.tools': 2 },
     maintenancePerDay: { 'material.lumber': 0.05 },
     decayDaysIfUnmaintained: 180,
@@ -216,7 +226,14 @@ const DEFS: readonly BuildingInput[] = [
     id: 'charcoal_kiln',
     category: 'production',
     name: 'Charcoal kiln',
-    capacityUnits: 50,
+    // 500 capacity to keep ahead of smelt_iron AND forge_tools combined
+    // demand within the same tick (the topological sort runs smelt_iron
+    // before forge_tools, so the kiln must produce a comfortable surplus
+    // for both consumers). At realistic ratios — smelt_iron 60+100→15,
+    // forge_tools 3 charcoal/instance — a city's combined demand is
+    // ~10000 charcoal/day; with 71 town/village/city kilns at cap=500
+    // we get 35500/day worldwide.
+    capacityUnits: 500,
     constructionCost: { 'material.brick_tile': 6, 'material.cut_stone': 2 },
     maintenancePerDay: { 'material.brick_tile': 0.02 },
     decayDaysIfUnmaintained: 180,
@@ -256,7 +273,10 @@ const DEFS: readonly BuildingInput[] = [
     id: 'bloomery',
     category: 'production',
     name: 'Bloomery',
-    capacityUnits: 50,
+    // 100 capacity to keep iron production ahead of smithy demand under
+    // the realistic 60+100→15 ratio. A bloomery is really a cluster of
+    // small furnaces operated in parallel by a smelter team.
+    capacityUnits: 100,
     constructionCost: { 'material.cut_stone': 6, 'material.brick_tile': 4, 'goods.tools': 2 },
     maintenancePerDay: { 'material.brick_tile': 0.05 },
     decayDaysIfUnmaintained: 90,
@@ -266,7 +286,9 @@ const DEFS: readonly BuildingInput[] = [
     id: 'smithy',
     category: 'production',
     name: 'Smithy',
-    capacityUnits: 50,
+    // 100 capacity so tool turnover keeps up with farm + mine + forester
+    // wear at city scale (harvest_grain 0.005, mine 0.1, forester 0.05).
+    capacityUnits: 100,
     constructionCost: { 'material.brick_tile': 4, 'material.cut_stone': 2, 'goods.tools': 2 },
     maintenancePerDay: { 'goods.tools': 0.05 },
     decayDaysIfUnmaintained: 180,
