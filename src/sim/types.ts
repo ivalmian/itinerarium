@@ -23,6 +23,7 @@ export type RecipeId = string & { readonly __brand: 'RecipeId' };
 export type BuildingId = string & { readonly __brand: 'BuildingId' };
 export type ResourceId = string & { readonly __brand: 'ResourceId' };
 export type BanditCampId = string & { readonly __brand: 'BanditCampId' };
+export type JobId = string & { readonly __brand: 'JobId' };
 
 export const settlementId = (s: string): SettlementId => s as SettlementId;
 export const caravanId = (s: string): CaravanId => s as CaravanId;
@@ -33,6 +34,7 @@ export const recipeId = (s: string): RecipeId => s as RecipeId;
 export const buildingId = (s: string): BuildingId => s as BuildingId;
 export const resourceId = (s: string): ResourceId => s as ResourceId;
 export const banditCampId = (s: string): BanditCampId => s as BanditCampId;
+export const jobId = (s: string): JobId => s as JobId;
 
 /** Quantities are stored as plain numbers; units are documented per resource. */
 export type Quantity = number;
