@@ -148,3 +148,60 @@ settlement can't pivot its whole economy in a week.
 
 Recipe outputs go to the **owner's stockpile**, not to a generic
 settlement pool — see [11 — Politics & Ownership](11-politics-and-ownership.md).
+
+## Steady-state tuning (Leontief view)
+
+The recipe catalog is a Leontief input-output system: each recipe is
+a column of inputs and outputs per recipe-instance per day. Together
+they form an `(inputs - outputs)` matrix `M` such that, given recipe
+intensities `x` (recipes/day across the world) and final demand `d`
+(what people eat + what's exported off-map), the economy is in balance
+when `M·x = d`.
+
+Run `npx tsx scripts/analyze-steady-state.ts [population]` to:
+1. Back-chain final demand into recipe intensities.
+2. Show required intensity per recipe and per building.
+3. Compare required vs. seeded building capacity → flag bottlenecks.
+4. Estimate the monetary balance (silver minted vs. pop-growth coin
+   demand vs. exports/imports).
+
+**Target: a small surplus.** A world that exactly meets demand has no
+slack — one bad harvest year and famine cascades. We aim for ~10–20%
+slack on staple chains so:
+- Seasonal variation in `harvest_grain` (autumn 1.0 → winter 0.3) doesn't
+  produce winter shortages.
+- Disease outbreaks that kill workers don't immediately shut down the
+  smithy.
+- Trade can siphon off the surplus to buy off-map goods (luxury
+  imports, exotic spices) without triggering local shortages.
+
+Surplus is the source of **export value**. Exports are the only real
+income — minting silver doesn't create wealth, it just expands the money
+supply. A province with no exports cannot pay for off-map imports
+forever; eventually the silver mines run out and inflation turns into
+deflation as coin leaves the system. Per docs/08, off-map merchant
+houses arrive with desirable goods (spices, silks, exotic dyes); the
+province pays in surplus oil/wine/cloth + minted silver.
+
+## Monetary balance (no inflation, no deflation)
+
+For a stable price level under population growth `g` and a per-capita
+coin holding target `M`:
+
+```
+new coin produced per year = g × P × M  +  net imports value  −  net exports value
+```
+
+- **`g × P × M`** = the new transactional + savings demand from extra people.
+- **Net imports value** = coin paid to off-map houses → leaves the system.
+- **Net exports value** = coin received from off-map houses → enters the system.
+
+If a province exports more than it imports, the trade surplus brings
+silver in *without* needing to mint locally. If it imports more, the
+local mint must run faster — and if the silver mines can't keep up,
+the province bleeds out its coin supply (deflation, broken markets).
+
+In the v1 setup (~700k pop, 0.5% growth, ~50 coin/person target) the
+analyzer suggests ~3 cupel_silver instances/day + 1 mint_coin/day are
+sufficient to match pop growth IF trade is roughly balanced. Provinces
+with surplus exports need less minting; deficit provinces need more.
