@@ -40,7 +40,7 @@ Implications of a daily turn:
   laden mule caravan equals roughly 25 hexes (= 25 km). Every
   distance, area, and travel time in the game is a real number you
   can sanity-check against the historical record.
-- **Map size for v1: ~500 km × 500 km, ~250,000 hexes.** This is
+- **Current map size: ~500 km × 500 km, ~250,000 hexes.** This is
   about the size of historical Roman Italy or the Iberian peninsula —
   large enough to contain multiple distinct settled regions with
   meaningful wilderness between them.
@@ -106,7 +106,7 @@ This isn't a hard partition — the cluster/wilderness boundary is
 fuzzy and procgen-derived. But it determines where most of the
 economy is concentrated and where the long, risky trade routes lie.
 
-## Scale targets (v1)
+## Scale targets (current v1.5)
 
 - **Map**: 500 × 500 km, ~250,000 hexes.
 - **Settled hexes** (urban + active catchment): ~30,000–50,000
@@ -124,11 +124,11 @@ economy is concentrated and where the long, risky trade routes lie.
   ~30–150 people each). Multiple hamlets per hex is normal in
   the inner ring of a fertile patch — same-hex settlements
   remain distinct entities but trade and news between them
-  takes 0 days.
+  takes 0 ticks.
 - **Total settlement entities**: ~3,000–8,000. This is the
   performance-critical count, not raw population or hex count.
-  (Up from the v1 aggregated 1,000–1,500 once C9 lands per
-  docs/15-v1-5-cleanups.md.)
+  Current scope does not aggregate villages or hamlets into
+  meta-settlements.
 - **Hidden features** (ruins, abandoned mines, hermit shrines,
   abandoned villages): ~10–30, scattered in wilderness.
 - Hundreds of caravans simultaneously active.

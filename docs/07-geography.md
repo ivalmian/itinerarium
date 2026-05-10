@@ -5,9 +5,11 @@ the world.
 
 ## Hex extent — locked
 
-Hexes are 1 km across (= 1 km² area). **Every natural feature has
-real physical extent**: not "a forest hex" as a token, but 1 km² of
-forest land that is part of a much larger forest spanning many hexes.
+Hexes use a 1 km movement scale. For production and carrying-capacity
+tuning, each hex is treated as roughly 1 km² of land. **Every natural
+feature has real physical extent**: not "a forest hex" as a token, but
+a real patch of forest land that is part of a much larger forest
+spanning many hexes.
 
 A village's fields are not "the village's farm hex." They are several
 real fields covering several real hectares — typically 6–10 hexes of
@@ -28,7 +30,7 @@ forest isn't a token; it's a region.
 | Marsh / wetland | 5–30 contiguous | Productive for fish + reeds; raises disease risk. |
 | Lake | 1–20 hexes | Fishing + water access. |
 | River | linear chain of river hexes | Transport corridor + water + fishing. |
-| Coastline | linear chain | Fishing + salt; no sea trade in v1. |
+| Coastline | linear chain | Fishing + salt; sea trade deferred. |
 | Mountains | 50–500+ contiguous | Where ore deposits live; some hexes impassable. |
 | Plains (fertile) | 50–1000+ | Where most fields are sited. |
 | Steppe / semi-arid | 100–500+ | Pasture for nomadic-feel herds. |
@@ -112,7 +114,7 @@ clusters** plus the wilderness between them.
 ## Hidden features for exploration (locked)
 
 Wilderness exists to be travelled and explored, not just crossed.
-v1 includes a small set (~10–30) of hidden features placed during
+The current scope includes a small set (~10–30) of hidden features placed during
 procgen:
 
 | Feature | What it does on discovery |
@@ -139,7 +141,7 @@ routes.
 Generation has two phases: **procgen** (build the geography and
 seed initial state) and **stabilization** (run the sim forward
 without a player to settle into a coherent equilibrium). Locked as
-the v1 approach.
+the current approach.
 
 ### Phase 1 — Procgen
 
@@ -198,7 +200,7 @@ the v1 approach.
    settlement entity per docs/04. Multiple hamlets and at most one
    village can share a fertile hex (a Roman *pagus* with its
    dependent hamlets); same-hex settlements remain distinct
-   entities and travel between them takes 0 days
+   entities and travel between them takes 0 ticks
    (docs/05 §"Same-hex coexistence").
 8. **Generate roads**: dense intra-cluster roads connecting
    settlements; a few arterial routes between clusters via
@@ -232,27 +234,67 @@ the v1 approach.
 
 Generation is seeded so a given seed → same world.
 
-### Phase 2 — Stabilization (burn-in)
+### Phase 2 — Stabilization (burn-in) (locked)
 
-After procgen, run the full simulation forward for a substantial
-in-game period (target: 5–20 game years) **without a player**
-before play begins. This:
+After procgen, run the full simulation forward **without a
+player** before play begins. The burn-in is split into two
+explicit sub-phases bracketing a one-time road reset:
 
-- Lets caravans actually start moving and discover real prices.
-- Lets settlements that procgen got wrong (too small, wrong
-  location, underfed) collapse, shrink, or migrate.
-- Lets settlements with good fundamentals grow, build infrastructure,
-  attract migrants.
-- Lets the political layer (governor's tax rates, families' estate
-  management, headmen's choices) settle into stable patterns.
-- Produces a starting world that has a *history* — real stockpiles,
-  family wealth, road wear, trade partnerships, debts.
-- Surfaces bugs in the economic model: if half the cities collapse
-  during burn-in, the model is broken, not the world.
+#### Phase 2a — pre-road burn-in (days 0..1824, ~5 years)
 
-The burn-in result is the world the player walks into on day 1. We
-should retain enough history (last few in-game years of major
-events) to expose to the player so the world feels lived-in.
+Caravans, news carriers, and patrols use the procgen-laid roads
+where useful but **off-road as needed** to follow the actual
+demand. Every hex they enter accrues `roadWear` per the trail-
+wear rules in [06 — Caravans](06-caravans.md). At the end of
+phase 2a the wear field is the empirical record of what the
+world's actors actually wanted to do.
+
+#### Day 1825 — road reset (locked, automated)
+
+A one-time pass rebuilds the road network from observed wear:
+
+1. **Roman roads kept.** Engineered Roman roads stay Roman
+   regardless of wear (the empire built them; the empire
+   maintains them).
+2. **Worn-in trails promoted.** Any non-Roman hex with
+   `roadWear ≥ DIRT_UPGRADE_THRESHOLD` (default 100) becomes
+   `road = 'dirt'`.
+3. **Unused dirt roads removed.** Any procgen-laid `dirt` hex
+   with `roadWear < DIRT_DOWNGRADE_THRESHOLD` (default 20) is
+   reset to `road = 'none'`.
+4. **All wear counters reset to baseline.** Hexes that end up
+   `dirt` after the audit get `roadWear = 100`; hexes reset to
+   `none` get `roadWear = 0`.
+5. Emits `road_reset` event with `{ promotedToDirt, demotedToNone,
+   romanKept }`.
+
+Roads ARE the result of trade flows, not procgen guesswork. The
+caravan AI no longer fights an inadequate procgen network.
+
+#### Phase 2b — post-road burn-in (days 1825..end)
+
+The world now runs on its empirically-derived road network.
+Trail wear continues but the network is much closer to optimal,
+so off-roading is rare. This is the phase where price spreads,
+banditry incidence, settlement growth, etc. should match the
+"steady state" we're tuning toward — so any tuning metric (mean
+prices, food security, banditry losses) is read off phase 2b,
+not phase 2a.
+
+#### Why this matters for the player
+
+**The player joins on day ≥ 1825.** Day 0 is procgen output
+(empty stockpiles, generic roads, no trade history); day 1825 is
+the moment the world is "real" — worn-in roads, settled
+markets, established trade routes, families with names + history,
+bandit camps with reputations, demographic pyramid evolved one
+or two generations from the procgen seed. The burn-in is the
+mechanism by which we go from "world geometry" to "world that
+feels lived-in" without hand-authoring history.
+
+The burn-in also serves as a stability test: if phase 2b doesn't
+hold steady, the model is broken before any player can suffer
+for it.
 
 ## Implications for the design
 

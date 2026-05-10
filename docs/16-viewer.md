@@ -5,7 +5,7 @@ the world's evolving state visually. Lets you watch caravans move,
 settlements grow / shrink, banditry erupt, and reputation propagate
 without reading event logs.
 
-This is the canonical UX for v1 development inspection. The eventual
+This is the canonical UX for current development inspection. The eventual
 player UI (Vagrus-style turn UX, see docs/09) is a different surface
 and not what this viewer is.
 
@@ -40,7 +40,9 @@ and not what this viewer is.
 
 - **Vite** dev server (already in `package.json`). `npm run dev`
   serves the viewer at http://localhost:5173/.
-- **PixiJS** for WebGL rendering. The hex map is a single
+- **PixiJS** for WebGL rendering. Initial terrain, settlement, and
+  marker assets may be authored as SVGs and baked/loaded into the
+  WebGL renderer. The hex map is a single
   PIXI.Container; hex tiles are batched as `PIXI.Sprite`s using a
   generated atlas of terrain colors. Settlements + caravans are
   separate Container layers.
@@ -50,7 +52,7 @@ and not what this viewer is.
   fundamentally an inspection UI.
 - **Same simulation.** The viewer imports `tick`, `seedWorld`, etc.
   from the existing `src/` modules. The simulation runs in the
-  main thread for v1; if framerate suffers, move it to a Web
+  main thread for the current viewer; if framerate suffers, move it to a Web
   Worker (already a CLAUDE.md tech stack note).
 
 ## Layout
@@ -238,7 +240,7 @@ npm run build      # static build into dist/
 The `dev` script in `package.json` already points at vite; we just
 need a `vite.config.ts` and the `viewer/` directory.
 
-## Out of scope (v1 viewer)
+## Out of scope (current viewer)
 
 - Editing the world (placing buildings, moving caravans). Read-only.
 - Sound.

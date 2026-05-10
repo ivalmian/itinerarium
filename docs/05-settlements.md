@@ -53,9 +53,9 @@ political leadership.
 Same-hex settlements:
 - Each appears as its own glyph in the viewer (offset slightly
   so all are individually clickable).
-- Travel between them is **0 hexes / 0 days** — caravans, news
+- Travel between them is **0 hexes / 0 ticks** — caravans, news
   carriers, and refugees that arrive at the hex reach all of
-  them within the same tick. There is no "trivial caravan"
+  them immediately in the same pass. There is no "trivial caravan"
   walking from A to B in the same hex.
 - Each may claim its own catchment hexes per the closer-wins
   rule below; on a shared hex the larger settlement gets first
@@ -165,7 +165,7 @@ deposit, quarry) is **owned by a specific actor**:
 Ownership is the load-bearing connection between geography and the
 political layer. See [11 — Politics & Ownership](11-politics-and-ownership.md)
 for who can own what, how transfers happen, and what the player can
-do (mostly: trade with owners, not become one in v1).
+do (mostly: trade with owners, not become one in the current scope).
 
 When a recipe runs at a catchment hex, output goes to the **hex
 owner's stockpile**, not to a generic settlement pool. The owner
@@ -188,7 +188,7 @@ Growth and decay are emergent from the rules in
 [04 — Population](04-population.md). There is no "settlement size up"
 event — it just has more people now than last turn.
 
-## Building catalog (v1)
+## Building catalog (current)
 
 **Production:** `farm`, `pasture`, `vineyard`, `olive_grove`,
 `orchard`, `fishery`, `mine`, `quarry`, `forester_camp`, `mill`,
@@ -200,7 +200,7 @@ event — it just has more people now than last turn.
 `aqueduct_segment`, `temple`, `forum_market`, `walls`, `barracks`,
 `road_segment`.
 
-(No `shipyard` in v1 — sea trade deferred.)
+(No `shipyard` in the current scope — sea trade deferred.)
 
 Each building has:
 
@@ -234,17 +234,18 @@ demand — not from a hardcoded tier table or a static input-checklist.
 
 ### Two stages of specialization
 
-**Stage 1 — Procgen seeding (v1)**: at world genesis we don't have a
+**Stage 1 — Procgen seeding (current)**: at world genesis we don't have a
 price history to optimize against, so we seed the OBVIOUS workshops
 implied by abundant local inputs. This is a reasonable cold-start
 that lines up with the eventual market-driven equilibrium.
 
-**Stage 2 — Dynamic investment (v1.5)**: every season, owners evaluate
+**Stage 2 — Dynamic investment (current v1.5)**: every season, owners evaluate
 their portfolio against observed market spreads. If a price book
 shows an output trading much higher than its input cost basis, the
 owner spends coin + materials to construct a new workshop (per the
-construction recipes in docs/03). If a workshop runs at a loss for
-many months, it decays and isn't rebuilt. This is what makes the
+construction recipes in docs/03). Construction then consumes worker-
+days before the building becomes productive. If a workshop runs at a
+loss for many months, it decays and isn't rebuilt. This is what makes the
 specialization *adaptive* over the burn-in.
 
 ### Two ways a market gap closes
@@ -279,7 +280,7 @@ costs. The same model handles both:
   likely to attract import caravans than to spawn a local
   weaver_workshop (low population can't justify the build cost).
 
-### Stage-1 seeding rules (v1, input proxy for market)
+### Stage-1 seeding rules (current, input proxy for market)
 
 Procgen evaluates each settlement and seeds workshops where the
 inputs are cheap enough nearby that the output is plausibly
@@ -322,8 +323,8 @@ Concrete heuristics for stage 1:
 a mining village (mine + bloomery, exports iron). A city in farmland
 becomes a grain-trade hub (mill + bakery + granary, IMPORTS ore and
 tools). A city near both ore AND forest is a metalworking city. The
-*specialization emerges from the geography* — and once dynamic
-investment lands in v1.5, from observed market spreads.
+*specialization emerges from the geography* — and, through current
+dynamic investment, from observed market spreads.
 
 **Why a settlement starves**: when its specialty stockpile (the thing
 it exports) builds up to capacity AND the food it needs to import
@@ -373,12 +374,11 @@ This is the realistic constraint that makes warehouses + granaries
 matter as buildings — without them, a city's traders can't
 accumulate enough stockpile to weather a bad season.
 
-For initial v1 burn-in, capacity checks are **bypassed** during the
+For current bootstrap, capacity checks are **bypassed** during the
 seedWorld bootstrap (so settlements start with a generous reserve)
 and **enforced** during the tick loop (so steady-state capacity
-discipline applies). This is a v1.5 hardening target — full
-capacity discipline from day 1 requires a careful initial-build
-pass that's deferred.
+discipline applies). [TODO] Full capacity discipline from day 1
+requires a careful initial-build pass.
 
 ## Market state per settlement
 

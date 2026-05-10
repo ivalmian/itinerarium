@@ -4,7 +4,7 @@ The protagonists of the simulation. The player has one. The world has
 hundreds. They're how goods, people, news, and risk move between
 settlements.
 
-**Land caravans only in v1** — sea trade is deferred (see
+**Land caravans only in the current scope** — sea trade is deferred (see
 [10 — Scope](10-scope-and-questions.md)).
 
 ## Composition
@@ -154,8 +154,8 @@ counter (integer, 0 at procgen for un-roaded hexes). Every day:
    event.
 4. **Roman roads are engineered, not worn in.** Hexes with
    `road === 'roman'` don't gain wear (no upgrade target above
-   them) and their wear-counter doesn't decay (the road IS
-   maintained — separate maintenance machinery in v1.5+).
+   them) and their wear-counter doesn't decay because the road is
+   maintained. [TODO] Add separate Roman-road maintenance machinery.
 5. **Dirt roads can downgrade.** A `dirt` hex whose roadWear
    falls below 20 (sustained low traffic) reverts to
    `road = 'none'`. Wear keeps accruing during the dirt phase, so
@@ -264,7 +264,7 @@ same vulnerabilities. The player or bandits can intercept them. A
 governor can tax them. A war can close their route. Other merchants
 can compete with them on price.
 
-The **player cannot run off-map caravans** in v1. Long-haul export is
+The **player cannot run off-map caravans** in the current scope. Long-haul export is
 the business of established merchant houses with the capital,
 network, and patience for multi-month round-trips.
 
@@ -274,13 +274,13 @@ Per-day, for every NPC caravan in `world.caravans`:
 
 1. **Movement phase**: if caravan has a destination, advance via A*
    (already implemented). Emit `caravan_moved`/`caravan_arrived`.
-2. **Trade-on-arrival** (politics phase): if a caravan is at its
+2. **Trade-on-arrival** (trade phase): if a caravan is at its
    destination AND has a settlement on that hex, run the local market:
    sell cargo at clearing prices into local stockpiles; buy whatever
    the price book / NPC heuristic deems most profitable to load for
    the next leg. Crew rations replenish from local stockpile (paid in
    coin from caravan treasury).
-3. **Re-plan** (politics phase): after the trade, call
+3. **Re-plan** (politics phase, after trade): after the trade, call
    `planCaravanRoute` (T37) with the caravan's updated price book +
    knownBetterDestinations. The plan returns `RoutePlan | null`. If
    plan, set `caravan.destination` to its hex; if null, caravan stays
@@ -294,7 +294,7 @@ inventory.
 
 **Re-routing means commerce circulates.** Without this loop, every
 NPC caravan walks to its seeded destination once and then stands
-still forever (the v1 baseline before this section was added).
+still forever (the old baseline before this section was added).
 
 ## NPC caravan AI
 
@@ -399,13 +399,14 @@ terrain in the current season):
    the midpoint price (split the spread).
 3. The merchant takes a small cut (~5%) for their effort. This
    is what funds the merchant household — not modeled as a
-   separate stockpile in v1.5; just absorbed into the spread.
+   separate stockpile in the current model; just absorbed into
+   the spread.
 
 ### Distance and cost
 
 | Hex distance | Days to walk | Transport cost (coin/kg) | Notes |
 |---|---|---|---|
-| 0 (same hex) | 0 | 0 | Same-hex pagus + hamlets — free sync. |
+| 0 (same hex) | 0 ticks | 0 | Same-hex pagus + hamlets — free sync. |
 | 1 (adjacent) | 1 | 0.005 | A villager walks over with a basket. |
 | 2 | 1 | 0.01 | Pickup cart, half-day each way. |
 | 3 | 1–2 | 0.02 | Mule with one driver, full day. |
@@ -419,7 +420,7 @@ asking price. If buyer's price doesn't beat seller's price + cost
 
 - The pagus + dependent-hamlets cluster on the same hex shares
   surplus instantly: a hamlet that produced extra wool sees it
-  reach the village's weaver within the same tick.
+  reach the village's weaver with 0 ticks of travel.
 - A rich city's market spike for grain pulls grain from every
   neighbor village within 3 hexes within a day or two — the
   classic "city sucks the countryside dry" pattern.
@@ -451,7 +452,7 @@ trade activity from EITHER source updates the same market state.
 Per docs/05 §"Same-hex coexistence": multiple settlement entities
 can share a hex (typically a *pagus* + 1–4 dependent hamlets).
 Each keeps its own market and ledgers; local trade between them
-runs at the 0-hex / 0-day rate above. They appear as offset
+runs at the 0-hex / 0-tick rate above. They appear as offset
 glyphs in the viewer and are individually clickable.
 
 This is the only case where "same hex" matters — adjacent and

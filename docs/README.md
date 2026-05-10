@@ -8,7 +8,7 @@ god looking down on it.
 
 These docs are the working design plan. They are opinionated, with
 explicit decisions called out. Open questions have been resolved
-in conversation; see [10 — Scope & Decisions](10-scope-and-questions.md)
+in conversation; see [10 — Current Scope & Decisions](10-scope-and-questions.md)
 for the full locked list.
 
 ## Read order
@@ -51,12 +51,12 @@ for the full locked list.
     witness mechanic, aliases, public vs. private actions.
 13. [09 — Player role](09-player.md) — what the player actually
     does, Vagrus-style daily MP / camp-to-end-turn UX, honest and
-    bandit growth paths, fast-forward auto-pause events.
+    bandit growth paths, end-turn watchpoints.
 14. [14 — Debug strategies](14-debug-strategies.md) — how to figure out
     *why* a burn-in is failing; instruments, failure patterns, triage
     checklist.
-15. [10 — V1 scope, decisions, risks, next steps](10-scope-and-questions.md)
-    — the locked v1 cut + the full table of design decisions +
+15. [10 — Current scope, decisions, risks, next steps](10-scope-and-questions.md)
+    — the locked v1.5/current cut + the full table of design decisions +
     risks + ordered build plan.
 
 ## Tech stack assumptions
@@ -64,11 +64,12 @@ for the full locked list.
 - TypeScript, browser-first (Vite or similar), Electron later.
 - Hexagonal grid (1 km hexes, pointy-top, axial coordinates),
   turn-based with daily ticks and Vagrus-style player turns.
-- SVG placeholder rendering, viewport-culled.
+- WebGL/PixiJS map rendering, viewport-culled. Initial terrain,
+  settlement, and glyph assets may be SVG-backed.
 - Deterministic sim with seeded RNG.
 - Data-oriented (Structure-of-Arrays) layout — we want to scale
-  to ~250k hexes and ~1,500 settlement entities + ~6k named
-  characters.
+  to ~250k hexes and ~3,000–8,000 settlement entities + roughly
+  ~12k–32k named characters.
 - Sim loop separable from rendering so it can move to a Web
   Worker.
 - Headless "run N years, dump state" mode is required for
@@ -78,8 +79,8 @@ for the full locked list.
 ## A note on the doc set
 
 These docs grew organically through iteration. They cover a lot
-of system surface (~13 docs) for a game that hasn't started
-implementation. That's intentional: the design has many
+of system surface across design, implementation notes, and the
+burn-in viewer. That's intentional: the design has many
 interlocking parts (economy, demographics, politics, reputation,
 combat) that have to be coherent before any code is written.
 Each doc is a thematic slice; cross-references link them.

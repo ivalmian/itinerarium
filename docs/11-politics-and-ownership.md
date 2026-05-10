@@ -6,7 +6,7 @@ governors. Cities had ruling families. Villages had patrons or
 elders. Land, slaves, workshops, herds, and stockpiles were owned
 by **specific people**, not "the settlement."
 
-This doc covers the political and ownership layer for v1.
+This doc covers the political and ownership layer for the current scope.
 
 ## Every faction has named characters (locked)
 
@@ -33,7 +33,7 @@ competition with each other.
 
 ## Province governor
 
-- **One per province**, and v1 is a single province, so one
+- **One per province**, and the current scope is a single province, so one
   governor total.
 - Resides in the **provincial capital** — the largest of the 4–5
   cities. (Designated during procgen — see
@@ -60,8 +60,8 @@ competition with each other.
 ### Tax revenue is real
 
 Tax flows are real grain in real carts moving from villages →
-cities → capital. Some flows further up to "the empire" off-map —
-that's v1.5; in v1 the governor keeps it all. A tax-shipment
+cities → capital. Some flows further up to "the empire" off-map are
+future scope; currently the governor keeps provincial tax revenue. A tax-shipment
 caravan that gets ambushed (see
 [12 — Bandits & Conflict](12-bandits-and-conflict.md)) is an
 unfunded garrison the next month.
@@ -200,8 +200,8 @@ have real economic teeth: ownership is traceable end-to-end.
   governor, and between any of those and the player is tracked
   in [13 — Reputation & Relationships](13-reputation-and-relationships.md).
 - The player can't directly command any of these actors but can
-  influence them via trade, bribes, donations, marriage
-  (long-term — v1.5+), or military pressure.
+  influence them via trade, bribes, donations, future marriage
+  mechanics, or military pressure.
 
 ## What the player can and can't do here
 
@@ -209,10 +209,10 @@ have real economic teeth: ownership is traceable end-to-end.
   officials, hire mercenary guards, intercept rival caravans on
   the road, fund the founding of a new settlement, build a
   reputation with specific families and the governor.
-- **Cannot (in v1):** become a patrician family member with
+- **Cannot (in the current scope):** become a patrician family member with
   estate-level labor control. Cannot replace a governor. Cannot
   dictate tax policy. Cannot directly run a workshop or farm.
 
 These limits keep the player as *one actor among many* in the
 simulated economy. The path to becoming a patrician (and beyond)
-is a v1.5+ feature.
+is future scope.

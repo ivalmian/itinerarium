@@ -23,10 +23,10 @@ holding a count and a few aggregate properties (current job
 assignments for adult cohorts, average wealth for the segment,
 recent disease exposure / immunity).
 
-For ~1,500 settlements that's ~200k buckets total — trivial in
-memory. Per-day update is mostly aging-in-place + births / deaths
-/ migration adjustments. Expensive transitions (cohort aging)
-happen yearly, not daily.
+For ~3,000–8,000 settlements that's ~400k–1.1M buckets total —
+large but still tractable with compact storage. Per-day update is
+mostly aging-in-place + births / deaths / migration adjustments.
+Expensive transitions (cohort aging) happen yearly, not daily.
 
 We model populations as stratified pools, not individual agents.
 Notable individuals are modeled separately as **named characters**
@@ -55,7 +55,45 @@ elderly). A long peace with good food fattens the whole pyramid.
 A plague carves out cohorts that show up as dents for decades. A
 war thins the young-adult-male band specifically.
 
-## Disease (in v1, locked)
+### How the dynamics actually run (locked)
+
+Two ticks together drive demographics:
+
+- `tickDaily(pool, rates, rng)` (in `src/sim/population/vitalRates.ts`)
+  fires every simulation day. It samples a **per-cohort death
+  binomial** at the day-equivalent of the annual rate, then a
+  **per-fertile-female birth binomial** for new infants. Children
+  *appear* in the 0-4 band the day they're born.
+- `tickYearly(pool, rng)` fires once per game year (in the annual
+  hook). It **ages every cohort one band up**: the 0-4 cohort
+  becomes 5-9, the 5-9 becomes 10-14, …, the 75-79 absorbs into
+  80+. No births or deaths happen in this tick — that's tickDaily's
+  job all year long.
+
+So in any 365-day burn-in segment, every adult has had ~365 daily
+mortality samples and every fertile woman has had ~365 daily birth
+chances. At year-end, the pyramid shifts up one band. After 5 burn-
+in years a new cohort has entered the 0-4 band and the old 75-79
+cohort has aged into 80+ where most have died.
+
+**Verifying it's working** (debug instrument planned in
+`scripts/debug-activity.ts`): dump the global pyramid (sum across
+all settlements) at year 0, 1, 5, and 10. Expect:
+
+- Year 5 pyramid shifted: the year-0 0-4 band is now in 5-9; a
+  new 0-4 cohort exists; year-0 80+ has shrunk by ~50% (geometric
+  mortality).
+- Year 10: another band-shift; the year-0 0-4 has now reached 10-14;
+  the year-0 80+ has effectively died out and been replaced by the
+  year-0 70-74 having aged up + survived.
+- Total population should be roughly stable in good years (~+0.5%/yr)
+  and visibly drop in famine/plague years.
+
+If a burn-in shows a frozen pyramid (no aging-up of cohorts) or no
+new 0-4 babies appearing, demographics are not running and the
+politics + economy will eventually crash from no labor turnover.
+
+## Disease (current, locked)
 
 Disease is part of the model from the start. Trade routes are
 epidemic routes, and that fact must be visible in gameplay.
@@ -110,7 +148,7 @@ Implications:
 
 Class is sticky. Slaves can be freed (becoming freedmen).
 Plebeians can rise into patrician through wealth + marriage over
-generations (out of v1 scope for the player).
+generations (out of current scope for the player).
 
 ## Job roles
 
@@ -137,7 +175,7 @@ are never officials or merchants; patricians are never miners).
 the city: consume but don't produce, and become bandits faster —
 see [12 — Bandits & Conflict](12-bandits-and-conflict.md)).
 
-(No `sailor` or `shipwright` in v1 — sea trade deferred.)
+(No `sailor` or `shipwright` in the current scope — sea trade deferred.)
 
 ## Consumption per adult per day (subsistence baseline)
 
@@ -203,8 +241,8 @@ At each turn's production phase: for each settlement, sum up
 labor demanded by all desired recipes; compare to available
 workers in each role; if short, recipes scale down
 proportionally; surplus workers become idle. The settlement's
-planner can shift workers between roles slowly (target: ~2%
-retraining per month).
+planner can shift workers between roles slowly (current v1.5
+timing: ~0.66% reallocated per month, ~8% per year).
 
 A recipe also requires its building (see
 [03 — Production](03-production.md)). Both must be present.
@@ -237,12 +275,13 @@ the relevant role, the settlement's planner re-trains idle workers
    step.
 
 The fallback path (settlements without `jobAllocations`, e.g.
-hand-built test fixtures) retains the v1 "every adult is available
-for every role" behavior so existing tests continue to work.
+hand-built test fixtures) retains the legacy "every adult is
+available for every role" behavior so existing tests continue to
+work.
 
 ## Player labor control (locked)
 
-**The player cannot direct labor in any settlement in v1.**
+**The player cannot direct labor in any settlement in the current scope.**
 Caravan crews the player hires are theirs to direct; settlement
 workers are not. See [09 — Player](09-player.md).
 
@@ -271,18 +310,16 @@ can host one larger village plus 1–4 satellite hamlets clustered
 around it (a Roman *pagus* with its dependent hamlets is the
 canonical case). They are still separate entities — separate
 populations, separate elders / patrons, separate stockpiles —
-but **travel time between same-hex settlements is zero**, so
+but **travel time between same-hex settlements is zero ticks**, so
 caravans, news carriers, and labor moving between them sync
-within the same tick. This is the only "aggregation" we allow
-and it costs nothing to model: same-hex settlements feel like
-one community to the people who live in them, but the political
-economy stays granular.
+immediately in the same pass. This is locality, not aggregation:
+same-hex settlements feel like one community to the people who live
+in them, but the political economy stays granular.
 
 Implications:
 - The settlement entity count target (see
-  [01 — Simulation Frame](01-simulation-frame.md)) lifts from
-  the v1 aggregated ~1,000–1,500 toward ~3,000–8,000 once real
-  hamlets are split out.
+  [01 — Simulation Frame](01-simulation-frame.md)) is the current
+  non-aggregated ~3,000–8,000 settlement range.
 - Procgen places hamlets densely around villages (multiple per
   hex is normal in the inner ring of a fertile patch).
 - Catchment claim conflicts are resolved per docs/05's
@@ -290,6 +327,6 @@ Implications:
   on the same hex as a village shares the urban hex but carves
   out a smaller catchment than the village).
 - Same-hex transport: caravan / news-carrier movement cost
-  between two settlements on the same hex is 0 hexes (1 tick).
+  between two settlements on the same hex is 0 hexes / 0 ticks.
   This avoids the "trivial caravan walking from A to B in the
   same hex" anti-pattern.

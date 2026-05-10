@@ -67,22 +67,23 @@ friend" without effort).
 **Signal**: population stable through ~day N, then a cliff (drop
 >10% in 30 days) at a season boundary.
 
-**Likely cause**: a seasonal recipe (`harvest_grain` autumn-only,
-`press_olives` autumn-only) wasn't producing in the months leading
-up to the cliff, and the starter stockpile depleted.
+**Likely cause**: a seasonal recipe was under-producing outside its
+peak season (`harvest_grain` has an autumn peak with lower
+spring/summer/winter output; `press_olives` is autumn-only), and the
+starter stockpile depleted.
 
 **Diagnose**:
 1. Inspect food stockpile over time: it monotonically drops to ~0
    just before the cliff.
 2. Inspect `recipe_blocked` for `harvest_grain`: it should show
-   `seasonalMultiplier = 0` for the spring/summer months.
+   whether the current seasonal multiplier is too low for the
+   settlement's food needs.
 3. Confirm by checking `food.grain` inflows across the year: a
-   spike in autumn, flat in winter/spring/summer.
+   spike in autumn, lower shoulders in winter/spring/summer.
 
-**Fix**: tune the recipe's seasonalMultiplier (smear out the
-harvest), or boost the starter granary stockpile (v1 bootstrap), or
-enable storage capacity that lets a single autumn harvest sustain
-the population through 9 lean months (v1.5).
+**Fix**: tune the recipe's seasonalMultiplier, adjust the bootstrap
+granary cushion, or improve storage capacity so harvest peaks can
+sustain the population through lean months.
 
 ### Pattern B: Production starvation (recipes don't fire)
 
@@ -99,8 +100,8 @@ labor, or missing inputs.
    seedWorld's Phase 9 (starter buildings).
 3. If `missing_input`: the upstream producer isn't feeding the
    downstream. Trace one level up.
-4. If `no_labor`: roles aren't being distributed (or v1's "all roles
-   available" generously is bypassed somehow).
+4. If `no_labor`: role allocations are mismatched or the monthly
+   v1.5 reallocation hook is too slow to converge.
 
 **Fix**: add seed buildings, fix the input chain, or check labor
 distribution.
@@ -172,8 +173,8 @@ remaining buyer.
 2. Inspect aggregate population wealth: if the wealthiest stratum
    alone can pay enormously, prices reflect that.
 
-**Fix**: in v1 we cap prices at a sane multiple of the base
-price (configurable). v1.5: model the cascading consequences
+**Fix**: current behavior caps prices at a sane multiple of the base
+price (configurable). [TODO] Model the cascading consequences
 (riots → edicts → mob looting) per docs/08.
 
 ## How to add a new instrument

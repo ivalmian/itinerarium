@@ -1,12 +1,12 @@
-# 10 — V1 Scope, Decisions, Risks, Next Steps
+# 10 — Current Scope, Decisions, Risks, Next Steps
 
 All design questions raised so far have been resolved. This doc
-describes the v1 scope as actually planned, the main risks, and
+describes the current v1.5 scope, the main risks, and
 what to build first.
 
-## V1 Scope
+## Current Scope (v1.5)
 
-**Goal of v1:** the smallest world that meaningfully demonstrates
+**Goal of the current scope:** the smallest world that meaningfully demonstrates
 the no-hidden-hands economy, with realistic Roman-style social
 structure, physically correct distances and feature sizes, a
 political-and-conflict layer rich enough that the player has
@@ -29,10 +29,11 @@ play loop.
   clusters with arterial routes between them.
 - **4–5 cities** (5k–30k people each, dense, 2–10 urban hexes
   each) + **10–25 towns** + economically realistic hinterland.
-  Aggregate entity counts: ~600–900 villages and ~300–500
-  hamlets, totaling **~1,000–1,500 settlement entities**.
-  Modeled population: ~700k–1.2M. Numbers derived from realistic
-  Roman demographics and refined by procgen + stabilization.
+  No settlement aggregation: ~1,200–2,500 real village entities
+  and ~1,500–4,500 real hamlet entities, totaling **~3,000–8,000
+  settlement entities**. Modeled population: ~700k–1.2M. Numbers
+  derived from realistic Roman demographics and refined by procgen
+  + stabilization.
 - **Settlements physically occupy multiple hexes** for towns and
   cities. Entering any of their hexes opens the settlement
   screen.
@@ -58,9 +59,11 @@ play loop.
 - **Slavery** as a population class + transportable resource.
 - **Exotic imports** arrive only via real off-map caravans.
 - **Exports to off-map global market** symmetrically: NPC
-  long-haul caravans take high-value low-weight goods out. Bulk
-  goods don't export because the math doesn't justify it
-  (emergent). Player cannot run off-map caravans.
+  long-haul caravans take high-value low-weight goods out,
+  including surplus amphora-packed oil/wine when quality or scarcity
+  makes the spread justify it. Low-value bulk staples don't export
+  because the math doesn't justify it (emergent). Player cannot run
+  off-map caravans.
 - **Detailed demand & supply model**: subsistence inelastic +
   comfort elastic + status inelastic-rich + producer derived
   input demand; market clearing per (settlement, resource,
@@ -77,7 +80,7 @@ play loop.
   [11 — Politics & Ownership](11-politics-and-ownership.md).
 - **Named characters per faction** — every faction has named
   individuals who decide, remember, act, age, die, and are
-  replaced. ~6,000 named characters across the province.
+  replaced. Roughly ~12k–32k named characters across the province.
 - **Bandits and patrols**: bandits emerge from the population
   (failed harvests, demobilized soldiers, escaped slaves,
   dispossessed peasants); patrol by governor's troops, city
@@ -100,9 +103,9 @@ play loop.
   eventually fund founding a settlement. Aliases allow
   operating under different names in different clusters until
   news catches up.
-- Simple SVG rendering, viewport-culled, no animation beyond
-  minimal feedback. Multi-hex settlements drawn as clustered
-  urban hexes.
+- WebGL/PixiJS rendering, viewport-culled. Initial terrain and glyph
+  assets may be SVG-backed. Multi-hex settlements drawn as clustered
+  urban hexes; burn-in viewer animates caravans and moving camps.
 - Save/load.
 - Headless "run N years" mode — required for tuning, not
   optional.
@@ -111,12 +114,12 @@ play loop.
   per-news-carrier diagnostics so the player can ask the world
   *why*.
 
-### Out (v1.5+)
+### Out (future layers)
 
 - Sea trade.
 - Multi-province / Mediterranean scale.
 - Empires beyond a single province (the governor is the top of
-  the political pyramid in v1).
+  the political pyramid in the current scope).
 - Player owning workshops/farms/estates with directed labor.
 - Player becoming a patrician family member or holding office.
 - Player running off-map export/import caravans.
@@ -126,7 +129,7 @@ play loop.
 - Marriage / family-membership mechanics for the player.
 - Full guild system for craftsmen.
 
-This keeps v1 small enough to tune while exercising every core
+This keeps the current scope small enough to tune while exercising every core
 loop: production → consumption → trade → demographics & disease
 → politics → conflict → reputation → consequence.
 
@@ -139,13 +142,13 @@ loop: production → consumption → trade → demographics & disease
 | 3 | Slavery as a modeled system | **Yes** — population class + transportable resource |
 | 4 | Exotic imports | **Real off-map caravans** (no magic spawning) |
 | 5 | Buildings vs. specialists | **Both required** for a recipe to run |
-| 6 | Player labor control over settlements | **None in v1.** Player operates caravans only |
-| 7 | Sea trade in v1 | **No.** Land only |
+| 6 | Player labor control over settlements | **None in the current scope.** Player operates caravans only |
+| 7 | Sea trade in current scope | **No.** Land only |
 | 8 | Procgen geography style | **Procgen + stabilization sim** |
 | 9 | Politics scope | **Roman political layer** — governor + patrician families + village patrons / elders |
 | 10 | Hex size | **1 km across.** All distances physically correct |
 | 11 | Demographic model | **Full pyramid** (5-yr cohorts × M/F × class) |
-| 12 | Disease in v1 | **Yes**, with epidemic propagation along caravan routes |
+| 12 | Disease in current scope | **Yes**, with epidemic propagation along caravan routes |
 | 13 | Demand/supply model | **Subsistence inelastic + comfort elastic + status inelastic-rich + derived input demand**; market clearing per (settlement, resource, day) |
 | 14 | Off-map exports | **Yes**, via NPC long-haul caravans; player cannot run them |
 | 15 | Settlements: physical extent | **Multi-hex** for towns/cities; entering any hex opens the settlement screen |
@@ -166,11 +169,11 @@ loop: production → consumption → trade → demographics & disease
 
 ## Open design risks
 
-- **Performance.** ~1,000–1,500 settlement entities × ~40
+- **Performance.** ~3,000–8,000 settlement entities × ~40
   resources × per-day market clearing, plus ~250k mostly-static
   hexes, plus hundreds of caravans planning daily, plus full
   demographic pyramid updates, plus disease propagation, plus
-  bandit and patrol AI, plus ~6,000 named characters with
+  bandit and patrol AI, plus ~12k–32k named characters with
   sparse reputation tables, plus news carriers in transit, plus
   daily ticks for years during burn-in. Tractable in TS but
   needs care: data-oriented layout, throttle heavy logic to
@@ -206,7 +209,7 @@ loop: production → consumption → trade → demographics & disease
 - **Battle balance.** Probabilistic combat with many modifiers
   is easy to get wrong. The headless harness should include
   combat scenarios with expected outcome distributions.
-- **Reputation mass.** ~6,000 named characters × sparse
+- **Reputation mass.** ~12k–32k named characters × sparse
   reputation slates is small in storage but unbounded in
   cascading update cost if a single big event has many
   hearers. Keep updates event-driven and bounded.
@@ -231,8 +234,9 @@ loop: production → consumption → trade → demographics & disease
 5. Settlement and ownership seeding pass; place wilderness
    features and bandit camps; instantiate named characters per
    faction; full burn-in on a procgen map.
-6. SVG rendering of the hex map (with multi-hex settlements,
-   viewport-culled) and a single settlement panel.
+6. WebGL/PixiJS rendering of the hex map (with multi-hex settlements,
+   viewport-culled and SVG-backed initial glyph assets) and a single
+   settlement panel.
 7. Player caravan with daily-MP movement, rations, hex-by-hex
    travel at correct distances; camp-to-end-turn UX.
 8. Trade UI: market view of the current settlement with

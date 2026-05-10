@@ -69,7 +69,7 @@ real).
 
 ## Patrols (Roman-era)
 
-Authorities push back. Roman-era options, all modeled in v1:
+Authorities push back. Roman-era options, all modeled in the current scope:
 
 - **Provincial garrison patrols**: the governor's troops. Stationary
   detachments (`stationarii`) at road chokepoints; mobile patrols
@@ -291,7 +291,8 @@ emit the right events and check the thresholds.
 
 ## Patrol dispatch in the tick loop (locked)
 
-Per-day, in the politics phase, after consumption:
+Per-day, in the politics phase after the movement, trade, and
+demographics phases (per [01 — Simulation Frame](01-simulation-frame.md)):
 
 1. **Garrison patrols**: governor's office maintains 1 patrol unit
    per ~3 cities, walking arterial roads. Patrols spawn from the

@@ -145,27 +145,30 @@ describe('tickDaily', () => {
 });
 
 describe('tickYearly', () => {
-  it('ages 0-4 cohort up into 5-9', () => {
+  it('ages 20% of 0-4 cohort up into 5-9 each year', () => {
     const pool = emptyPool();
     pool.set(k('0-4', 'female', 'plebeian'), 80);
     pool.set(k('5-9', 'female', 'plebeian'), 0);
     const rng = createRng('yearly-1');
     tickYearly(pool, rng);
-    expect(pool.count(k('0-4', 'female', 'plebeian'))).toBe(0);
-    expect(pool.count(k('5-9', 'female', 'plebeian'))).toBe(80);
+    // floor(80 × 0.2) = 16 age out, 64 stay
+    expect(pool.count(k('0-4', 'female', 'plebeian'))).toBe(64);
+    expect(pool.count(k('5-9', 'female', 'plebeian'))).toBe(16);
   });
 
-  it('ages chains across all bands', () => {
+  it('chains 20% per band: 75-79 → 80+, 80+ stays put', () => {
     const pool = emptyPool();
     pool.set(k('70-74', 'male', 'patrician'), 5);
     pool.set(k('75-79', 'male', 'patrician'), 3);
     pool.set(k('80+', 'male', 'patrician'), 2);
     const rng = createRng('yearly-2');
     tickYearly(pool, rng);
-    expect(pool.count(k('70-74', 'male', 'patrician'))).toBe(0);
-    expect(pool.count(k('75-79', 'male', 'patrician'))).toBe(5);
-    // 80+ accumulates: previous 80+ stays AND previous 75-79 ages in.
-    expect(pool.count(k('80+', 'male', 'patrician'))).toBe(2 + 3);
+    // floor(5 × 0.2) = 1 ages out of 70-74; 4 stay; 1 ages in (from 65-69 = 0)
+    expect(pool.count(k('70-74', 'male', 'patrician'))).toBe(5 - 1 + 0);
+    // floor(3 × 0.2) = 0 ages out of 75-79; gets 1 from 70-74
+    expect(pool.count(k('75-79', 'male', 'patrician'))).toBe(3 - 0 + 1);
+    // 80+ has no outflow; gets floor(3 × 0.2) = 0 from 75-79
+    expect(pool.count(k('80+', 'male', 'patrician'))).toBe(2 + 0);
   });
 
   it('preserves total population (no births/deaths in yearly)', () => {
@@ -176,13 +179,13 @@ describe('tickYearly', () => {
     expect(pool.total()).toBe(before);
   });
 
-  it('shifts mass upward in the pyramid', () => {
+  it('shifts mass upward in the pyramid (20%/year)', () => {
     const pool = emptyPool();
     pool.set(k('20-24', 'female', 'plebeian'), 100);
     const rng = createRng('yearly-4');
     tickYearly(pool, rng);
-    expect(pool.count(k('25-29', 'female', 'plebeian'))).toBe(100);
-    expect(pool.count(k('20-24', 'female', 'plebeian'))).toBe(0);
+    expect(pool.count(k('25-29', 'female', 'plebeian'))).toBe(20);
+    expect(pool.count(k('20-24', 'female', 'plebeian'))).toBe(80);
   });
 
   it('preserves class identity through aging', () => {
@@ -191,8 +194,12 @@ describe('tickYearly', () => {
     pool.set(k('20-24', 'female', 'patrician'), 30);
     const rng = createRng('yearly-5');
     tickYearly(pool, rng);
-    expect(pool.count(k('25-29', 'female', 'slave'))).toBe(50);
-    expect(pool.count(k('25-29', 'female', 'patrician'))).toBe(30);
+    // 20% of 50 = 10 slaves age into 25-29; 20% of 30 = 6 patricians.
+    expect(pool.count(k('25-29', 'female', 'slave'))).toBe(10);
+    expect(pool.count(k('25-29', 'female', 'patrician'))).toBe(6);
+    // The remaining stay in 20-24 within their respective classes.
+    expect(pool.count(k('20-24', 'female', 'slave'))).toBe(40);
+    expect(pool.count(k('20-24', 'female', 'patrician'))).toBe(24);
   });
 });
 

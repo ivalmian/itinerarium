@@ -3,7 +3,7 @@
 The player is one trader (or one outlaw) among many inside the
 simulation.
 
-In v1, the player operates **caravans only** — they cannot direct
+In the current scope, the player operates **caravans only** — they cannot direct
 labor inside any settlement. This keeps them as one actor in the
 world, not its hidden hand (pillar 1).
 
@@ -95,7 +95,7 @@ This keeps the player squarely in the simulation: every day they
 spent waiting is a day the world also spent doing something. There
 is no concept of "skipped" time.
 
-## Honest growth paths in v1
+## Honest growth paths in the current scope
 
 All caravan-centric. The player can grow into:
 
@@ -137,7 +137,7 @@ quietly hiring out for "questionable" jobs in another. Reputation
 is per-actor, so a careful player can keep separate identities
 across clusters — until news catches up.
 
-## What the player cannot do in v1
+## What the player cannot do in the current scope
 
 - Direct labor inside any settlement, even one they helped
   found.
@@ -150,7 +150,7 @@ across clusters — until news catches up.
   for multi-month round-trips. See
   [06 — Caravans](06-caravans.md).
 
-These are intentionally out of scope; deferred to v1.5+.
+These are intentionally out of scope; deferred to future layers.
 
 ## Losing
 

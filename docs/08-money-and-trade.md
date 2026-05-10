@@ -305,18 +305,20 @@ In practice:
 - The fixed cost of a long-haul caravan (food, fodder, animal
   wear, guards over weeks of travel) is **per-unit-weight**, not
   per-unit-value.
-- For grain or oil, the spread between local and global prices
-  doesn't cover the per-kg transport cost. So bulk commodities
-  stay local.
-- For spices, silk, silver, fine cloth, the spread per kg easily
-  covers transport. These flow naturally.
+- For grain and other low-value bulk staples, the spread between
+  local and global prices doesn't cover the per-kg transport cost.
+  These stay local.
+- For spices, silk, silver, fine cloth, and amphora-packed oil/wine
+  when quality or scarcity makes the spread high enough, the spread
+  per kg can cover transport. These flow naturally.
 
-We don't hard-code "luxuries are exports" — it emerges from the
-caravan economics in [06 — Caravans](06-caravans.md).
+We don't hard-code a fixed export list — exportability emerges from
+value-to-weight, route cost, risk, and current local/global spreads
+in [06 — Caravans](06-caravans.md).
 
 ### Player and global market
 
-**The player cannot run off-map caravans** in v1. Long-haul export
+**The player cannot run off-map caravans** in the current scope. Long-haul export
 is the business of established merchant houses with capital,
 network, and patience for multi-month round-trips. The player
 operates inside the map, where they're competitive.
@@ -410,7 +412,7 @@ spread between buy/sell schedules is what every actor lives off.
    when local prices are low (so their imports of luxuries fetch
    more relative coin) — emergent from the off-map AI.
 
-### Construction is heavy (locked, v1.5+ partial)
+### Construction is heavy (locked, current v1.5)
 
 Building a new bloomery or warehouse is a multi-week investment:
 
@@ -418,15 +420,14 @@ Building a new bloomery or warehouse is a multi-week investment:
   e.g., `{material.lumber: 4, material.brick_tile: 4, goods.tools: 2}`.
   These come out of the investing actor's stockpile immediately;
   the actor lost real working capital, not just an accounting line.
-- **Labor over time** (target — partially implemented): a building
-  requires N worker-days of `mason` + `carpenter` time before it
-  can host any recipe. Until completion the building exists but
-  produces zero. Typical times: hamlet-scale 30 days, village /
-  town 60 days, city-scale 90 days for the larger workshops.
-- **Demolition is also slow** (target): a settlement that wants
-  to repurpose a hex must spend ~10–20% of construction time
-  tearing the existing building down (some materials recoverable,
-  some lost).
+- **Labor over time**: a building requires worker-days of construction
+  labor before it can host any recipe. Until completion the building
+  exists as `pendingBuilding` but produces zero. Typical times:
+  simple hamlet-scale structures ~30 worker-days, village / town
+  workshops ~60, and larger industrial or civic builds ~90.
+- **Demolition is also slow**. [TODO] A settlement that wants to
+  repurpose a hex should spend ~10–20% of construction time tearing
+  the existing building down (some materials recoverable, some lost).
 - **Maintenance accrues**: per `maintenancePerDay`, every running
   building consumes a small daily resource flow. A neglected
   building decays after `decayDaysIfUnmaintained` and stops
@@ -442,7 +443,7 @@ creates real political tension: who gets to build *what* in the
 city's hexes, and who profits.
 
 The current v1.5 implementation (see `src/sim/tick.ts`
-`investmentPhase`) deducts construction resources immediately and
-makes the building productive immediately. **Construction-time +
-labor-cost is the next follow-up** (tracked as v1.5 §C8 in
-docs/15) so the decision becomes appropriately heavy in the sim.
+`investmentPhase` and the construction phase) deducts construction
+resources immediately, creates a `pendingBuilding`, then spends
+construction worker-days before materializing the building. [TODO]
+Demolition and more detailed construction labor specialization.

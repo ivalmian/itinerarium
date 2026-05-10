@@ -62,9 +62,10 @@ the wrong.
 
 ### Modeling cost
 
-For ~1,500 settlements × ~2 factions average × ~2 named characters
-per faction = ~6,000 named individuals total. Trivial to track.
-Each has: name, age, sex, role, faction, current location, status
+For ~3,000–8,000 settlements × ~2 factions average × ~2 named
+characters per faction = roughly ~12k–32k named individuals total.
+Still tractable with sparse reputation storage. Each has: name, age,
+sex, role, faction, current location, status
 (alive/dead/captured/missing), reputation slate, traits.
 
 ## What reputation is
@@ -279,7 +280,7 @@ disappearing.
   - A distinctive public action gives the alias away.
 - **Reputation recovery is slow but possible**: bribes, public
   good works, time, fleeing the region, swearing oaths, marriage
-  (long-term — v1.5+).
+  (future scope).
 
 ## NPC actor reputation (same machine)
 

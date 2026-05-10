@@ -183,14 +183,28 @@ export const tickDaily = (pool: PopulationPool, rates: VitalRates, rng: Rng): vo
 };
 
 /**
- * Yearly tick: every cohort ages one band up. The oldest band
- * (80+) absorbs the inbound 75-79 cohort plus its existing
- * residents.
+ * Yearly tick: 20% of each cohort ages into the next band, since each
+ * band is 5 years wide and on average 1/5 of its residents have their
+ * "next-band birthday" each year. The 0-4 cohort is NOT zeroed —
+ * it retains its surviving 0-3-year-olds (and gains continuously from
+ * tickDaily births).
  *
- * No births or deaths happen here — that's `tickDaily`'s job.
- * The `_rng` parameter is reserved for future per-class noise
- * (e.g. early aging in slaves) without changing the signature.
+ * The 80+ band is absorbing: the 20% from 75-79 join its existing
+ * residents (no further band above it).
+ *
+ * No births or deaths happen here — that's `tickDaily`'s job. The
+ * `_rng` parameter is reserved for future per-class noise (e.g. early
+ * aging in slaves) without changing the signature.
+ *
+ * Why 20%, not 100%: in pre-fix code we age-shifted the entire band
+ * each year, which meant a 1-day-old infant born on day 364 became
+ * 5-9 years old at year-end. Demographic snapshots showed 0-4 = 0
+ * after every year boundary and a single "birth wave" propagating
+ * through the pyramid instead of a steady age structure. The 20% rule
+ * is the standard discretization for 5-year cohorts.
  */
+const FRACTION_AGING_PER_YEAR = 0.2;
+
 export const tickYearly = (pool: PopulationPool, _rng: Rng): void => {
   // Snapshot the whole pyramid keyed by (sex, class) so we can rebuild it.
   type Bucket = Map<AgeBand, number>;
@@ -207,28 +221,37 @@ export const tickYearly = (pool: PopulationPool, _rng: Rng): void => {
     b.set(key.age, n);
   }
 
-  // Now rebuild by aging-up. Iterate the (sex, class) groups we saw.
+  // Process each (sex, class) group. For each band i except the oldest,
+  // 20% ages into band i+1. The 80+ band absorbs its 20%-of-75-79
+  // inbound on top of its own residents (with no further outbound).
   for (const [bk, bucket] of buckets) {
     const [sexStr, clsStr] = bk.split('|');
     if (!sexStr || !clsStr) continue;
     const sex = sexStr as Sex;
     const cls = clsStr as CharacterClass;
 
-    const oldestExisting = bucket.get('80+') ?? 0;
-    const inboundTo80 = bucket.get('75-79') ?? 0;
-
-    // Process from oldest down so we don't double-shift.
-    // 80+ becomes oldestExisting + inboundTo80.
-    pool.set({ age: '80+', sex, class: cls }, oldestExisting + inboundTo80);
-
-    // For the rest, age band i comes from band i-1.
-    for (let i = AGE_BANDS.length - 2; i >= 1; i--) {
-      const dest = AGE_BANDS[i] as AgeBand;
-      const src = AGE_BANDS[i - 1] as AgeBand;
-      pool.set({ age: dest, sex, class: cls }, bucket.get(src) ?? 0);
+    // Compute integer age-out per band (round toward floor for stability).
+    const outflows: number[] = [];
+    for (let i = 0; i < AGE_BANDS.length; i++) {
+      const band = AGE_BANDS[i] as AgeBand;
+      const n = bucket.get(band) ?? 0;
+      // The 80+ band has no outflow (no band above it); everyone older just stays.
+      if (i === AGE_BANDS.length - 1) {
+        outflows.push(0);
+      } else {
+        outflows.push(Math.floor(n * FRACTION_AGING_PER_YEAR));
+      }
     }
-    // Youngest band 0-4 is emptied (no aging-into source).
-    pool.set({ age: '0-4', sex, class: cls }, 0);
+
+    // Rebuild: each band keeps (n - outflow_out) and gains outflow_in.
+    for (let i = 0; i < AGE_BANDS.length; i++) {
+      const band = AGE_BANDS[i] as AgeBand;
+      const existing = bucket.get(band) ?? 0;
+      const outflowOut = outflows[i] ?? 0;
+      const outflowIn = i === 0 ? 0 : (outflows[i - 1] ?? 0);
+      const next = existing - outflowOut + outflowIn;
+      pool.set({ age: band, sex, class: cls }, next);
+    }
   }
 };
 

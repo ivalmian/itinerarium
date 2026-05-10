@@ -91,7 +91,7 @@ raise_sheep:                                     # annual flows shown
   labor:    { shepherd: 0.2 per herd unit (≈100 sheep) }
   outputs:  (per herd unit, per year — applied as steady daily fractions)
             { material.wool:               200,    # kg
-              raw_milk (→ cheese recipe):  5000,
+              raw_milk (→ cheese recipe):  5000,   # [TODO] Track resource vs implicit dairy flow
               food.salted_meat (on cull):  600,
               material.hides (on cull):    30 }
   notes:    standing herd is itself a stockpile; over-grazing degrades
@@ -128,6 +128,10 @@ caravan_transport:                               # see also [06 — Caravans]
 `throw_pottery`, `throw_amphorae`, `smelt_iron`, `alloy_bronze`,
 `smelt_lead`, `cupel_silver`, `refine_gold`.
 
+[TODO] `alloy_bronze` currently models copper/tin ore flowing
+directly into bronze; decide whether separate `metal.copper` and
+`metal.tin` intermediates are worth the added resource count.
+
 **Manufacture:** `weave_cloth`, `tailor_clothing`, `forge_tools`,
 `forge_weapons`, `forge_armor`, `make_shields`, `build_cart`,
 `make_furniture`, `weave_luxury`, `mint_coin`. (No `build_ship` — sea
@@ -143,7 +147,8 @@ Each turn, every settlement runs a small planner: for each desired
 recipe, check that **inputs, labor, AND building capacity** are all
 available; if any are short, scale that recipe down proportionally.
 Surplus workers in a role go idle for the day. Job retraining is slow
-(target: ~2% of workers shift roles per month, not per day) so a
+(current v1.5 timing: ~0.66% of workers shift roles per month,
+roughly ~8% per year) so a
 settlement can't pivot its whole economy in a week.
 
 Recipe outputs go to the **owner's stockpile**, not to a generic
@@ -201,7 +206,7 @@ silver in *without* needing to mint locally. If it imports more, the
 local mint must run faster — and if the silver mines can't keep up,
 the province bleeds out its coin supply (deflation, broken markets).
 
-In the v1 setup (~700k pop, 0.5% growth, ~50 coin/person target) the
+In the current v1.5 setup (~700k pop, 0.5% growth, ~50 coin/person target) the
 analyzer suggests ~3 cupel_silver instances/day + 1 mint_coin/day are
 sufficient to match pop growth IF trade is roughly balanced. Provinces
 with surplus exports need less minting; deficit provinces need more.

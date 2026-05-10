@@ -42,8 +42,8 @@ only — they don't restrict gameplay.
 | `food.bread` | flour + fuel + baker | Spoils in days; mostly produced where consumed. |
 | `food.olive_oil` | olives + press labor + amphora | Stores well; cooking + lighting + soap. |
 | `food.wine` | grapes + vintner + amphora | Improves over years; major trade good. |
-| `food.cheese` | milk + salt + dairy labor | Stores well. |
-| `food.salted_fish` | fish + salt + labor | Stores months; major Roman trade good. (Garum is a sub-variant — skip for v1.) |
+| `food.cheese` | milk + salt + dairy labor | Stores well. [TODO] Milk is currently implicit in dairy recipes; decide whether to promote raw milk to a tracked resource. |
+| `food.salted_fish` | fish + salt + labor | Stores months; major Roman trade good. (Garum is a sub-variant — skip for current scope.) |
 | `food.salted_meat` | livestock slaughter + salt | Stores months. |
 | `material.wool` | sheep + shearer | Annual yield per herd unit. |
 | `material.linen_fiber` | flax + retting labor | Linen textile input. |
@@ -55,7 +55,7 @@ only — they don't restrict gameplay.
 | `material.pottery` | clay + fuel + potter | Storage, daily use. |
 | `material.amphora` | clay + fuel + potter | Specialized — required to ship liquids. |
 | `metal.iron` | iron_ore + charcoal + smelter | Bar stock. |
-| `metal.bronze` | copper + tin + smelter | Bar stock; Roman-era still common for fittings. |
+| `metal.bronze` | copper/tin ore + charcoal + smelter | Bar stock; Roman-era still common for fittings. [TODO] Decide whether to add `metal.copper` / `metal.tin` intermediates or keep bronze as direct ore alloying. |
 | `metal.lead` | lead_ore + charcoal | Plumbing, weights, sling bullets. |
 | `metal.silver` | silver_ore + lead + cupellation labor | Coinage, plate. |
 | `metal.gold` | gold_ore + labor | Coinage, status. |
@@ -91,11 +91,13 @@ trade brings them at all.
 | `exotic.incense` | Religious + status use; consumed in temples and patrician homes. |
 | `exotic.dyes` | Murex purple, indigo, etc. Input for `goods.luxury_textiles`. |
 
-Bulk goods (grain, oil, wine, ordinary cloth) **don't appear here**
-even though the global market exists, because the math doesn't work:
-their value per kg is too low to justify the long-haul transport
-cost. Only luxuries naturally flow at this distance — emergent from
-caravan economics, not hard-coded. See
+Bulk staples (especially grain) **don't appear here** even though
+the global market exists, because the math doesn't work: their value
+per kg is too low to justify the long-haul transport cost. Amphora-
+packed olive oil and wine can export when quality, scarcity, or
+surplus makes them high-value enough; ordinary local staples do not.
+Only goods whose value-to-weight ratio clears the caravan economics
+naturally flow at this distance — emergent, not hard-coded. See
 [08 — Money & Trade](08-money-and-trade.md).
 
 ## Tier 2c — People as cargo
@@ -134,8 +136,9 @@ to a settlement.
   only via real off-map caravans entering at edge hexes. No magic
   spawning. See [06 — Caravans](06-caravans.md).
 - **Exports to off-map global market**: symmetric — high-value
-  low-weight goods (silver, luxury cloth, slaves, surplus oil/wine
-  in good years) are taken off-map by NPC long-haul caravans. The
-  player cannot run these. Bulk commodities (grain, oil, ordinary
-  wine) don't export because the math doesn't justify the
-  transport. See [08 — Money & Trade](08-money-and-trade.md).
+  low-weight goods (silver, luxury cloth, slaves, fine pottery,
+  amphora-packed olive oil and wine when the spread is high enough)
+  are taken off-map by NPC long-haul caravans. The player cannot run
+  these. Bulk staples, especially grain, do not export because the
+  math doesn't justify the transport. See
+  [08 — Money & Trade](08-money-and-trade.md).

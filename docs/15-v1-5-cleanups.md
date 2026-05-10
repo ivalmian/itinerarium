@@ -1,18 +1,14 @@
-# 15 — v1.5 cleanups
+# 15 — Current v1.5 Notes and TODOs
 
-The v1 implementation made several simplifications to keep the
-burn-in stable while the rest of the system was being built. Each
-of these is now ready to be replaced with the realistic version.
-This doc is the source of truth for the v1.5 effort.
+v1.5 is the current baseline. Earlier simplifications are either
+landed here as current behavior or explicitly marked as `[TODO]`.
 
-When you complete a cleanup, **delete** its section from this file
-and update the cross-referenced doc to reflect the new behavior.
-This file should shrink as the work lands; an empty file means
-v1.5 is done.
+When you complete a `[TODO]`, delete or rewrite that note and update
+the cross-referenced doc to reflect the new behavior.
 
-## C4 — Dynamic settlement investment (Stage 2 specialization)
+## C4 — Dynamic settlement investment (Stage 2 specialization, landed)
 
-**v1 hack:** all production buildings are seeded once at procgen
+**Pre-v1.5 hack:** all production buildings were seeded once at procgen
 time. No new buildings are ever built; no existing ones are
 upgraded or torn down. Specialization is purely "what procgen put
 where".
@@ -27,19 +23,21 @@ recipes their existing buildings could run. If a recipe is
 profitable AND the actor has the treasury for the building cost,
 they invest in adding capacity (or a new building of that type).
 
-**v1.5 implementation:**
+**Current implementation:**
 1. Each season-end (90-day boundary), in `politicsPhase`, for each
    actor with `kind ∈ {patrician_family, free_village,
-   city_corporation, governor_office}`:
+   city_corporation, governor_office, hamlet_household}`:
    a. For each recipe in the catalog, compute expected daily
       profit at last-observed input + output prices.
    b. Pick the most profitable recipe whose building isn't already
       saturated locally.
    c. If treasury ≥ building cost AND expected profit / building
-      cost > 0.05/day (~18% APR threshold): invest. Treasury
-      decreases by cost; new building added at a free urban or
-      catchment hex.
-2. Add building cost table to `docs/03-production.md`.
+      cost > 0.005/day: invest. Treasury decreases by cost;
+      `pendingBuilding` is added at a free urban or catchment hex.
+      The building becomes productive only after construction
+      worker-days complete.
+2. Building costs live in `src/sim/buildings/catalog.ts`; docs/08
+   describes the current construction semantics.
 3. Cap investment at 1 building per actor per season to prevent
    runaway feedback.
 
@@ -52,18 +50,19 @@ a new `building_invested` TickEvent.
 investment", `docs/03-production.md`, `docs/08-money-and-trade.md`
 (price observation).
 
-## C5 — Bootstrap stockpile final reduction (deferred to after C4)
+## C5 — Bootstrap stockpile final reduction [TODO]
 
-**v1 hack:** `GRAIN_DAYS_OF_RESERVE` is now 180 days (down from
-the original 365). Wood + tools bootstrap held at v1 levels
+**Current cushion:** `GRAIN_DAYS_OF_RESERVE` is now 180 days (down from
+the original 365). Wood + tools bootstrap remain high
 (pop*5 wood, pop*20 tools).
 
 **Why this is still a hack:** ideally seed bootstrap = ~30 days of
 grain + ~7 days of tools/wood. We can't reduce further yet because
 the worker reallocation hook (C6) takes ~8%/yr to migrate workers
 into bottlenecked roles, and dynamic settlement investment (C4)
-hasn't landed — so cities can't build the additional foresters /
-smithies / mills they'd need to keep up with realistic demand.
+now adds capacity over seasons rather than within the first
+bootstrap month. Cities still need enough initial slack for
+foresters / smithies / mills to converge.
 
 **Realistic:** seed bootstrap = ~30 days of grain + ~7 days of
 tools/wood. Forces production to come online within the first
@@ -72,8 +71,8 @@ month. Requires:
 - Faster C6 reallocation (or a smarter initial allocation at
   procgen) so labor isn't permanently mismatched
 
-**v1.5 implementation:**
-1. After C4 lands, drop `GRAIN_DAYS_OF_RESERVE` to 30.
+**TODO implementation:**
+1. Drop `GRAIN_DAYS_OF_RESERVE` to 30.
 2. Drop `pop * 5` wood seed → `pop * 0.5`.
 3. Drop `pop * 20` tools seed → `pop * 1`.
 4. Run burn-in. If it fails, the issue is *upstream*: not enough
@@ -107,24 +106,24 @@ the 180-day cushion holds the slack while we mature the others.
 
 **Cross-refs:** `docs/05-settlements.md` §"Hardening",
 `src/procgen/seed.ts` `seedCityCorporation`,
-`docs/14-debug-strategies.md`. **Depends on C4.**
+`docs/14-debug-strategies.md`.
 
-## C9 — Disaggregate villages + hamlets
+## C9 — Disaggregate villages + hamlets (landed, follow-ups)
 
 **Status (2026-05):** procgen + same-hex movement short-circuits
-landed. Local-trade between same-hex settlements (the parallel
-agent's scope) and viewer stack-glyphs are still open. Once both
-land, this section may be deleted.
+landed. Local trade runs over settlement pairs with distance 0
+costing 0 transport. [TODO] Viewer stack-glyphs and full-scale
+performance work remain.
 
-**v1 hack (now fixed):** procgen generated ~600–900 "village"
-entities representing 2–5 real-world villages each, and ~300–500
-"hamlet" entities representing small clusters. Each entity sat
-on its own hex with no neighbors of the same type sharing it.
+**Pre-v1.5 hack (now fixed):** procgen generated aggregated
+"village" entities representing multiple real-world villages and
+"hamlet" entities representing small clusters. Each entity sat on
+its own hex with no neighbors of the same type sharing it.
 
 **v1.5 — landed:**
 1. ✅ Procgen `siteSettlements`: applies a 3x village + 5x hamlet
    disaggregation factor so caller-requested counts (which were
-   "aggregated entities" in v1 units) translate to one entity per
+   "aggregated entities" in old units) translate to one entity per
    real village + one per real hamlet. On the 80×80 burn-in
    (villages=60, hamlets=30), settlement count rises ~101 → ~341.
 2. ✅ Multiple `SettlementSite`s may share a hex: hamlets stack on
@@ -139,19 +138,15 @@ on its own hex with no neighbors of the same type sharing it.
    ring of a *pagus*).
 4. ✅ `claimVillageHexes` no longer overwrites a larger-tier
    settlement's urban-hex ownership.
-5. ✅ Same-hex 0-day movement short-circuit in `tickCaravanMovement`
+5. ✅ Same-hex 0-tick movement short-circuit in `tickCaravanMovement`
    and `tickCarrierWithGrid` + `createNewsCarrier`. Lock-in tests
    in `src/sim/caravan/movement.test.ts` and
    `src/sim/reputation/newsMovement.test.ts`.
 
-**v1.5 — still open:**
-- Local-trade phase: same-hex settlements should exchange goods
-  every tick at zero transport cost (parallel-agent scope). Until
-  this lands, satellite hamlets with empty catchments rely on
-  bootstrap stockpiles for ~180 days.
-- Viewer: same-hex settlements should render as a stack with
+**Still open:**
+- [TODO] Viewer: same-hex settlements should render as a stack with
   offset glyphs so they're individually clickable.
-- Performance: `tickPhase` per-settlement loops are tolerable at
+- [TODO] Performance: `tickPhase` per-settlement loops are tolerable at
   ~341 entities (60-100 ms/tick) but become hot paths at the full
   500×500 / 3,000-8,000 entity target. A settlements-by-hex index
   is the obvious next step.
@@ -163,9 +158,9 @@ hinterland", `docs/01-simulation-frame.md` §"Entity counts",
 `src/procgen/settlements.ts`, `src/procgen/seed.ts`,
 `src/sim/caravan/movement.ts`, `src/sim/reputation/newsMovement.ts`.
 
-## C8 — Construction time + labor cost
+## C8 — Construction time + labor cost (landed; demolition TODO)
 
-**v1 hack:** the investment loop in `tick.ts` `investmentPhase`
+**Pre-v1.5 hack:** the investment loop in `tick.ts` `investmentPhase`
 spends the construction resources and immediately adds a fully
 operational building. Real construction is weeks-to-months of
 mason + carpenter labor.
@@ -180,13 +175,14 @@ right would have made debugging harder.
    `constructionCost` resources AND add a `pendingBuilding` record
    on the settlement: `{ buildingId, hex, ownerActor, beganOnDay,
    workerDaysRemaining }`.
-2. Each tick, in production phase, the settlement consumes
-   `mason` + `carpenter` worker-days from `jobAllocations` toward
+2. Each tick, after production, the construction phase consumes
+   construction worker-days derived from `mason` + `carpenter`
+   allocations toward
    pending buildings (proportional to how many people are
    assigned). When `workerDaysRemaining ≤ 0`, the building is
    added via `addBuilding` and the pending record is removed.
 3. While pending, the building doesn't produce.
-4. Demolition is symmetric: removes the building over ~10-20% of
+4. [TODO] Demolition is symmetric: removes the building over ~10-20% of
    construction time, returns ~50% of materials.
 
 **Acceptance:** at year 10, the burn-in shows `building_invested`
@@ -201,23 +197,24 @@ time to rebuild productive capacity.
 ## C7 — Removing bootstrap-only safeguards
 
 These are tiny code branches whose presence makes the early world
-non-deterministic in a "v1 was easier" sense. They should all be
-deleted once the corresponding v1.5 task lands.
+non-deterministic in a "bootstrap was easier" sense. They should all be
+deleted once the corresponding current-scope TODO lands.
 
 - `src/burnin/invariants.ts` line 244: "Growing from zero:
   bootstrap can seed people" — once full C5 lands, the bootstrap
   is small enough that this isn't a special case.
 
-(Comments about the v1 charcoal/iron/timber hacks have already
+(Comments about the old charcoal/iron/timber hacks have already
 been removed by the C2 work.)
 
 ## Order of operations
 
-C4 (dynamic investment) is the load-bearing remaining task. Once
-buildings can be built mid-burn-in:
-- C5 final reduction becomes feasible (no more bootstrap stockpile
-  papering over capacity gaps).
-- C7 cleanup naturally follows.
+C4 dynamic investment and C8 construction time are landed. Remaining
+order:
+- Finish C9's local-trade/viewer/performance follow-ups.
+- Reduce C5 bootstrap stockpiles after burn-in stays stable without
+  the cushion.
+- Delete C7 bootstrap-only safeguards once C5-final lands.
 
 ## Already landed
 
@@ -231,8 +228,13 @@ buildings can be built mid-burn-in:
 - ✅ C3 — Dynamic catchment recompute: settlements that grow or
   shrink ±25% from baseline reclaim or release catchment hexes
   every 365+ days.
+- ✅ C4 — Dynamic settlement investment: actors add `pendingBuilding`
+  capacity from observed market spreads.
 - ✅ C5 (partial) — Grain reserve halved (365 → 180 days). Full
   reduction deferred per above.
 - ✅ C6 — Worker reallocation by demand: `Settlement.jobAllocations`
   drives `laborAvailableInSettlement`; monthly hook reallocates
   ~0.66% of workers per month based on `recipe_blocked` events.
+- ✅ C8 — Construction time + labor cost: investments create
+  `pendingBuilding` records that consume worker-days before becoming
+  productive. Demolition remains [TODO].
