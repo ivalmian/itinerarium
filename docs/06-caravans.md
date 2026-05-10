@@ -185,6 +185,34 @@ The **player cannot run off-map caravans** in v1. Long-haul export is
 the business of established merchant houses with the capital,
 network, and patience for multi-month round-trips.
 
+## Caravan lifecycle in the tick loop (locked)
+
+Per-day, for every NPC caravan in `world.caravans`:
+
+1. **Movement phase**: if caravan has a destination, advance via A*
+   (already implemented). Emit `caravan_moved`/`caravan_arrived`.
+2. **Trade-on-arrival** (politics phase): if a caravan is at its
+   destination AND has a settlement on that hex, run the local market:
+   sell cargo at clearing prices into local stockpiles; buy whatever
+   the price book / NPC heuristic deems most profitable to load for
+   the next leg. Crew rations replenish from local stockpile (paid in
+   coin from caravan treasury).
+3. **Re-plan** (politics phase): after the trade, call
+   `planCaravanRoute` (T37) with the caravan's updated price book +
+   knownBetterDestinations. The plan returns `RoutePlan | null`. If
+   plan, set `caravan.destination` to its hex; if null, caravan stays
+   put (becomes idle — could disband later if nothing to do for N
+   days).
+
+**Disbanding**: a caravan with empty cargo + zero coin + no
+profitable route for 30 consecutive days disbands; crew + animals
+join the local population pool. Captured carts go to local
+inventory.
+
+**Re-routing means commerce circulates.** Without this loop, every
+NPC caravan walks to its seeded destination once and then stands
+still forever (the v1 baseline before this section was added).
+
 ## NPC caravan AI
 
 NPC merchants run a simple expected-profit calculation:

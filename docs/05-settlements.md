@@ -162,6 +162,129 @@ Recipes need **both the building AND a specialist worker** with the
 right job role (see [03 — Production](03-production.md)). A bakery
 without a baker bakes no bread.
 
+## Specialization (locked, market-driven)
+
+Settlements are NOT uniformly self-sufficient. They specialize because
+**the market makes it profitable**: where inputs are cheap and the
+output sells at a wide enough margin somewhere reachable, an actor
+invests in a workshop and starts producing. Where margins are thin,
+the workshop never gets built, or shuts down later.
+
+This is the load-bearing realism: a city in farmland becomes a
+grain-trade hub because grain inputs flow from villages cheaply and
+finished bread sells at scale to its own population. A city next to
+an iron mine becomes a metalworking center because cheap ore + cheap
+charcoal + expensive tools elsewhere = wide margin per ingot. The
+right specialization **emerges** from local input prices vs. output
+demand — not from a hardcoded tier table or a static input-checklist.
+
+### Two stages of specialization
+
+**Stage 1 — Procgen seeding (v1)**: at world genesis we don't have a
+price history to optimize against, so we seed the OBVIOUS workshops
+implied by abundant local inputs. This is a reasonable cold-start
+that lines up with the eventual market-driven equilibrium.
+
+**Stage 2 — Dynamic investment (v1.5)**: every season, owners evaluate
+their portfolio against observed market spreads. If a price book
+shows an output trading much higher than its input cost basis, the
+owner spends coin + materials to construct a new workshop (per the
+construction recipes in docs/03). If a workshop runs at a loss for
+many months, it decays and isn't rebuilt. This is what makes the
+specialization *adaptive* over the burn-in.
+
+### Two ways a market gap closes
+
+When a settlement is short of resource X (price spikes locally), two
+independent responses can fix it — **whichever is cheaper at the
+margin wins**:
+
+1. **Trade response (caravans)**: NPC merchants observe the spread
+   between cheap-X-elsewhere and expensive-X-here, and route a
+   caravan accordingly. Bandwidth: how much one caravan can haul per
+   trip × how many trips per season. Limited by transport cost
+   (fodder + crew rations + risk + tariffs).
+2. **Production response (in-settlement workshop)**: a local owner
+   spends coin + materials to construct a workshop producing X
+   locally, then hires workers. Bandwidth: workshop daily output ×
+   continuous days. Limited by input availability locally and
+   construction lead time.
+
+When transport is cheap (good roads, low banditry, short distance),
+trade fills the gap quickly and a local workshop never makes
+economic sense. When transport is expensive (long distance, hostile
+roads, no allies), local production wins even at higher input
+costs. The same model handles both:
+
+- A famine inland (no port) is more likely to be solved by local
+  pastoral expansion than by sea-shipped grain.
+- A spike in tool prices in a coastal city near iron mines triggers
+  a smithy locally rather than waiting for tools to be shipped from
+  the inland metalworking center.
+- A spike in luxury textile demand in a small inland town is more
+  likely to attract import caravans than to spawn a local
+  weaver_workshop (low population can't justify the build cost).
+
+### Stage-1 seeding rules (v1, input proxy for market)
+
+Procgen evaluates each settlement and seeds workshops where the
+inputs are cheap enough nearby that the output is plausibly
+profitable:
+
+1. **Local catchment scan**: what resource hexes does this settlement
+   directly work?
+2. **Trade-range scan**: what resource hexes are within ~10 hexes
+   (one day's caravan haul) — accessible cheaply enough to be a
+   plausible input?
+3. **For each candidate workshop**, seed it if **all inputs are
+   reasonably cheap nearby AND the output has plausible local
+   demand** (population, neighboring populations, or a known export
+   chain).
+4. **Subsistence floor**: every settlement seeds `farm` + `pasture`
+   regardless. People always need to eat; even a marginal harvest
+   beats nothing on day 0.
+
+Concrete heuristics for stage 1:
+
+| Building | Seeded when |
+|---|---|
+| `farm` / `pasture` | Always (subsistence floor) |
+| `forester_camp` | ≥1 forest/dense_forest hex in catchment |
+| `sawmill` / `charcoal_kiln` | wood available locally OR within ~10 hexes (own forester_camp counts) |
+| `mine` | iron_ore / copper_ore / etc. deposit in catchment |
+| `bloomery` | iron_ore + charcoal both reachable within ~10 hexes (cheap inputs) |
+| `smithy` | iron + lumber + charcoal all reachable + non-trivial population to sell tools to (≥village) |
+| `mill` | any settlement (grain is universal) |
+| `bakery` | mill present + ≥village (urban demand for bread) |
+| `granary` | town+ (real storage building) |
+| `weaver_workshop` | wool/linen reachable + ≥village |
+| `cart_wright` | smithy + sawmill present (city) |
+| `fishery` | coast/river/lake hex in catchment |
+| `olive_grove` / `vineyard` | Mediterranean climate + hills hex in catchment |
+| `mint` | silver/gold reachable + city tier |
+
+**Net effect:** a hamlet next to a forest is a forestry hamlet
+(forester_camp + sawmill). A village next to an iron deposit becomes
+a mining village (mine + bloomery, exports iron). A city in farmland
+becomes a grain-trade hub (mill + bakery + granary, IMPORTS ore and
+tools). A city near both ore AND forest is a metalworking city. The
+*specialization emerges from the geography* — and once dynamic
+investment lands in v1.5, from observed market spreads.
+
+**Why a settlement starves**: when its specialty stockpile (the thing
+it exports) builds up to capacity AND the food it needs to import
+isn't arriving (caravan disrupted, road closed, neighbor hostile),
+population drops over months as the local pasture/garden can no
+longer cover the deficit. This is the docs/00 pillar promise: "block
+the food → city dies."
+
+**Why a settlement starves**: when its specialty stockpile (the thing
+it exports) builds up to capacity AND the food it needs to import
+isn't arriving (caravan disrupted, road closed, neighbor hostile),
+population drops over months as the local pasture/garden can no
+longer cover the deficit. This is the docs/00 pillar promise: "block
+the food → city dies."
+
 ## Storage capacity (locked)
 
 Settlements have **finite storage capacity** for goods, just like

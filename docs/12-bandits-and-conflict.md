@@ -173,6 +173,55 @@ A settlement under attack defends with: garrison soldiers, local
 militia (idle adults grabbing whatever they have), walls (a major
 factor — see [03 — Production](03-production.md) for `build_walls`).
 
+## Bandit emergence in the tick loop (locked)
+
+Per-day, in the politics phase, after consumption:
+
+1. **Recruitment from idle**: for each settlement, count adults with
+   `idle` job role + adults whose subsistence is unmet for 14+
+   consecutive days (prospective recruits — rural poor, jobless urban
+   plebs). A small fraction (default ~0.0005/day = ~18%/year) of this
+   pool defects to wilderness banditry. They are removed from the
+   settlement's pool and added to the nearest existing bandit camp
+   within ~50 hexes, OR a new camp is founded in a nearby wilderness
+   forest/hills hex if no camp is nearby.
+2. **Camp population dynamics**: each camp ages, has its own
+   subsistence consumption (rations from loot or raiding), and may
+   die out from starvation if it can't raid successfully.
+3. **Camp decisions**: for each camp, call `decideCampAction(camp,
+   inputs)` (T16). Translate decision:
+   - `raid_caravan` → emit pendingBattle; resolve via T45 ambush
+   - `raid_settlement` → emit pendingBattle; resolve via T38 raid
+   - `recruit_drive` → next-day recruit rate doubles
+   - `move_camp` → update camp.hex
+   - `lay_low` → no-op
+   - `bribe_settlement` → coin transfer + reputation +0.1
+   - `fence_loot` → liquidate loot at corrupt settlement at 60% price
+4. **Initial seeding**: procgen places 1 small bandit camp per cluster
+   in wilderness near a road chokepoint. They're already there at
+   day 0; not a cold-start problem.
+
+## Patrol dispatch in the tick loop (locked)
+
+Per-day, in the politics phase, after consumption:
+
+1. **Garrison patrols**: governor's office maintains 1 patrol unit
+   per ~3 cities, walking arterial roads. Patrols spawn from the
+   governor's coin treasury (each unit costs ~10 coin/day in pay +
+   rations).
+2. **City watch**: each city + town spawns its own small patrol from
+   city budget, walking the urban perimeter + nearby roads.
+3. **Family guards**: each patrician family with a recent banditry
+   loss spawns a private patrol around their estates.
+4. **Engagement**: when a patrol's `tickPatrol` (T31) emits a
+   pendingBattle, resolve via `resolveBattle` (battle system). On
+   patrol victory, camp count drops; on bandit victory, patrol
+   disbanded.
+
+**Funding feedback**: tax shipments (T39) replenish the governor's
+treasury → more patrols → fewer raids → more tax shipments. Cut the
+shipments and patrols dwindle within months.
+
 ## Battle system (locked, simple, probabilistic)
 
 Combat — caravan vs. bandits, patrol vs. camp, two caravans,
