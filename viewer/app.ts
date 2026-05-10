@@ -27,6 +27,7 @@ import { createRng } from '../src/sim/rng.js';
 import type { ResourceId } from '../src/sim/types.js';
 
 import { createHexMap, type HexMap } from './map/hexMap.js';
+import { createRoadLayer } from './map/roads.js';
 import { createSettlementsLayer, type SettlementsLayer } from './map/settlements.js';
 import { createCaravansLayer, type CaravansLayer } from './map/caravans.js';
 import { createBanditCampsLayer, type BanditCampsLayer } from './map/banditCamps.js';
@@ -121,6 +122,11 @@ const buildLayers = (
 
   const hexMap = createHexMap(world.grid, hexSize);
   worldRoot.addChild(hexMap.container);
+
+  // Roads sit between terrain and entities — visible over the hex fill,
+  // but caravans / settlements / camps draw on top.
+  const roadLayer = createRoadLayer(world.grid, hexSize);
+  worldRoot.addChild(roadLayer.container);
 
   const settlementsLayer = createSettlementsLayer((id) => {
     setSelection(state, { kind: 'settlement', id });

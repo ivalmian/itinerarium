@@ -76,6 +76,7 @@ import { campaignerUnit } from '../sim/conflict/battle.js';
 import { createPatrol, type Patrol as PatrolType } from '../sim/conflict/patrol.js';
 import { routeForGarrisonPatrol, routeForCityWatch } from '../sim/conflict/patrolRoutes.js';
 import type { SettlementSite } from './settlements.js';
+import { generateRoads } from './roads.js';
 
 // --- Public types -----------------------------------------------------------
 
@@ -865,6 +866,16 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
       setOwner(opts.grid, hex, null);
     }
   }
+
+  // Phase 8b: roads. Capital ↔ cities = Roman roads; cities ↔ villages
+  // within cluster radius = dirt roads. Patrols, caravans, news carriers,
+  // and the viewer all read tile.road; without this step the world has
+  // no roads at all and every patrol collapses to a 5-hex urban loop.
+  generateRoads({
+    seed: `${opts.seed}|roads`,
+    grid: opts.grid,
+    settlements: opts.settlementSites,
+  });
 
   // Phase 9: starter production buildings (per docs/07 §"Place starter
   // production buildings"). Every settlement gets pasture + farm so day-1

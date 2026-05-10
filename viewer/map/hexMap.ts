@@ -39,8 +39,6 @@ const TERRAIN_COLOR: Record<Terrain, number> = {
   ruin: 0x55483a,
 };
 
-const ROAD_OUTLINE = 0xd2a44b;
-
 export interface HexMap {
   readonly container: Container;
   /** Mutate the tint of a single hex (0xrrggbb). null restores terrain color. */
@@ -65,16 +63,6 @@ const drawHexPolygon = (g: Graphics, size: number, fill: number): void => {
     path.push(size * Math.cos(angle), size * Math.sin(angle));
   }
   g.poly(path).fill({ color: fill });
-};
-
-const drawHexWithRoad = (g: Graphics, size: number, fill: number, roadColor: number): void => {
-  g.clear();
-  const path: number[] = [];
-  for (let i = 0; i < 6; i++) {
-    const angle = (Math.PI / 180) * (60 * i - 30);
-    path.push(size * Math.cos(angle), size * Math.sin(angle));
-  }
-  g.poly(path).fill({ color: fill }).stroke({ color: roadColor, width: 1.2 });
 };
 
 export const createHexMap = (grid: HexGrid, hexSize: number): HexMap => {
@@ -116,11 +104,9 @@ const addHex = (
   const px = hexToPixel(h, hexSize);
   const g = new Graphics();
   const baseColor = TERRAIN_COLOR[tile.terrain];
-  if (tile.road !== 'none') {
-    drawHexWithRoad(g, hexSize * 0.97, baseColor, ROAD_OUTLINE);
-  } else {
-    drawHexPolygon(g, hexSize * 0.97, baseColor);
-  }
+  // Roads are now rendered by the dedicated roads layer (sub-hex segments
+  // pointing at neighbors), not as a per-hex outline. Plain polygon here.
+  drawHexPolygon(g, hexSize * 0.97, baseColor);
   g.position.set(px.x, px.y);
   container.addChild(g);
   entries.set(hexKey(h), { poly: g, baseColor });
