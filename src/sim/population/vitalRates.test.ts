@@ -76,7 +76,7 @@ describe('tickDaily', () => {
 
   it('produces deaths in adult cohorts over a year', () => {
     const pool = emptyPool();
-    pool.set(k('30-34', 'male', 'plebeian'), 100000);
+    pool.set(k('30-34', 'male', 'plebeian'), 10000);
     const rng = createRng('deaths');
     const before = pool.count(k('30-34', 'male', 'plebeian'));
     for (let i = 0; i < 365; i++) tickDaily(pool, ROMAN_VITAL_RATES, rng);
@@ -90,33 +90,33 @@ describe('tickDaily', () => {
 
   it('elder mortality is higher than adult mortality', () => {
     const adultPool = emptyPool();
-    adultPool.set(k('30-34', 'male', 'plebeian'), 100000);
+    adultPool.set(k('30-34', 'male', 'plebeian'), 10000);
     const elderPool = emptyPool();
-    elderPool.set(k('70-74', 'male', 'plebeian'), 100000);
+    elderPool.set(k('70-74', 'male', 'plebeian'), 10000);
     const rng1 = createRng('elder-vs-adult-1');
     const rng2 = createRng('elder-vs-adult-2');
     for (let i = 0; i < 365; i++) {
       tickDaily(adultPool, ROMAN_VITAL_RATES, rng1);
       tickDaily(elderPool, ROMAN_VITAL_RATES, rng2);
     }
-    const adultLoss = 100000 - adultPool.count(k('30-34', 'male', 'plebeian'));
-    const elderLoss = 100000 - elderPool.count(k('70-74', 'male', 'plebeian'));
+    const adultLoss = 10000 - adultPool.count(k('30-34', 'male', 'plebeian'));
+    const elderLoss = 10000 - elderPool.count(k('70-74', 'male', 'plebeian'));
     expect(elderLoss).toBeGreaterThan(adultLoss);
   });
 
   it('infant mortality is higher than adult mortality (proportionally)', () => {
     const infantPool = emptyPool();
-    infantPool.set(k('0-4', 'male', 'plebeian'), 100000);
+    infantPool.set(k('0-4', 'male', 'plebeian'), 10000);
     const adultPool = emptyPool();
-    adultPool.set(k('30-34', 'male', 'plebeian'), 100000);
+    adultPool.set(k('30-34', 'male', 'plebeian'), 10000);
     const rng1 = createRng('infant-1');
     const rng2 = createRng('adult-1');
     for (let i = 0; i < 365; i++) {
       tickDaily(infantPool, ROMAN_VITAL_RATES, rng1);
       tickDaily(adultPool, ROMAN_VITAL_RATES, rng2);
     }
-    const infantLoss = 100000 - infantPool.count(k('0-4', 'male', 'plebeian'));
-    const adultLoss = 100000 - adultPool.count(k('30-34', 'male', 'plebeian'));
+    const infantLoss = 10000 - infantPool.count(k('0-4', 'male', 'plebeian'));
+    const adultLoss = 10000 - adultPool.count(k('30-34', 'male', 'plebeian'));
     expect(infantLoss).toBeGreaterThan(adultLoss);
   });
 

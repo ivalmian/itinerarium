@@ -269,6 +269,15 @@ export const runBurnIn = async (opts: BurnInOpts): Promise<BurnInReport> => {
         abortReason = `fatal invariant ${fatal.invariant}: ${fatal.detail}`;
         break;
       }
+      // Fail-fast on catastrophic population collapse — no point simulating
+      // years 2-10 if year 1 already lost half the population. Threshold is
+      // 50% of starting population (matches the watchdog's stability gate).
+      const popNow = summaryThisDay.totalPop;
+      const popStart = summaryAtStart.populationAtStart;
+      if (popStart > 0 && popNow * 2 < popStart) {
+        abortReason = `population collapsed: ${popNow} < 50% of start ${popStart} on day ${checkDay}`;
+        break;
+      }
     }
 
     // Periodic snapshot.

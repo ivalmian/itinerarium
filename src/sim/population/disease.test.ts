@@ -80,16 +80,17 @@ describe('applyEndemicMortality', () => {
     // fraction). We assert the endemic mortality alone is substantially less
     // than total baseline, and positive on a healthy temperate plain.
     const pool = emptyPool();
-    pool.set(k('30-34', 'male', 'plebeian'), 100000);
+    pool.set(k('30-34', 'male', 'plebeian'), 10000);
     const rng = createRng('endemic-temperate');
     let deaths = 0;
     for (let day = 0; day < 365; day++) {
       const r = applyEndemicMortality(pool, 'temperate', 'plains', rng, day as Day);
       deaths += r.deaths;
     }
-    // Roughly 1-5 per 1000 per year for adults from endemic causes alone.
-    expect(deaths).toBeGreaterThan(50);
-    expect(deaths).toBeLessThan(2000);
+    // Roughly 1-20 per 1000 per year for adults from endemic causes alone.
+    // Pool of 10000 → 5-200 deaths/year.
+    expect(deaths).toBeGreaterThan(5);
+    expect(deaths).toBeLessThan(200);
   });
 
   it('marsh + warm climate produces more endemic deaths than mountains + alpine', () => {
@@ -131,9 +132,9 @@ describe('applyEndemicMortality', () => {
 
   it('infants die at higher rates than adults from endemic causes', () => {
     const adultPool = emptyPool();
-    adultPool.set(k('30-34', 'male', 'plebeian'), 100000);
+    adultPool.set(k('30-34', 'male', 'plebeian'), 10000);
     const infantPool = emptyPool();
-    infantPool.set(k('0-4', 'male', 'plebeian'), 100000);
+    infantPool.set(k('0-4', 'male', 'plebeian'), 10000);
     let adultDeaths = 0;
     let infantDeaths = 0;
     const rng = createRng('cohort-mortality');
