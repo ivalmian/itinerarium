@@ -86,6 +86,41 @@ realistic recipe ratios (C2) AND the reduced bootstrap.
 `src/procgen/seed.ts` `seedCityCorporation`,
 `docs/14-debug-strategies.md`. **Depends on C4.**
 
+## C8 — Construction time + labor cost
+
+**v1 hack:** the investment loop in `tick.ts` `investmentPhase`
+spends the construction resources and immediately adds a fully
+operational building. Real construction is weeks-to-months of
+mason + carpenter labor.
+
+**Why it was a hack:** the investment loop was the load-bearing
+piece (C4); making it heavyweight on top of getting the basics
+right would have made debugging harder.
+
+**Realistic:** per docs/08 §"Construction is heavy":
+
+1. When `investmentPhase` decides to build, deduct
+   `constructionCost` resources AND add a `pendingBuilding` record
+   on the settlement: `{ buildingId, hex, ownerActor, beganOnDay,
+   workerDaysRemaining }`.
+2. Each tick, in production phase, the settlement consumes
+   `mason` + `carpenter` worker-days from `jobAllocations` toward
+   pending buildings (proportional to how many people are
+   assigned). When `workerDaysRemaining ≤ 0`, the building is
+   added via `addBuilding` and the pending record is removed.
+3. While pending, the building doesn't produce.
+4. Demolition is symmetric: removes the building over ~10-20% of
+   construction time, returns ~50% of materials.
+
+**Acceptance:** at year 10, the burn-in shows `building_invested`
+events spread out over ~30-90 days, not instantaneous. Cities that
+suffer a stockpile shock (lost trade route, raid) still take real
+time to rebuild productive capacity.
+
+**Cross-refs:** `docs/03-production.md` §"Construction",
+`docs/08-money-and-trade.md` §"Construction is heavy",
+`src/sim/tick.ts` `investmentPhase`.
+
 ## C7 — Removing bootstrap-only safeguards
 
 These are tiny code branches whose presence makes the early world

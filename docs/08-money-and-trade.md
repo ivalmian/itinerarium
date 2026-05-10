@@ -305,3 +305,114 @@ operates inside the map, where they're competitive.
   an unfunded garrison.
 - Caravans can attempt to evade tolls by going off-road; trade-off
   is speed and risk.
+
+## In-settlement money flows (locked)
+
+A market is not "the settlement" — it is the **set of actors
+present at the same place buying and selling from each other**.
+On any given day in a town's market hex, you might find:
+
+- The **city corporation**'s grain reserves on offer.
+- A **patrician family**'s wine and oil from their country estate
+  (delivered overnight by their own carts).
+- A **free village** caravan that walked in this morning with
+  cheese and wool to sell + tools to buy.
+- An **off-map merchant house**'s caravan unloading silks and
+  loading silver.
+- A **bandit fence** quietly buying stolen amphorae at 60% price.
+- The **governor's office** procuring wheat for the legion.
+- Random **plebeian** households drawing their daily bread.
+
+All of them have separate ledgers (per docs/11 hex-level
+ownership and actor-level treasuries). All of them want to make
+money from each other where possible. The clearing price emerges
+from their combined demand + supply schedules — see §"Market
+clearing" earlier in this doc.
+
+### What "owns" a transaction
+
+When a sale clears, the buyer's coin moves to the seller's
+treasury, and the goods move from the seller's stockpile to the
+buyer's stockpile. **No aggregate "settlement pool" exists.**
+Every coin and every kg has a named owner at every moment.
+
+### Bid-ask asymmetry between actor types
+
+Different actors have systematically different reservation prices
+on the same goods, and that's what drives most local commerce:
+
+| Actor | Strategy | Effective bid/ask |
+|---|---|---|
+| Subsistence buyer (plebeian household) | Inelastic on bread/grain; will pay whatever it takes up to bare minimum | High bid for staples, low ceiling for luxuries |
+| Comfort buyer (free villager, freedman) | Elastic on wine/oil/cloth; walks away if too dear | Moderate bids that respond to budget |
+| Status buyer (patrician) | Inelastic on luxury goods; status is the point of the bid | Very high bids on silks/jewels/fine wine |
+| Producer of inputs (a forester selling wood) | Wants to recover production cost + margin | Sells above cost; holds back if price < reserve |
+| Producer of outputs (a baker buying flour) | Derived demand; bids only as much as bread will return | Bids = (bread price × output ratio) − labor − fuel |
+| Bandit fence | Buys stolen goods at deep discount, resells anonymously | Bids ~60% of going price; never asks below 95% |
+| Off-map merchant | Imports = sells slightly above their long-haul cost; exports = buys slightly above local clearing | Tight margins, large volume |
+| Governor / city watch | Buys grain + tools for garrisons; sells confiscated bandit loot | Public-procurement bids, sometimes pays above market for political loyalty |
+
+The CDA implementation (per `src/sim/market/clear.ts`) sums these
+schedules into one local clearing price per resource per day. The
+spread between buy/sell schedules is what every actor lives off.
+
+### Profit-seeking rivalry (locked)
+
+**Everyone wants to make money from everyone else.** Concretely:
+
+1. **Patrician families** prefer to sell their estate's wheat to
+   the city corp at the highest price they can get; the city corp
+   prefers to buy from a *cheaper* family (or import). Family
+   reputation tracks this — repeated price-gouging hurts the
+   family's standing with the corp.
+2. **Bandit camps** target the most valuable caravans, prioritizing
+   patricians whose loss most embarrasses the governor. A successful
+   raid is also a price signal: the local market sees output prices
+   rise (less supply) and bid prices fall (less coin in the
+   plebeian pockets that just bought their grain).
+3. **Free villages** with surplus production prefer to sell to the
+   nearest town (transport cost low) but will walk further if the
+   farther market pays a premium.
+4. **The fence** undercuts the legitimate market on price but is
+   only available to actors with positive reputation toward the
+   bandit camp. Most legit actors won't fence.
+5. **Foreign merchants** time their arrivals to harvest seasons
+   when local prices are low (so their imports of luxuries fetch
+   more relative coin) — emergent from the off-map AI.
+
+### Construction is heavy (locked, v1.5+ partial)
+
+Building a new bloomery or warehouse is a multi-week investment:
+
+- **Resources upfront**: per the building catalog `constructionCost`,
+  e.g., `{material.lumber: 4, material.brick_tile: 4, goods.tools: 2}`.
+  These come out of the investing actor's stockpile immediately;
+  the actor lost real working capital, not just an accounting line.
+- **Labor over time** (target — partially implemented): a building
+  requires N worker-days of `mason` + `carpenter` time before it
+  can host any recipe. Until completion the building exists but
+  produces zero. Typical times: hamlet-scale 30 days, village /
+  town 60 days, city-scale 90 days for the larger workshops.
+- **Demolition is also slow** (target): a settlement that wants
+  to repurpose a hex must spend ~10–20% of construction time
+  tearing the existing building down (some materials recoverable,
+  some lost).
+- **Maintenance accrues**: per `maintenancePerDay`, every running
+  building consumes a small daily resource flow. A neglected
+  building decays after `decayDaysIfUnmaintained` and stops
+  producing until repaired.
+
+Because construction is heavy, the investment decision is made
+**at the actor level**, not the settlement level. The actor that
+funds the build owns the new building (per docs/11 hex-level
+ownership) and collects the production. A patrician family that
+builds a smithy in their hometown gets the smithy's iron output;
+the city corp doesn't get a cut unless explicitly via tax. This
+creates real political tension: who gets to build *what* in the
+city's hexes, and who profits.
+
+The current v1.5 implementation (see `src/sim/tick.ts`
+`investmentPhase`) deducts construction resources immediately and
+makes the building productive immediately. **Construction-time +
+labor-cost is the next follow-up** (tracked as v1.5 §C8 in
+docs/15) so the decision becomes appropriately heavy in the sim.
