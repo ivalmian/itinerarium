@@ -282,3 +282,96 @@ a Vibian grain caravan doesn't redecide its destination each day
 — it knows it's bound for City B with grain, and only the planner
 re-evaluates if conditions change materially. Goal stacks are
 serialized as part of the WorldState snapshot.
+
+## Local trade between nearby settlements (locked)
+
+Long-haul caravans (the rest of this doc) are not the only way
+goods move. The thick layer underneath them is **petty merchants
+and villager pickup carts** that walk between neighboring
+settlements daily, arbitraging local price spreads with small
+loads.
+
+This is what makes the no-aggregation entity model
+(docs/04 §"Sizing the realistic hinterland") produce a coherent
+regional economy: each village's market clears separately, but
+the price differentials don't drift far before petty trade pulls
+them back together.
+
+### Mechanics
+
+After every settlement clears its daily market (per docs/08), a
+local-trade pass runs:
+
+For each ordered pair (sellerSettlement, buyerSettlement) where
+the two settlements are within **3 hexes** of each other AND
+travel between them is feasible (not blocked by impassable
+terrain in the current season):
+
+1. Look at every tradable resource. Find the spread:
+   `spread = buyer.lastPrice - seller.lastPrice − transportCost`
+2. If the spread is positive, a petty merchant moves a small
+   quantity (capped at ~50 kg per pair per day) from a seller
+   actor's stockpile in `sellerSettlement` to a buyer actor's
+   stockpile in `buyerSettlement`. Coin moves the other way at
+   the midpoint price (split the spread).
+3. The merchant takes a small cut (~5%) for their effort. This
+   is what funds the merchant household — not modeled as a
+   separate stockpile in v1.5; just absorbed into the spread.
+
+### Distance and cost
+
+| Hex distance | Days to walk | Transport cost (coin/kg) | Notes |
+|---|---|---|---|
+| 0 (same hex) | 0 | 0 | Same-hex pagus + hamlets — free sync. |
+| 1 (adjacent) | 1 | 0.005 | A villager walks over with a basket. |
+| 2 | 1 | 0.01 | Pickup cart, half-day each way. |
+| 3 | 1–2 | 0.02 | Mule with one driver, full day. |
+| 4+ | 2+ | use long-haul caravan rules | Out of petty-trade scope. |
+
+Transport cost is a fixed coin/kg surcharge added to the seller's
+asking price. If buyer's price doesn't beat seller's price + cost
++ merchant cut, no trade happens that day for that resource pair.
+
+### Why this matters
+
+- The pagus + dependent-hamlets cluster on the same hex shares
+  surplus instantly: a hamlet that produced extra wool sees it
+  reach the village's weaver within the same tick.
+- A rich city's market spike for grain pulls grain from every
+  neighbor village within 3 hexes within a day or two — the
+  classic "city sucks the countryside dry" pattern.
+- A village starting to starve sees its grain price spike, and
+  neighbors with surplus respond *before* the long-haul caravan
+  AI notices the opportunity.
+- Famine still happens — but only when the WHOLE region's
+  surplus is exhausted, not because the village across the road
+  hadn't been visited by a caravan recently.
+
+### Local trade vs. long-haul caravans
+
+| Local trade | Long-haul caravan |
+|---|---|
+| ≤3 hexes, daily | 4+ hexes, multi-day |
+| Small load (~50 kg/pair/day) | Large load (50–1500 kg) |
+| No persistent unit; abstracted as a daily pass | Persistent Caravan entity with crew/animals/goal stack |
+| Smooths regional spreads | Connects regions that don't touch |
+| Can't be raided (too small, too dispersed) | Real ambush risk |
+| Free same-hex (the canonical pagus case) | Same-hex moot — caravans are inter-region |
+
+Local-trade is a tick-loop pass over Settlement pairs (no separate
+unit). Long-haul caravans are full units with movement, cargo,
+crew, and risk. Both flow through the same actor stockpiles, so
+trade activity from EITHER source updates the same market state.
+
+### Same-hex coexistence (locked, cross-ref docs/05)
+
+Per docs/05 §"Same-hex coexistence": multiple settlement entities
+can share a hex (typically a *pagus* + 1–4 dependent hamlets).
+Each keeps its own market and ledgers; local trade between them
+runs at the 0-hex / 0-day rate above. They appear as offset
+glyphs in the viewer and are individually clickable.
+
+This is the only case where "same hex" matters — adjacent and
+2-hex pairs walk one tick to deliver. It's also why the same-hex
+exception isn't a free aggregation: each settlement's stockpile
+owners, factions, and political reputation stay distinct.

@@ -185,6 +185,36 @@ emergent behavior:
 - **Cascading shocks**: a collapse in an output market propagates
   back through derived input demand to the raw materials.
 
+### Per-settlement markets, regional smoothing
+
+**Each settlement clears its own market.** A pagus and its three
+dependent hamlets sharing a hex are *four separate markets*, each
+with its own aggregate demand + aggregate supply schedules. There
+is no shared "regional clearing price"; if the village runs short
+of grain its price will spike before the neighbor hamlets feel it.
+
+What pulls those four markets back into rough alignment is the
+**local-trade pass** specified in
+[06 — Caravans](06-caravans.md) §"Local trade between nearby
+settlements": after every settlement clears, petty merchants
+move small loads between settlements within 3 hexes of each
+other, arbitraging price spreads down to roughly the
+transport-cost band.
+
+So:
+- Same-hex spreads close to ~0 (transport cost is 0).
+- Adjacent-hex spreads close to ~0.005 coin/kg.
+- 3-hex spreads close to ~0.02 coin/kg.
+- Beyond 3 hexes, only long-haul caravans connect markets, and
+  spreads can stay wide for days or weeks — exactly when
+  caravan owners notice and re-route per
+  [06 — Caravans](06-caravans.md) §"NPC caravan AI".
+
+This is what makes the no-aggregation entity model
+(docs/04) coherent: 8,000 settlements with 8,000 separate
+markets still produce a regional price gradient, not 8,000
+disconnected wells.
+
 ## Information
 
 Caravans don't see all prices. They remember what they've seen
