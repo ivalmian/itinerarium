@@ -193,9 +193,13 @@ the v1 approach.
    (~30–50 km).
 7. **Site villages and hamlets** within clusters, at supporting
    locations (along roads, near fields, on water, near resource
-   deposits). Density per hex driven by carrying capacity.
-   Aggregation rule from
-   [01 — Simulation Frame](01-simulation-frame.md) applies.
+   deposits). Density per hex driven by carrying capacity. **No
+   aggregation** — each real village + hamlet is its own
+   settlement entity per docs/04. Multiple hamlets and at most one
+   village can share a fertile hex (a Roman *pagus* with its
+   dependent hamlets); same-hex settlements remain distinct
+   entities and travel between them takes 0 days
+   (docs/05 §"Same-hex coexistence").
 8. **Generate roads**: dense intra-cluster roads connecting
    settlements; a few arterial routes between clusters via
    wilderness.

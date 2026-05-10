@@ -109,6 +109,62 @@ the 180-day cushion holds the slack while we mature the others.
 `src/procgen/seed.ts` `seedCityCorporation`,
 `docs/14-debug-strategies.md`. **Depends on C4.**
 
+## C9 — Disaggregate villages + hamlets
+
+**v1 hack:** procgen generates ~600–900 "village" entities
+representing 2–5 real-world villages each, and ~300–500
+"hamlet" entities representing small clusters. Each entity
+sits on its own hex with no neighbors of the same type
+sharing it.
+
+**Why it was a hack:** keeping settlement entity count under
+~1,500 was the easy way to bound per-tick cost in v1. But it
+violates pillar 1 — no merchant in the world thinks of "the
+average of three villages I've never been to". The aggregated
+village's reputation, market price, and political faction don't
+correspond to any real polity.
+
+**Realistic** (per docs/04 §"Sizing the realistic hinterland"):
+each real village + hamlet is its own entity. Multiple
+settlements can share a hex (a Roman *pagus* with its dependent
+hamlets is the canonical case); they're distinct entities but
+travel between them costs 0 hexes / 0 days. Entity count lifts
+to ~3,000–8,000 per docs/01.
+
+**v1.5 implementation:**
+1. Procgen `siteSettlements` (in `src/procgen/settlements.ts`):
+   stop the 2–5 real-villages-per-entity collapsing. Generate
+   one entity per real village and one per real hamlet.
+2. Allow multiple `SettlementSite`s to share a hex. Today the
+   urban-hex uniqueness check rejects overlap; relax for
+   hamlets so up to ~5 hamlets + 1 village can live on the
+   same fertile hex.
+3. Catchment: same-hex settlements share the urban hex but
+   carve their catchment per docs/05's closer-wins rule (the
+   bigger village gets first pick; satellite hamlets get the
+   leftovers).
+4. Trade: caravan / news-carrier movement cost between two
+   settlements on the same hex is 0 hexes (1 tick). Update
+   `tickCaravanMovement` and `tickCarrierWithGrid` to short-
+   circuit the same-hex case.
+5. Performance: profile the burn-in with the larger entity
+   count. If `tickPhase` per-settlement loops are too slow,
+   shift to a settlements-by-hex index for the hot paths.
+
+**Acceptance:** procgen for the burn-in 80×80 grid produces
+~500–2,000 settlement entities (up from ~100). 10y burn-in
+passes the watchdog with the bigger world. Same-hex
+settlements show in the viewer as a stack (offset glyphs so
+they're individually clickable). Trade caravans visiting one
+settlement also reach its same-hex neighbors within the same
+tick.
+
+**Cross-refs:** `docs/04-population.md` §"Sizing the realistic
+hinterland", `docs/01-simulation-frame.md` §"Entity counts",
+`docs/05-settlements.md` §"Catchment", `docs/07-geography.md`
+§"Site villages and hamlets", `src/procgen/settlements.ts`,
+`src/procgen/seed.ts`, `src/sim/caravan/movement.ts`.
+
 ## C8 — Construction time + labor cost
 
 **v1 hack:** the investment loop in `tick.ts` `investmentPhase`

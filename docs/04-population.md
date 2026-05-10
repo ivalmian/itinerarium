@@ -256,13 +256,40 @@ population is, very roughly:
   fiber, and raw materials, accounting for transport losses
   and rural self-consumption.
 - For 4–5 cities of 5k–30k each (call it ~80k urban total),
-  that's **600k–1M rural** in the wider catchment — way more
-  than we can efficiently model atomically.
+  that's **600k–1M rural** in the wider catchment.
 
-To keep settlement counts tractable we **aggregate**: each
-"village" entity in the sim represents 2–5 real-world villages.
-Each "hamlet" entity represents a small cluster. See
-[01 — Simulation Frame](01-simulation-frame.md) for the
-entity-count target (**~1,000–1,500 settlement entities for v1,
-representing ~700k–1.2M modeled people in a ~500×500 km map
-mostly composed of wilderness**).
+**No aggregation (locked).** Each real-world village and each
+real-world hamlet is its own settlement entity in the sim,
+with its own population, ledgers, leadership, and catchment
+ownership. We do **not** roll N villages into one
+"meta-village" entity for performance — the resulting hidden
+hand violates pillar 1 (no merchant in the world thinks of
+"the average of three villages I've never been to").
+
+**Multiple settlements may share a hex.** A single fertile hex
+can host one larger village plus 1–4 satellite hamlets clustered
+around it (a Roman *pagus* with its dependent hamlets is the
+canonical case). They are still separate entities — separate
+populations, separate elders / patrons, separate stockpiles —
+but **travel time between same-hex settlements is zero**, so
+caravans, news carriers, and labor moving between them sync
+within the same tick. This is the only "aggregation" we allow
+and it costs nothing to model: same-hex settlements feel like
+one community to the people who live in them, but the political
+economy stays granular.
+
+Implications:
+- The settlement entity count target (see
+  [01 — Simulation Frame](01-simulation-frame.md)) lifts from
+  the v1 aggregated ~1,000–1,500 toward ~3,000–8,000 once real
+  hamlets are split out.
+- Procgen places hamlets densely around villages (multiple per
+  hex is normal in the inner ring of a fertile patch).
+- Catchment claim conflicts are resolved per docs/05's
+  closer-wins rule even between same-hex settlements (a hamlet
+  on the same hex as a village shares the urban hex but carves
+  out a smaller catchment than the village).
+- Same-hex transport: caravan / news-carrier movement cost
+  between two settlements on the same hex is 0 hexes (1 tick).
+  This avoids the "trivial caravan walking from A to B in the
+  same hex" anti-pattern.

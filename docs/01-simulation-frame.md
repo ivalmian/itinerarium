@@ -117,12 +117,18 @@ economy is concentrated and where the long, risky trade routes lie.
 - **Cities**: 4–5 (typical mix: one provincial capital ~25–40k, two
   to four secondary cities ~8–15k).
 - **Towns**: ~10–25 small market towns (1k–5k each).
-- **Aggregated villages**: ~600–900 entities (each representing 2–5
-  real villages, ~500–1500 people each).
-- **Aggregated hamlets**: ~300–500 entities (small clusters,
-  ~100–300 people each).
-- **Total settlement entities**: ~1,000–1,500. This is the
+- **Villages**: ~1,200–2,500 entities (each a real village,
+  ~200–800 people). Per docs/04 §"Sizing the realistic hinterland"
+  we no longer aggregate; one entity = one village.
+- **Hamlets**: ~1,500–4,500 entities (one per real hamlet,
+  ~30–150 people each). Multiple hamlets per hex is normal in
+  the inner ring of a fertile patch — same-hex settlements
+  remain distinct entities but trade and news between them
+  takes 0 days.
+- **Total settlement entities**: ~3,000–8,000. This is the
   performance-critical count, not raw population or hex count.
+  (Up from the v1 aggregated 1,000–1,500 once C9 lands per
+  docs/15-v1-5-cleanups.md.)
 - **Hidden features** (ruins, abandoned mines, hermit shrines,
   abandoned villages): ~10–30, scattered in wilderness.
 - Hundreds of caravans simultaneously active.

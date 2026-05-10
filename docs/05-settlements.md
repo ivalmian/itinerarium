@@ -40,6 +40,27 @@ neighborhoods (residential, craft quarters, warehouses). All of
 them share one population pool and one market, but specific
 buildings live in specific hexes.
 
+### Same-hex coexistence (locked)
+
+A single hex can host more than one settlement entity. The
+canonical case is a Roman *pagus* with its dependent hamlets:
+one larger village plus 1–4 satellite hamlets all clustered on
+or around a fertile patch. Per docs/04 §"Sizing the realistic
+hinterland" we never aggregate — the village and each hamlet
+are distinct entities with their own population, ledgers, and
+political leadership.
+
+Same-hex settlements:
+- Each appears as its own glyph in the viewer (offset slightly
+  so all are individually clickable).
+- Travel between them is **0 hexes / 0 days** — caravans, news
+  carriers, and refugees that arrive at the hex reach all of
+  them within the same tick. There is no "trivial caravan"
+  walking from A to B in the same hex.
+- Each may claim its own catchment hexes per the closer-wins
+  rule below; on a shared hex the larger settlement gets first
+  pick of the surrounding ring, satellites get the leftovers.
+
 ## Multi-hex entry UX (locked)
 
 A settlement is **one entity**, even if it occupies many hexes.
