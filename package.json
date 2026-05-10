@@ -17,6 +17,7 @@
     "dev": "vite"
   },
   "dependencies": {
+    "pixi.js": "^8.18.1",
     "seedrandom": "^3.0.5"
   },
   "devDependencies": {
