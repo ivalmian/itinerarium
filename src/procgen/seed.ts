@@ -969,42 +969,47 @@ const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void =
   if (owner === undefined) return;
   const cap = TIER_CAPACITY[settlement.tier];
 
-  // Production buildings sit in catchment hexes.
   const catchment = settlement.catchmentHexes;
   if (catchment.length === 0) return;
 
-  // Pasture in catchment[0]; farm in catchment[1] (or [0] if village has only one).
-  const pastureHex = catchment[0];
-  if (pastureHex !== undefined) {
-    tryAddBuilding(settlement, 'pasture', pastureHex, owner, cap);
-  }
-  const farmHex = catchment[1] ?? catchment[0];
-  if (farmHex !== undefined) {
-    tryAddBuilding(settlement, 'farm', farmHex, owner, cap);
+  const cHex = (i: number): Hex => (catchment[i % catchment.length] ?? (catchment[0] as Hex)) as Hex;
+  const uHex = (i: number): Hex =>
+    (settlement.urbanHexes[i % settlement.urbanHexes.length] ?? (settlement.urbanHexes[0] as Hex)) as Hex;
+
+  // Every settlement: pasture + farm + forester_camp + sawmill so wood
+  // and lumber regenerate (closing the chain that supplies bake_bread,
+  // smithy maintenance, etc.). Pasture provides year-round protein
+  // alongside grain.
+  tryAddBuilding(settlement, 'pasture', cHex(0), owner, cap);
+  tryAddBuilding(settlement, 'farm', cHex(1), owner, cap);
+  tryAddBuilding(settlement, 'forester_camp', cHex(2), owner, cap);
+  tryAddBuilding(settlement, 'sawmill', cHex(3), owner, cap);
+
+  // Village+: add charcoal_kiln so smithies have fuel; mine + bloomery so
+  // iron production isn't gated on a procgen ore deposit landing in the
+  // catchment (deposits are rare).
+  if (
+    settlement.tier === 'village' ||
+    settlement.tier === 'town' ||
+    settlement.tier === 'small_city' ||
+    settlement.tier === 'large_city'
+  ) {
+    tryAddBuilding(settlement, 'charcoal_kiln', cHex(4), owner, cap);
+    tryAddBuilding(settlement, 'mine', cHex(5), owner, cap);
+    tryAddBuilding(settlement, 'bloomery', uHex(0), owner, cap);
+    tryAddBuilding(settlement, 'smithy', uHex(0), owner, cap);
   }
 
-  // Towns + cities: refining chain (mill + bakery + granary).
+  // Town+: refining chain (mill + bakery + granary) and weaver_workshop.
   if (
     settlement.tier === 'town' ||
     settlement.tier === 'small_city' ||
     settlement.tier === 'large_city'
   ) {
-    const urbanHex = settlement.urbanHexes[0];
-    if (urbanHex !== undefined) {
-      tryAddBuilding(settlement, 'mill', urbanHex, owner, cap);
-      tryAddBuilding(settlement, 'bakery', urbanHex, owner, cap);
-      tryAddBuilding(settlement, 'granary', urbanHex, owner, cap);
-    }
-  }
-
-  // Cities get manufactures.
-  if (settlement.tier === 'small_city' || settlement.tier === 'large_city') {
-    // Use a different urban hex if available, else reuse anchor.
-    const workshopHex = settlement.urbanHexes[1] ?? settlement.urbanHexes[0];
-    if (workshopHex !== undefined) {
-      tryAddBuilding(settlement, 'smithy', workshopHex, owner, cap);
-      tryAddBuilding(settlement, 'weaver_workshop', workshopHex, owner, cap);
-    }
+    tryAddBuilding(settlement, 'mill', uHex(0), owner, cap);
+    tryAddBuilding(settlement, 'bakery', uHex(0), owner, cap);
+    tryAddBuilding(settlement, 'granary', uHex(0), owner, cap);
+    tryAddBuilding(settlement, 'weaver_workshop', uHex(1), owner, cap);
   }
 };
 
