@@ -126,6 +126,89 @@ If a caravan runs out of food en route, animals weaken first, then
 crew. A starving caravan abandons cargo. A crew that dies leaves
 loose goods on the map for whoever finds them next.
 
+## Trail wear → emergent dirt roads (locked)
+
+A trade route in the real world is **made by walking it**. The
+first caravan that crosses a wilderness hex flattens grass; the
+hundredth packs the dirt; the thousandth has worn a recognizable
+track. After enough of them, the locals call it a road.
+
+We model this directly. Each `HexTile` carries a `roadWear`
+counter (integer, 0 at procgen for un-roaded hexes). Every day:
+
+1. **Wear accrues** per traffic. Each caravan, news carrier, and
+   patrol that ENTERS a hex during movement adds:
+   - +1 per pack-mule equivalent (~50 kg cargo capacity)
+   - +0.5 per crew member (people on foot pack the trail too,
+     just less than animals)
+   - +0.2 per news carrier (single person walking)
+   - +0.5 per patrol soldier
+   So a 50-mule + 12-crew caravan crossing a hex adds 50 + 6 = 56
+   wear. A two-soldier patrol adds 1.
+2. **Wear decays** -1 per day on every hex with roadWear > 0
+   (wilderness reclaims unused trails). So a hex needs at least 1
+   wear-unit/day on average just to hold its accumulated trail.
+3. **Threshold upgrade**: when `roadWear ≥ 100` AND
+   `tile.road === 'none'` AND the terrain is passable, the hex
+   upgrades to `tile.road = 'dirt'`. Emits a `road_upgraded`
+   event.
+4. **Roman roads are engineered, not worn in.** Hexes with
+   `road === 'roman'` don't gain wear (no upgrade target above
+   them) and their wear-counter doesn't decay (the road IS
+   maintained — separate maintenance machinery in v1.5+).
+5. **Dirt roads can downgrade.** A `dirt` hex whose roadWear
+   falls below 20 (sustained low traffic) reverts to
+   `road = 'none'`. Wear keeps accruing during the dirt phase, so
+   a popular dirt road builds up reserve and won't snap back the
+   first quiet week.
+
+### Why this is good
+
+- The road network **emerges from trade**, matching the
+  historical record: every Roman dirt road is just a frequent
+  cart-track.
+- **Positive feedback loop**: a hex with a dirt road has lower
+  movement cost (per the terrain difficulty model), so caravans
+  preferentially route through it, which increases its wear,
+  which keeps it a road.
+- **Negative feedback when trade collapses**: if banditry shuts
+  a route down, the dirt road reverts in weeks-to-months, and the
+  next decade's caravans have to walk through wilderness again.
+- The viewer shows live road growth, not just a static
+  procgen-set network.
+
+### Tunable constants
+
+These are first-pass; numbers will move during burn-in:
+
+| Constant | Default | Meaning |
+|---|---|---|
+| `WEAR_PER_PACK_ANIMAL` | 1.0 | per hex entered |
+| `WEAR_PER_CREW` | 0.5 | per hex entered |
+| `WEAR_PER_NEWS_CARRIER` | 0.2 | per hex entered |
+| `WEAR_PER_PATROL_SOLDIER` | 0.5 | per hex entered |
+| `WEAR_DECAY_PER_DAY` | 1.0 | per hex with wear > 0 |
+| `DIRT_UPGRADE_THRESHOLD` | 100 | wear needed to upgrade `none` → `dirt` |
+| `DIRT_DOWNGRADE_THRESHOLD` | 20 | wear floor below which `dirt` → `none` |
+| `ROMAN_WEARS` | false | Roman roads don't accrue wear or decay |
+
+A medium caravan (~10 mules, ~5 crew) puts down ~12 wear per hex
+crossed. So a single caravan transit adds ~12; ~10 transits in
+quick succession can take a hex from wilderness to dirt road.
+That matches the intuition: the third or fourth caravan along a
+route is when locals start calling it a path.
+
+### Procgen interaction
+
+Procgen-laid roads (per docs/07 §"Generate roads") set
+`tile.road` directly to `'dirt'` or `'roman'` and seed
+`roadWear = 100` on the hex (above the upgrade threshold so they
+don't immediately revert). The wear+decay machinery and
+procgen-laid roads coexist cleanly: capital-to-city Roman roads
+are eternal, intra-cluster dirt roads stay alive as long as
+trade uses them, and entirely emergent trade arteries appear
+between settlements that procgen never connected.
+
 ## Risk
 
 - **Banditry**: an unguarded caravan in a low-garrison region rolls

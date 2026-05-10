@@ -202,7 +202,12 @@ the v1 approach.
    (docs/05 §"Same-hex coexistence").
 8. **Generate roads**: dense intra-cluster roads connecting
    settlements; a few arterial routes between clusters via
-   wilderness.
+   wilderness. Procgen sets `road = 'dirt'` or `'roman'` and
+   seeds `roadWear = 100` so the per-tick decay (per docs/06
+   §"Trail wear") doesn't immediately revert them. Beyond the
+   procgen network, **roads emerge** wherever caravan / patrol
+   / news-carrier traffic exceeds the wear threshold — so the
+   road map at year 10 is procgen + emergent.
 9. **Place wilderness features**: a handful of independent frontier
    hamlets, bandit camps, and ~10–30 hidden features (ruins,
    abandoned mines, hermit shrines, etc.).
