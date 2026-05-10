@@ -1,5 +1,6 @@
 /**
- * Conflict module: the shared battle resolver and the patrol state machine.
+ * Conflict module: the shared battle resolver, the patrol state machine, and
+ * the settlement raid resolver.
  *
  * See docs/12-bandits-and-conflict.md.
  */
@@ -31,3 +32,6 @@ export type {
   PendingBattleTarget,
 } from './patrol.js';
 export { createPatrol, defaultPatrolRoute, tickPatrol } from './patrol.js';
+
+export type { RaidInputs, RaidOutcome, RaidResult, WallLevel } from './raid.js';
+export { resolveRaid } from './raid.js';
