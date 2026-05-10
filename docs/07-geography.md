@@ -151,9 +151,38 @@ the v1 approach.
 3. **Macro terrain**: noise-based assignment of plains, hills,
    mountains, forest, etc. Honour the natural-feature extents in
    the table above (forests cluster, mountains range, etc.).
+   **Realism rules (locked):**
+   - **Mountain ranges, not splotches.** Anisotropic noise: stretch
+     mountain regions along a per-region orientation so they form
+     linear chains (Apennine-style spines), not blobs. A second
+     elevation pass smooths isolated single-hex peaks down.
+   - **Forest cohesion smoothing.** After initial forest assignment,
+     run a 1-step "majority vote" pass: a hex flips to forest if ≥4
+     of its 6 neighbours are forest, and flips out of forest if ≤1
+     are. Removes single-hex forest specks in the desert and
+     single-hex desert specks in the forest.
+   - **Coastline smoothing.** A water hex with ≥5 land neighbours
+     becomes land (no isolated puddles). A land hex with ≥5 water
+     neighbours becomes coast (no thin peninsulas).
+   - **Tributary rivers.** Trace from MULTIPLE springs at high
+     elevation; rivers MERGE when paths cross (downstream river
+     becomes "wider" — flagged in tile metadata). Bigger rivers
+     are slower to ford and better fishery hexes.
+   - **Plains–fertile_valley distinction.** Hexes adjacent to
+     rivers and at low-to-mid elevation become `fertile_valley`
+     (higher base yield); pure plains are the rest. Fertile
+     valleys cluster along river corridors.
 4. **Resource deposits**: terrain + climate weighted, with
    geological clustering for ores (real mining regions, not uniform
-   sprinkles).
+   sprinkles). **Realism (locked):**
+   - One ore TYPE per cluster (a tin region doesn't also produce
+     iron). Picked once per cluster from the ore palette weighted
+     by rarity (iron common, tin/silver/gold rare).
+   - Salt is bottlenecked geographically — only on coast hexes
+     (evaporation pans) or in specific salt-mine deposits in
+     mountain hexes. Inland regions without salt depend on trade.
+   - Iron ore is the most common; provincial worlds should always
+     have at least 2 iron deposits (smithies need iron).
 5. **Place 4–5 city sites + 10–25 town sites**, each at a good
    location (water access, fertile catchment, defensible position,
    transport node). Designate one city as the **provincial capital**
