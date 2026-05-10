@@ -32,7 +32,7 @@
  * produces the same events.
  */
 
-import { allBuildings } from './buildings/catalog.js';
+import { allBuildings, getBuilding } from './buildings/catalog.js';
 import { tickCaravanMovement } from './caravan/movement.js';
 import { planCaravanRoute } from './caravan/ai.js';
 import {
@@ -84,6 +84,7 @@ import { allRecipes } from './production/recipes.js';
 // subsystem until that storage lands.
 import type { Rng } from './rng.js';
 import {
+  addBuilding,
   recomputeCatchment,
   recordClearingPrice,
   recordInflow,
@@ -223,6 +224,13 @@ export type TickEvent =
       readonly newRadius: number;
       readonly claimed: number;
       readonly released: number;
+    }
+  | {
+      readonly type: 'building_invested';
+      readonly settlement: SettlementId;
+      readonly building: BuildingId;
+      readonly ownerActor: ActorId;
+      readonly costCoin: number;
     }
   | {
       readonly type: 'workers_reallocated';
@@ -942,6 +950,13 @@ const politicsPhase = (
   // cadence is independent of calendar bookkeeping.
   if ((today + 1) % 30 === 0) {
     workerReallocationPhase(world, today, events);
+  }
+  // Quarterly hook (every 90 days): each settlement's stockpile-owning
+  // actors evaluate observed prices and invest in profitable buildings.
+  // Per docs/15 §C4 — Stage 2 specialization. Without this, the
+  // procgen seed is the FINAL building layout for the world's lifetime.
+  if ((today + 1) % 90 === 0) {
+    investmentPhase(world, today, events);
   }
 };
 
@@ -2412,6 +2427,191 @@ const spawnNewsFromPatrolBattle = (
       });
     }
   }
+};
+
+// --- Investment phase (docs/15 §C4 — Stage 2 specialization) --------------
+
+/**
+ * Quarterly per-settlement investment.
+ *
+ * For each settlement, find a single owner-actor and a single recipe
+ * such that:
+ *   1. The recipe's building isn't already at full daily capacity in
+ *      the settlement.
+ *   2. Expected daily profit (revenue - input cost) at the last
+ *      observed clearing prices is positive.
+ *   3. The actor has the resources in stockpile to pay the building's
+ *      construction cost.
+ *
+ * If multiple recipes qualify, pick the one with the highest profit /
+ * construction-cost-in-coin ratio. Cap to one investment per settlement
+ * per quarter so a runaway profitable recipe doesn't balloon a city
+ * with a hundred bakeries in one year.
+ *
+ * The new building goes on a settlement-owned hex with no existing
+ * building of that type. Free urban hex preferred; first catchment hex
+ * as fallback.
+ */
+const investmentPhase = (world: WorldState, _today: Day, events: TickEvent[]): void => {
+  for (const settlement of world.settlements.values()) {
+    const owner = pickInvestor(world, settlement);
+    if (owner === undefined) continue;
+
+    const candidates = scoreInvestmentCandidates(settlement, owner);
+    if (candidates.length === 0) continue;
+    const best = candidates[0] as ScoredInvestment;
+    if (best.profitPerDay <= 0) continue;
+    if (best.profitPerDay / Math.max(1, best.coinCost) < INVESTMENT_ROI_THRESHOLD) continue;
+
+    const placement = pickBuildingHex(settlement, best.buildingId);
+    if (placement === null) continue;
+
+    const def = getBuilding(best.buildingId);
+
+    // Pay construction: drain inputs from owner's stockpile. We've already
+    // confirmed sufficiency in scoreInvestmentCandidates; do it
+    // unconditionally here.
+    for (const [resId, qty] of def.constructionCost) {
+      const have = owner.stockpile.get(resId) ?? 0;
+      const remaining = have - qty;
+      if (remaining > 1e-9) owner.stockpile.set(resId, remaining);
+      else owner.stockpile.delete(resId);
+    }
+
+    addBuilding(settlement, {
+      buildingId: def.id,
+      hex: placement,
+      ownerActor: owner.id,
+      capacity: def.capacityUnits,
+      daysSinceMaintained: 0,
+    });
+
+    events.push({
+      type: 'building_invested',
+      settlement: settlement.id,
+      building: def.id,
+      ownerActor: owner.id,
+      costCoin: best.coinCost,
+    });
+  }
+};
+
+interface ScoredInvestment {
+  readonly buildingId: BuildingId;
+  readonly profitPerDay: number;
+  readonly coinCost: number;
+}
+
+/** ROI threshold (profit per coin per day). 0.005 ≈ ~180% APR — a
+ *  reasonable Roman-era ROI for new productive capacity. */
+const INVESTMENT_ROI_THRESHOLD = 0.005;
+
+const PROFITABLE_OWNER_KINDS: readonly Actor['kind'][] = [
+  'patrician_family',
+  'free_village',
+  'city_corporation',
+  'governor_office',
+  'hamlet_household',
+];
+
+const pickInvestor = (world: WorldState, settlement: Settlement): Actor | undefined => {
+  let best: Actor | undefined;
+  let bestTreasury = -1;
+  for (const oId of settlement.stockpileOwners) {
+    const a = world.actors.get(oId);
+    if (a === undefined) continue;
+    if (!PROFITABLE_OWNER_KINDS.includes(a.kind)) continue;
+    if (a.treasury <= bestTreasury) continue;
+    best = a;
+    bestTreasury = a.treasury;
+  }
+  return best;
+};
+
+const scoreInvestmentCandidates = (
+  settlement: Settlement,
+  owner: Actor,
+): ScoredInvestment[] => {
+  const out: ScoredInvestment[] = [];
+  // Local existing buildings by type — for "saturation" check.
+  const existingByType = new Map<BuildingId, number>();
+  for (const b of settlement.buildings) {
+    existingByType.set(b.buildingId, (existingByType.get(b.buildingId) ?? 0) + 1);
+  }
+
+  for (const recipe of allRecipes()) {
+    // Compute revenue at last clearing prices.
+    let revenue = 0;
+    let revenueValid = true;
+    for (const [resId, qty] of recipe.outputs) {
+      const price = settlement.market.lastClearingPrice.get(resId);
+      if (price === undefined || !Number.isFinite(price) || price <= 0) {
+        revenueValid = false;
+        break;
+      }
+      revenue += qty * price;
+    }
+    if (!revenueValid) continue;
+
+    let cost = 0;
+    let costValid = true;
+    for (const [resId, qty] of recipe.inputs) {
+      const price = settlement.market.lastClearingPrice.get(resId);
+      if (price === undefined || !Number.isFinite(price) || price <= 0) {
+        costValid = false;
+        break;
+      }
+      cost += qty * price;
+    }
+    if (!costValid) continue;
+
+    const profitPerDay = revenue - cost;
+    if (profitPerDay <= 0) continue;
+
+    // Construction cost in coin (using local prices).
+    const def = getBuilding(recipe.building);
+    let coinCost = 0;
+    let payable = true;
+    for (const [resId, qty] of def.constructionCost) {
+      const have = owner.stockpile.get(resId) ?? 0;
+      if (have < qty) {
+        payable = false;
+        break;
+      }
+      const price = settlement.market.lastClearingPrice.get(resId) ?? 1;
+      coinCost += qty * price;
+    }
+    if (!payable) continue;
+
+    // Saturation: don't add a building if the type is already abundant.
+    const existingCount = existingByType.get(recipe.building) ?? 0;
+    if (existingCount >= MAX_BUILDINGS_OF_TYPE) continue;
+
+    out.push({ buildingId: recipe.building, profitPerDay, coinCost });
+  }
+
+  // Sort by profit / coinCost (descending).
+  out.sort((a, b) => b.profitPerDay / Math.max(1, b.coinCost) - a.profitPerDay / Math.max(1, a.coinCost));
+  return out;
+};
+
+const MAX_BUILDINGS_OF_TYPE = 6;
+
+const pickBuildingHex = (settlement: Settlement, buildingId: BuildingId): Hex | null => {
+  // Prefer urban hexes that don't already host this building type.
+  const occupied = new Set<string>();
+  for (const b of settlement.buildings) {
+    if (b.buildingId === buildingId) {
+      occupied.add(`${b.hex.q},${b.hex.r}`);
+    }
+  }
+  for (const u of settlement.urbanHexes) {
+    if (!occupied.has(`${u.q},${u.r}`)) return u;
+  }
+  for (const c of settlement.catchmentHexes) {
+    if (!occupied.has(`${c.q},${c.r}`)) return c;
+  }
+  return null;
 };
 
 // --- Annual hook ------------------------------------------------------------
