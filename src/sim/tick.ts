@@ -90,11 +90,13 @@ import {
   recordInflow,
   recordOutflow,
   shouldRecomputeCatchment,
+  type PendingBuilding,
   type Settlement,
 } from './world/settlement.js';
 import { dayOfYearToSeason, type Season } from './world/terrain.js';
 import { hexDistance, hexEquals, type Hex } from './world/hex.js';
 import {
+  jobId,
   resourceId,
   type ActorId,
   type BanditCampId,
@@ -233,6 +235,13 @@ export type TickEvent =
       readonly costCoin: number;
     }
   | {
+      readonly type: 'building_completed';
+      readonly settlement: SettlementId;
+      readonly building: BuildingId;
+      readonly ownerActor: ActorId;
+      readonly daysToBuild: number;
+    }
+  | {
       readonly type: 'workers_reallocated';
       readonly settlement: SettlementId;
       readonly fromJob: JobId;
@@ -273,6 +282,10 @@ export const tick = (inputs: TickInputs): TickResult => {
 
   // --- Phase 1: Production -------------------------------------------------
   productionPhase(world, season, events);
+  // After production, drain mason+carpenter worker-days toward each
+  // settlement's pendingBuildings. Per docs/15 §C8 — construction takes
+  // real time and labor; new buildings don't appear instantly.
+  constructionPhase(world, today, events);
 
   // --- Phase 2: Consumption ------------------------------------------------
   consumptionPhase(world, today, events);
@@ -2429,6 +2442,67 @@ const spawnNewsFromPatrolBattle = (
   }
 };
 
+// --- Construction phase (docs/08 §"Construction is heavy", docs/15 §C8) -
+
+/**
+ * Each tick, drain mason + carpenter worker-days from each settlement's
+ * jobAllocations toward its pendingBuildings (FIFO). When a building's
+ * workerDaysRemaining hits 0, materialize it via addBuilding and remove
+ * the pending entry. The pending building's hex MUST still be valid at
+ * completion (catchment recompute can have shrunk the catchment); if it
+ * isn't, the build aborts and the resources are lost (an unfortunate
+ * but realistic outcome — the patron whose smithy site got abandoned
+ * for the new town wall has to write off the lumber).
+ */
+const constructionPhase = (world: WorldState, today: Day, events: TickEvent[]): void => {
+  for (const settlement of world.settlements.values()) {
+    if (settlement.pendingBuildings.length === 0) continue;
+    // Available worker-days per tick = mason + carpenter allocations.
+    const masonDays = settlement.jobAllocations.get(jobId('mason')) ?? 0;
+    const carpenterDays = settlement.jobAllocations.get(jobId('carpenter')) ?? 0;
+    let budget = masonDays + carpenterDays;
+    if (budget <= 0) continue;
+    // FIFO drain. We don't pre-claim labor — it's a soft accounting that
+    // says "these workers also do a fraction of mason/carpenter recipe
+    // labor". The abstraction is acceptable for v1.5.
+    const completed: number[] = [];
+    for (let i = 0; i < settlement.pendingBuildings.length && budget > 0; i++) {
+      const pb = settlement.pendingBuildings[i] as PendingBuilding;
+      const apply = Math.min(budget, pb.workerDaysRemaining);
+      pb.workerDaysRemaining -= apply;
+      budget -= apply;
+      if (pb.workerDaysRemaining <= 0) completed.push(i);
+    }
+    // Materialize completed builds in reverse index order so splice is safe.
+    for (let j = completed.length - 1; j >= 0; j--) {
+      const idx = completed[j] as number;
+      const pb = settlement.pendingBuildings[idx] as PendingBuilding;
+      // Catchment may have shrunk; check the hex is still in this
+      // settlement before adding.
+      const stillValid =
+        settlement.urbanHexes.some((u) => hexEquals(u, pb.hex)) ||
+        settlement.catchmentHexes.some((c) => hexEquals(c, pb.hex));
+      settlement.pendingBuildings.splice(idx, 1);
+      if (!stillValid) continue;
+      const def = getBuilding(pb.buildingId);
+      addBuilding(settlement, {
+        buildingId: pb.buildingId,
+        hex: pb.hex,
+        ownerActor: pb.ownerActor,
+        capacity: def.capacityUnits,
+        daysSinceMaintained: 0,
+      });
+      events.push({
+        type: 'building_completed',
+        settlement: settlement.id,
+        building: pb.buildingId,
+        ownerActor: pb.ownerActor,
+        daysToBuild: today - pb.beganOnDay,
+      });
+    }
+  }
+};
+
 // --- Investment phase (docs/15 §C4 — Stage 2 specialization) --------------
 
 /**
@@ -2478,12 +2552,16 @@ const investmentPhase = (world: WorldState, _today: Day, events: TickEvent[]): v
       else owner.stockpile.delete(resId);
     }
 
-    addBuilding(settlement, {
+    // Per docs/08 §"Construction is heavy" + docs/15 §C8: don't add the
+    // building immediately. Push a pendingBuilding; the construction
+    // phase drains mason + carpenter worker-days each tick until done.
+    settlement.pendingBuildings.push({
       buildingId: def.id,
       hex: placement,
       ownerActor: owner.id,
-      capacity: def.capacityUnits,
-      daysSinceMaintained: 0,
+      beganOnDay: _today,
+      workerDaysRemaining: constructionWorkerDays(def.id),
+      workerDaysTotal: constructionWorkerDays(def.id),
     });
 
     events.push({
@@ -2596,6 +2674,26 @@ const scoreInvestmentCandidates = (
 };
 
 const MAX_BUILDINGS_OF_TYPE = 6;
+
+/**
+ * Worker-days required to construct a building. Heuristic by building cost:
+ * sum of constructionCost units, scaled by a per-building factor. Roughly:
+ * - simple wood/tools structures (farm, pasture): ~30 worker-days
+ * - brick/stone workshops (mill, bakery, smithy): ~60 worker-days
+ * - large industrial (bloomery, charcoal_kiln, granary): ~90 worker-days
+ *
+ * Caps the multiplier so a typo in constructionCost doesn't make a
+ * building take a year. Per docs/08 §"Construction is heavy" + docs/15
+ * §C8.
+ */
+const constructionWorkerDays = (id: BuildingId): number => {
+  const def = getBuilding(id);
+  let totalUnits = 0;
+  for (const qty of def.constructionCost.values()) totalUnits += qty;
+  // Each cost unit ≈ ~5 worker-days on average. Floor 30, cap 90.
+  const raw = Math.round(totalUnits * 5);
+  return Math.max(30, Math.min(90, raw));
+};
 
 const pickBuildingHex = (settlement: Settlement, buildingId: BuildingId): Hex | null => {
   // Prefer urban hexes that don't already host this building type.

@@ -99,6 +99,25 @@ export interface Settlement {
    * recipe_blocked-labor events and clearing prices.
    */
   readonly jobAllocations: Map<JobId, number>;
+  /**
+   * In-progress construction projects (docs/08 §"Construction is heavy"
+   * + docs/15 §C8). Buildings spend mason+carpenter worker-days here
+   * before becoming productive. The investmentPhase pushes new pending
+   * builds; the construction phase drains worker-days from settlement
+   * allocations toward them; when workerDaysRemaining hits 0 the
+   * building is materialized via addBuilding and the entry is removed.
+   */
+  readonly pendingBuildings: PendingBuilding[];
+}
+
+export interface PendingBuilding {
+  readonly buildingId: BuildingId;
+  readonly hex: Hex;
+  readonly ownerActor: ActorId;
+  readonly beganOnDay: Day;
+  workerDaysRemaining: number;
+  /** Total at start, kept for telemetry / progress display. */
+  readonly workerDaysTotal: number;
 }
 
 export interface CreateSettlementInput {
@@ -162,6 +181,7 @@ export const createSettlement = (input: CreateSettlementInput): Settlement => {
     catchmentHexes: input.catchmentHexes.map(cloneHex),
     population: emptyPool(),
     buildings: [],
+    pendingBuildings: [],
     factions: input.factions ? [...input.factions] : [],
     stockpileOwners: input.stockpileOwners ? [...input.stockpileOwners] : [],
     market: {
