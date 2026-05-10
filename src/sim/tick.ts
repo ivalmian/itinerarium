@@ -1108,9 +1108,12 @@ const localTradePhase = (
         if (!isAnchorPassable(b)) continue;
         const dist = hexDistance(a.anchor, b.anchor);
         if (dist > LOCAL_TRADE_MAX_HEX_DISTANCE) continue;
-        const transportCost = TRANSPORT_COST_BY_DISTANCE[dist] ?? 0;
+        // Per docs/06 §"Distance and cost", the table is in coin/kg, not
+        // coin/unit. tryLocalTrade scales by the resource's weightKgPerUnit
+        // before comparing prices.
+        const transportCostPerKg = TRANSPORT_COST_BY_DISTANCE[dist] ?? 0;
         for (const resId of LOCAL_TRADE_RESOURCES) {
-          tryLocalTrade(world, a, b, resId, transportCost, events);
+          tryLocalTrade(world, a, b, resId, transportCostPerKg, events);
         }
       }
     }
@@ -1122,13 +1125,24 @@ const tryLocalTrade = (
   a: Settlement,
   b: Settlement,
   resId: ResourceId,
-  transportCost: number,
+  transportCostPerKg: number,
   events: TickEvent[],
 ): void => {
   const priceA = a.market.lastClearingPrice.get(resId);
   const priceB = b.market.lastClearingPrice.get(resId);
   if (priceA === undefined || priceB === undefined) return;
   if (priceA <= 0 || priceB <= 0) return;
+
+  // Per docs/06 §"Distance and cost", transport is a coin/kg surcharge.
+  // Convert to coin/unit using the resource's weight before comparing
+  // prices (which are themselves coin/unit). Heavy goods like grain
+  // (~6.7 kg/modius) eat a meaningful chunk of any price spread; tiny
+  // luxuries like spices barely notice.
+  const def = getResource(resId);
+  const weightKgPerUnit = def.weightKgPerUnit;
+  if (weightKgPerUnit <= 0) return;
+  const transportCostPerUnit = transportCostPerKg * weightKgPerUnit;
+
   // Pick seller = cheaper, buyer = dearer; only fire if spread covers
   // transport. The PETTY_MERCHANT_CUT is also netted out so we don't trade
   // away the merchant's livelihood.
@@ -1136,12 +1150,12 @@ const tryLocalTrade = (
   let buyer: Settlement;
   let sellerPrice: number;
   let buyerPrice: number;
-  if (priceA + transportCost < priceB) {
+  if (priceA + transportCostPerUnit < priceB) {
     seller = a;
     buyer = b;
     sellerPrice = priceA;
     buyerPrice = priceB;
-  } else if (priceB + transportCost < priceA) {
+  } else if (priceB + transportCostPerUnit < priceA) {
     seller = b;
     buyer = a;
     sellerPrice = priceB;
@@ -1149,7 +1163,7 @@ const tryLocalTrade = (
   } else {
     return;
   }
-  const spread = buyerPrice - sellerPrice - transportCost;
+  const spread = buyerPrice - sellerPrice - transportCostPerUnit;
   if (spread <= 0) return;
   // Petty merchant absorbs a small cut of the spread; if the residual
   // spread is non-positive, no trade is attractive enough to walk.
@@ -1158,7 +1172,7 @@ const tryLocalTrade = (
 
   // Settle at the midpoint price (split the spread). The buyer pays
   // mid; the seller receives mid. Transport cost is implicit in the
-  // gap between sellerPrice + transportCost ≤ mid ≤ buyerPrice.
+  // gap between sellerPrice + transportCostPerUnit ≤ mid ≤ buyerPrice.
   const midPrice = (sellerPrice + buyerPrice) / 2;
   if (midPrice <= 0) return;
 
@@ -1166,10 +1180,6 @@ const tryLocalTrade = (
   if (sellerActor === null) return;
   const buyerActor = pickBuyerActor(world, buyer);
   if (buyerActor === null) return;
-
-  const def = getResource(resId);
-  const weightKgPerUnit = def.weightKgPerUnit;
-  if (weightKgPerUnit <= 0) return;
 
   const sellerStock = sellerActor.stockpile.get(resId) ?? 0;
   if (sellerStock <= 0) return;
