@@ -11,7 +11,7 @@ reveal.
 These exist (or should exist) in `src/burnin/` and are wired into the
 CLI runner so any burn-in can dump them.
 
-### Per-settlement, per-resource time series (planned)
+### Per-settlement, per-resource time series (planned, docs/15 §C15)
 
 For each (settlement, resource), record at every tick:
 
@@ -21,10 +21,13 @@ For each (settlement, resource), record at every tick:
 - `lastClearingPrice`
 - `unmetDemandAtClearingPrice` (from market clearing)
 
-Dump as CSV per settlement (`outDir/settlement-X-resource-Y.csv`) with
-one row per tick. A spreadsheet or quick `chart` script reveals
-collapses (line going to zero), runaway prices (line going up
-exponentially), or production starvation (inflow=0 for many days).
+Dump as CSV per settlement (`outDir/settlement-X-resource-Y.csv`)
+with one row per tick. Not yet implemented; current debug telemetry
+in `scripts/debug-activity.ts` is global yearly aggregates only.
+A spreadsheet or quick `chart` script over the planned per-settlement
+CSV would reveal collapses (line going to zero), runaway prices
+(line going up exponentially), or production starvation (inflow=0
+for many days).
 
 ### Global aggregates
 
@@ -52,13 +55,16 @@ you *which* input is the bottleneck. If `mill_grain` is missing
 `food.grain` 90% of days, the upstream `harvest_grain` is the real
 problem (not the mill).
 
-### Per-named-character reputation slate
+### Per-named-character reputation slate (planned)
 
 Helpful when the political layer behaves oddly. Dump every named
 character's reputation toward every other actor at the end of a run
 (or periodically). Look for runaway negative cascades (everyone hates
 the player) or implausible positives (the player is "everyone's
-friend" without effort).
+friend" without effort). Today `scripts/debug-activity.ts` only
+reports the total number of reputation entries; the full
+character-by-character dump is the obvious next step (rolled into
+docs/15 §C15 alongside the per-settlement-resource CSV).
 
 ## Failure patterns and what they look like
 
@@ -174,8 +180,8 @@ remaining buyer.
    alone can pay enormously, prices reflect that.
 
 **Fix**: current behavior caps prices at a sane multiple of the base
-price (configurable). [TODO] Model the cascading consequences
-(riots → edicts → mob looting) per docs/08.
+price (configurable). Modeling the cascading consequences (riots →
+edicts → mob looting) per docs/08 is tracked in docs/15 §C16.
 
 ## How to add a new instrument
 

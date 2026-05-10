@@ -155,7 +155,10 @@ counter (integer, 0 at procgen for un-roaded hexes). Every day:
 4. **Roman roads are engineered, not worn in.** Hexes with
    `road === 'roman'` don't gain wear (no upgrade target above
    them) and their wear-counter doesn't decay because the road is
-   maintained. [TODO] Add separate Roman-road maintenance machinery.
+   maintained — both behaviors landed in `addRoadWear`/
+   `trailWearTickPhase`. Modeling a real labor + materials cost
+   for the maintenance (so a defunded province eventually loses
+   its roads) is tracked in docs/15 §C11.
 5. **Dirt roads can downgrade.** A `dirt` hex whose roadWear
    falls below 20 (sustained low traffic) reverts to
    `road = 'none'`. Wear keeps accruing during the dirt phase, so

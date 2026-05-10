@@ -333,13 +333,6 @@ population drops over months as the local pasture/garden can no
 longer cover the deficit. This is the docs/00 pillar promise: "block
 the food → city dies."
 
-**Why a settlement starves**: when its specialty stockpile (the thing
-it exports) builds up to capacity AND the food it needs to import
-isn't arriving (caravan disrupted, road closed, neighbor hostile),
-population drops over months as the local pasture/garden can no
-longer cover the deficit. This is the docs/00 pillar promise: "block
-the food → city dies."
-
 ## Storage capacity (locked)
 
 Settlements have **finite storage capacity** for goods, just like
@@ -374,11 +367,12 @@ This is the realistic constraint that makes warehouses + granaries
 matter as buildings — without them, a city's traders can't
 accumulate enough stockpile to weather a bad season.
 
-For current bootstrap, capacity checks are **bypassed** during the
-seedWorld bootstrap (so settlements start with a generous reserve)
-and **enforced** during the tick loop (so steady-state capacity
-discipline applies). [TODO] Full capacity discipline from day 1
-requires a careful initial-build pass.
+**Current implementation status (planned, tracked in docs/15 §C10).**
+Capacity discipline is not yet enforced anywhere — neither at
+bootstrap nor in the tick loop. Stockpiles grow without bound. This
+is fine for current burn-ins (no settlement holds an absurd amount)
+but the realistic gameplay constraint above does not yet bite.
+See docs/15 §C10 for the full follow-up plan.
 
 ## Market state per settlement
 

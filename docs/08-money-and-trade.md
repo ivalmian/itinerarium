@@ -425,9 +425,10 @@ Building a new bloomery or warehouse is a multi-week investment:
   exists as `pendingBuilding` but produces zero. Typical times:
   simple hamlet-scale structures ~30 worker-days, village / town
   workshops ~60, and larger industrial or civic builds ~90.
-- **Demolition is also slow**. [TODO] A settlement that wants to
-  repurpose a hex should spend ~10–20% of construction time tearing
-  the existing building down (some materials recoverable, some lost).
+- **Demolition is also slow** (planned, see docs/15 §C8): a
+  settlement that wants to repurpose a hex should spend ~10–20% of
+  construction time tearing the existing building down (some
+  materials recoverable, some lost). Not yet implemented.
 - **Maintenance accrues**: per `maintenancePerDay`, every running
   building consumes a small daily resource flow. A neglected
   building decays after `decayDaysIfUnmaintained` and stops
@@ -443,7 +444,8 @@ creates real political tension: who gets to build *what* in the
 city's hexes, and who profits.
 
 The current v1.5 implementation (see `src/sim/tick.ts`
-`investmentPhase` and the construction phase) deducts construction
+`investmentPhase` and `constructionPhase`) deducts construction
 resources immediately, creates a `pendingBuilding`, then spends
-construction worker-days before materializing the building. [TODO]
-Demolition and more detailed construction labor specialization.
+construction worker-days before materializing the building.
+Demolition and labor-role-specific construction (mason vs.
+carpenter vs. unskilled) remain follow-ups (docs/15 §C8 + §C14).

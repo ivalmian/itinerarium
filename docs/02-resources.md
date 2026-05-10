@@ -42,7 +42,7 @@ only — they don't restrict gameplay.
 | `food.bread` | flour + fuel + baker | Spoils in days; mostly produced where consumed. |
 | `food.olive_oil` | olives + press labor + amphora | Stores well; cooking + lighting + soap. |
 | `food.wine` | grapes + vintner + amphora | Improves over years; major trade good. |
-| `food.cheese` | milk + salt + dairy labor | Stores well. [TODO] Milk is currently implicit in dairy recipes; decide whether to promote raw milk to a tracked resource. |
+| `food.cheese` | milk + salt + dairy labor | Stores well. Milk is currently implicit in dairy recipes — see docs/15 §C12 for the promotion-to-tracked-resource decision. |
 | `food.salted_fish` | fish + salt + labor | Stores months; major Roman trade good. (Garum is a sub-variant — skip for current scope.) |
 | `food.salted_meat` | livestock slaughter + salt | Stores months. |
 | `material.wool` | sheep + shearer | Annual yield per herd unit. |
@@ -55,7 +55,7 @@ only — they don't restrict gameplay.
 | `material.pottery` | clay + fuel + potter | Storage, daily use. |
 | `material.amphora` | clay + fuel + potter | Specialized — required to ship liquids. |
 | `metal.iron` | iron_ore + charcoal + smelter | Bar stock. |
-| `metal.bronze` | copper/tin ore + charcoal + smelter | Bar stock; Roman-era still common for fittings. [TODO] Decide whether to add `metal.copper` / `metal.tin` intermediates or keep bronze as direct ore alloying. |
+| `metal.bronze` | copper/tin ore + charcoal + smelter | Bar stock; Roman-era still common for fittings. The current `alloy_bronze` recipe takes ore directly; whether to add `metal.copper` / `metal.tin` intermediates is tracked in docs/15 §C13. |
 | `metal.lead` | lead_ore + charcoal | Plumbing, weights, sling bullets. |
 | `metal.silver` | silver_ore + lead + cupellation labor | Coinage, plate. |
 | `metal.gold` | gold_ore + labor | Coinage, status. |

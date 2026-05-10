@@ -91,7 +91,7 @@ raise_sheep:                                     # annual flows shown
   labor:    { shepherd: 0.2 per herd unit (≈100 sheep) }
   outputs:  (per herd unit, per year — applied as steady daily fractions)
             { material.wool:               200,    # kg
-              raw_milk (→ cheese recipe):  5000,   # [TODO] Track resource vs implicit dairy flow
+              raw_milk (→ cheese recipe):  5000,   # implicit dairy flow today; see docs/15 §C12
               food.salted_meat (on cull):  600,
               material.hides (on cull):    30 }
   notes:    standing herd is itself a stockpile; over-grazing degrades
@@ -128,9 +128,9 @@ caravan_transport:                               # see also [06 — Caravans]
 `throw_pottery`, `throw_amphorae`, `smelt_iron`, `alloy_bronze`,
 `smelt_lead`, `cupel_silver`, `refine_gold`.
 
-[TODO] `alloy_bronze` currently models copper/tin ore flowing
-directly into bronze; decide whether separate `metal.copper` and
-`metal.tin` intermediates are worth the added resource count.
+`alloy_bronze` currently models copper/tin ore flowing directly into
+bronze; whether to split out `metal.copper` and `metal.tin`
+intermediates is tracked in docs/15 §C13.
 
 **Manufacture:** `weave_cloth`, `tailor_clothing`, `forge_tools`,
 `forge_weapons`, `forge_armor`, `make_shields`, `build_cart`,
