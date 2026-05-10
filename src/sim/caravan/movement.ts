@@ -189,7 +189,11 @@ export const tickCaravanMovement = (inputs: CaravanTickInputs): CaravanTickResul
     const dest = c.destination;
     if (hexEquals(c.position, dest)) {
       // Already there; no movement, but emit arrived so callers can react
-      // (e.g. begin trading at the market).
+      // (e.g. begin trading at the market). This also implements the
+      // docs/05 §"Same-hex coexistence" 0-day short-circuit: a caravan
+      // trading between two settlements that share a hex (the Roman *pagus*
+      // pattern) arrives in the same tick — no trivial "walk from A to B
+      // within the hex" leg.
       arrived = true;
     } else if (grid.has(c.position) && grid.has(dest)) {
       const result: PathResult = findPath(

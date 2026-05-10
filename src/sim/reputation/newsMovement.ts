@@ -120,6 +120,12 @@ export const tickCarrierWithGrid = (inputs: NewsTickWithGridInputs): NewsCarrier
   const { carrier, grid, season } = inputs;
   if (carrier.arrived) return carrier;
   if (hexEquals(carrier.position, carrier.destination)) {
+    // 0-day arrival per docs/05 §"Same-hex coexistence" / docs/15 §C9: a
+    // carrier whose destination is its own hex (the pagus pattern, where
+    // village + hamlet share a hex) arrives within the same tick. Note
+    // createNewsCarrier already handles the spawn=dest case at construction;
+    // this branch covers the "advanced into the dest hex on a previous tick
+    // without flipping arrived" defensive case.
     return { ...carrier, arrived: true };
   }
   if (!grid.has(carrier.position) || !grid.has(carrier.destination)) {

@@ -69,6 +69,25 @@ describe('tickCaravanMovement — destination handling', () => {
     expect(result.hexesMoved).toEqual([]);
     expect(result.events.some((e) => e.type === 'arrived')).toBe(true);
   });
+
+  it('same-hex destination is a 0-day short-circuit (docs/15 §C9 same-hex coexistence)', () => {
+    // The pagus pattern: a village + multiple hamlets all share a hex. A
+    // caravan trading from one same-hex settlement to another should arrive
+    // within the same tick — there is no "trivial caravan walking from A
+    // to B in the same hex" anti-pattern. We assert that no hexes were
+    // moved, the arrived event fires, and no impassable_blocked event was
+    // emitted (confirming the short-circuit ran before any pathing).
+    const g = createGrid();
+    fillRect(g, 0, 10, 0, 10, { road: 'roman' });
+    const sharedHex = hex(5, 5);
+    const c = muleCaravan(sharedHex, sharedHex);
+    const result = tickCaravanMovement({ caravan: c, grid: g, season: 'summer', today: 0 });
+    expect(result.hexesMoved).toEqual([]);
+    expect(c.position).toEqual(sharedHex);
+    const types = result.events.map((e) => e.type);
+    expect(types).toContain('arrived');
+    expect(types).not.toContain('impassable_blocked');
+  });
 });
 
 describe('tickCaravanMovement — speed under different conditions', () => {
