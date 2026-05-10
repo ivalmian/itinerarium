@@ -15,11 +15,13 @@ play loop.
 
 ### In
 
-- **1 day per turn.** Year = 365 turns. Player turn = one in-game
-  day, structured Vagrus-style: daily MP pool, spend during the
-  turn on movement / trade / combat / exploration, end the turn
-  by camping. Fast-forward UI required for long travel and
-  campaigns.
+- **1 day per turn, fully turn-based.** Year = 365 turns. Player
+  turn = one in-game day, structured Vagrus-style: daily MP pool,
+  spend during the turn on movement / trade / combat / exploration,
+  end the turn by camping. **No real-time fast-forward** — passing
+  time is just clicking End Turn (with or without actions). UI
+  surfaces auto-pause flags + hold-to-end-turn so long waits aren't
+  painful, but nothing in the sim "skips" days.
 - **1 km hexes.** A typical mule caravan's day ≈ 25 hexes (= 25
   km). All distances physically realistic.
 - **Map size: ~500 km × 500 km, ~250,000 hexes.** Most of the
@@ -132,7 +134,7 @@ loop: production → consumption → trade → demographics & disease
 
 | # | Question | Decision |
 |---|---|---|
-| 1 | Turn length | **1 day**, with fast-forward UI |
+| 1 | Turn length | **1 day**, fully turn-based; End Turn = advance one day, with or without actions |
 | 2 | Map size | **~500 × 500 km, ~250,000 hexes** with mostly wilderness between settled clusters |
 | 3 | Slavery as a modeled system | **Yes** — population class + transportable resource |
 | 4 | Exotic imports | **Real off-map caravans** (no magic spawning) |
@@ -155,7 +157,12 @@ loop: production → consumption → trade → demographics & disease
 | 21 | Named characters per faction | **Yes** — every faction has named characters who decide, remember, act, die, and are replaced |
 | 22 | News-carrier rumor propagation | **Locked** — reputation updates travel at the speed of caravans / refugees / escaped survivors, never instantly |
 | 23 | Battle survivor witness mechanic | **Locked** — escaped survivors become real news carriers; "leave no witnesses" is hard but possible; missing caravans seed indirect rumor |
-| 24 | Player turn UX | **Vagrus-style** — daily MP pool spent during the turn; end the turn by camping; fast-forward auto-pauses on configured events |
+| 24 | Player turn UX | **Vagrus-style** — daily MP pool spent during the turn; end the turn by camping; clicking End Turn without actions advances one day; auto-pause flags surface notable events |
+| 25 | Terrain difficulty model | **Per-(terrain, road) difficulty factors** (road=1, dirt=1.25, off-road varies 2.5–8); modified by load + equipment + animals. See [06 — Caravans](06-caravans.md) |
+| 26 | Goal-bearing units | **Caravans, migrations, military units, patrols carry persistent goals** (move_to / trade_at / escort / patrol / return_home / flee_to) on a stack, subject to money/food/health/season constraints |
+| 27 | Communicated price discovery | **Merchant guilds** mediate price gossip — caravans deposit observations to home guild, members read on arrival, guilds exchange across cities. Each NPC plans crowding-aware (no stampedes). See [08 — Money & Trade](08-money-and-trade.md) |
+| 28 | Escalating banditry response | Local watch → family guard → governor patrol → cohort sweep → cross-province reinforcement. Patterns of incidents (not single events) drive escalation. See [12 — Bandits & Conflict](12-bandits-and-conflict.md) |
+| 29 | Docs-first discipline | **Locked rule** in CLAUDE.md: design changes update docs FIRST, then code. Docs hold the conceptual data (recipes, vital rates, formulas). Code implements from docs |
 
 ## Open design risks
 
@@ -181,7 +188,7 @@ loop: production → consumption → trade → demographics & disease
   per-population want diagnostics, per-disease state,
   per-named-character reputation attribution, per-news-carrier
   in-transit visibility, per-market schedule view.
-- **Time-skip UX.** A 1-day turn means a 5-year campaign is
+- **End-turn UX.** A 1-day turn means a 5-year campaign is
   1,800+ turns. The Vagrus-style camp/rest with auto-pause
   events is the answer; it has to work well from day one.
 - **Burn-in convergence.** If the stabilization sim oscillates
@@ -236,5 +243,5 @@ loop: production → consumption → trade → demographics & disease
 10. Combat UI: simple resolution screens for ambushes, patrol
     encounters, settlement defense; explicit witness/survivor
     accounting.
-11. Time-skip UI with auto-pause events.
+11. End-turn UI with auto-pause events (no real-time fast-forward).
 12. Iterate against the headless tuning harness.

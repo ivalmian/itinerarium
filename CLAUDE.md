@@ -82,6 +82,17 @@ reflects current intent.
 
 ## Working norms in this repo
 
+- **Docs-first, always.** Before implementing or modifying code,
+  update the relevant design doc(s) FIRST. Code follows docs;
+  docs are the source of truth. If the user makes a design call
+  in conversation, the FIRST action is doc updates (then code,
+  then tests). Never implement a behavior that isn't documented.
+- **Docs hold all the conceptual data.** Recipe lists, resource
+  enumerations, building catalogs, job role tables, vital rates,
+  economic curves, combat formulas — all live in docs as the
+  authoritative reference. Code implements from docs, not the
+  other way around. If you need a new constant or a new
+  enumeration value, document it first.
 - Edit existing docs rather than create parallel ones; the doc
   map above is the source of truth.
 - When the user makes a new design call in conversation, update

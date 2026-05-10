@@ -93,6 +93,54 @@ Patrol effectiveness depends on:
 - Whether the patrol is bribed (corruption is real; some bandits
   effectively have safe-conduct).
 
+## Escalating banditry response (locked)
+
+A single ambush isn't immediately a governor-level problem. But
+patterns of incidents escalate up the political chain:
+
+1. **Local response**: when a caravan is robbed, news carriers
+   carry the report (per
+   [13 — Reputation](13-reputation-and-relationships.md)) to the
+   nearest settlement. The local headman / family agent /
+   merchant guild logs it. The local response is to send a
+   private guard or city watch patrol if available.
+2. **Pattern detection**: each settlement keeps a rolling count
+   of robbery / ambush reports per region (last 30 days). If the
+   count crosses a regional threshold, the settlement's leadership
+   formally asks the local family head (or city council) to fund
+   a stronger patrol. This is a real coin transfer + a new
+   patrol's spawn.
+3. **Family escalation**: family heads track banditry losses
+   across their estates. If their losses exceed a tolerance, they
+   raise the matter with the governor's office (a tax shipment
+   carries the petition; petitions take days to arrive).
+4. **Governor response**: the governor receives petitions + their
+   own intelligence (provincial garrison reports). If multiple
+   families petition AND the bandit problem is regional, the
+   governor diverts garrison to the affected region — the
+   "cohort sweep." This is a multi-day military movement.
+5. **Insurgency response**: if a bandit camp grows past
+   ~500 (insurgency-level per the size table above), the governor
+   treats it as proto-rebellion and assembles a serious force,
+   potentially calling in additional cohorts from neighboring
+   provinces (modeled as off-map reinforcement caravans).
+
+Each escalation step has a cost (coin, time, political capital).
+Local leadership prefers cheap responses; only persistent or large
+problems reach the governor. This means:
+
+- A clever bandit who picks isolated victims and stays small
+  can operate for years.
+- A successful bandit who grows too fast attracts a governor
+  response that wipes them out.
+- Player-as-bandit gameplay is shaped by knowing the escalation
+  thresholds and pacing accordingly.
+
+The player can reverse-engineer this: bribe the governor to slow
+escalation, take out specific informant caravans before reports
+arrive, or even buy into a friendly family that buffers their
+losses to delay petition.
+
 ## Friendly settlements and fences
 
 Not every settlement is hostile to bandits:

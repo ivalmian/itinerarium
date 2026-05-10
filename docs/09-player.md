@@ -69,26 +69,31 @@ wakes into.
 
 This style (modeled on Vagrus) lets the player feel each day's
 rhythm of choices without forcing them through a single
-"decision moment." It also lets time-skip work cleanly: a
-fast-forwarded day is just an auto-camp at the end.
+"decision moment."
 
-### Fast-forward mode
+### End-turn-without-actions (locked)
 
-For long travel or idle periods, the player can fast-forward:
-auto-camp each day, traveling along a preset route at full speed.
-The system **auto-pauses on configurable events**:
+The game is **fully turn-based**. There is no real-time fast-
+forward. To pass time without acting (e.g., waiting for a hired
+caravan to arrive, or for a contract to clear), the player simply
+clicks **End Turn** without spending MP. The world simulates one
+day per click. A long wait is many End Turn clicks — the UI may
+bind a hot-key or a hold-to-repeat, but nothing in the simulation
+"skips" days.
 
-- Caravan arrival at a settlement.
-- Market price change > X%.
-- Contract expiration.
-- News of war / plague / banditry surge.
-- Granary or warehouse threshold crossed.
-- Bandit attack on the player's caravan.
-- A reputation change above threshold.
-- Discovery of a hidden feature.
+To make long waits less painful, the UI surfaces:
 
-Without fast-forward, a 5-year campaign of ~1,800 turns is
-unplayable. With it, the player only sees turns that matter.
+- **Auto-pause flags**: the player sets watchpoints (caravan
+  arrival, price threshold, news of bandit surge, etc.) and the
+  UI emits a notification on the day a watchpoint fires. The
+  player can then choose to act or End Turn again.
+- **Hold-to-end-turn**: holding the End Turn key advances days
+  until a watchpoint fires or the player releases. This is just
+  a UI affordance — each day still simulates fully.
+
+This keeps the player squarely in the simulation: every day they
+spent waiting is a day the world also spent doing something. There
+is no concept of "skipped" time.
 
 ## Honest growth paths in v1
 

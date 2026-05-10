@@ -73,6 +73,39 @@ on a Roman road, ~5 days on dirt, ~10+ days off-road. A famine
 relief caravan is a real number of days late, not "instant on the
 turn the famine starts."
 
+### Terrain difficulty model (locked)
+
+Movement cost is computed as `base_movement_per_day / difficulty`,
+where difficulty is determined by the hex's terrain × road grade,
+modified by the mover's equipment / animals / load. Higher difficulty
+= slower. Reference difficulty factors (lower = easier):
+
+| Hex | Roman road | Dirt road | Off-road |
+|---|---|---|---|
+| Plains / fertile valley | 1 | 1.25 | 2.5 |
+| Coast / steppe / urban | 1 | 1.25 | 2.5 |
+| Hills / desert | 1 | 1.5 | 3.5 |
+| Forest | 1 | 1.5 | 4 |
+| Dense forest | 1 | 2 | 6 |
+| Marsh | 1 | 2 | 5 |
+| Mountains (summer) | 1 | 2 | 8 |
+| Mountains (winter) | impassable | impassable | impassable |
+| River (without ford/bridge) | impassable | impassable | impassable |
+| Lake | impassable | impassable | impassable |
+
+Modifiers (multiplicative on the off-road column where applicable):
+- Heavy load (>80% capacity): ×1.25 off-road, ×1.0 on Roman road
+- Wagon-class vehicle: cannot enter forest/dense_forest/mountains/
+  marsh off-road at all (impassable)
+- Camel pack train in arid: ×0.7 in desert/steppe; not allowed in
+  marsh
+- Roman legion: trained engineers reduce hills/forest off-road by 25%
+
+Equipment matters: a courier on a fast horse with no cargo gets the
+"light" profile (faster); a laden wagon gets the "heavy" profile
+(slower, road-bound). The pathfinder picks the path that minimizes
+total difficulty × distance, not raw distance.
+
 ## Consumption en route
 
 - Crew rations from cargo (or local purchase if passing through a
@@ -177,3 +210,47 @@ to evaluate export routes (see
 
 NPC caravans run the same code as the player; the player just gets
 manual control instead of heuristics.
+
+## Goal-bearing units (locked)
+
+Caravans, migration columns, military units, and patrols are all
+**goal-bearing** — they carry one or more persistent goals across
+ticks, and their per-tick behavior is "advance toward the current
+goal subject to current constraints." Without persistent goals,
+units would re-evaluate from scratch every day and either churn or
+sit still; with them, they actually accomplish multi-week intents
+like "haul wine from City A to City B and return with grain."
+
+A unit's GoalStack (top of stack = current goal):
+
+- `move_to(hex)` — pathfind, walk daily, finish on arrival.
+- `trade_at(settlement)` — open the market, sell intended cargo,
+  buy intended return cargo per its price book.
+- `escort(other_unit_id)` — stay within N hexes of another unit;
+  fight defensively for them.
+- `patrol(route_hexes)` — walk a cyclic route; engage suspicious
+  movers within reach.
+- `return_home()` — go back to base settlement; refuel; rest.
+- `flee_to(safe_hex)` — emergency goal pushed by the unit when
+  losing combat; pops on arrival.
+
+**Constraints always apply** — every goal is subject to:
+- Money: can't pay tolls / hire crew / restock without coin.
+- Food: must eat on the way; out-of-rations triggers a forage
+  sub-goal or detour to the nearest settlement.
+- Health: wounded crew slow down; sickness may force rest.
+- Time / season: winter mountain passes block goals that route
+  through them.
+- Reputation: a hostile settlement on the planned route forces a
+  detour or supply shortfall.
+
+When a goal becomes unattainable (path blocked, target settlement
+hostile, target caravan destroyed), the unit's planner pops the
+goal and either swaps in a fallback (return_home, fence_loot,
+disband) or escalates to its owner for a new directive.
+
+This is what lets long-running NPC behavior look intentional:
+a Vibian grain caravan doesn't redecide its destination each day
+— it knows it's bound for City B with grain, and only the planner
+re-evaluates if conditions change materially. Goal stacks are
+serialized as part of the WorldState snapshot.

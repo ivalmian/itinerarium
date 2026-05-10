@@ -24,10 +24,14 @@ Implications of a daily turn:
   Some bookkeeping (e.g. demographic aggregates, slow job retraining)
   can be deferred to multi-day intervals. Production, movement, and
   market clearing run every day at full resolution.
-- **The UI must support time-skip:** "advance until something
-  interesting happens" — a caravan arrives, a price moves >X%, a
-  contract expires, a granary crosses a threshold. Without this, a
-  year is 365 clicks. Time control is a first-tier UX concern.
+- **The game is fully turn-based.** There is no real-time fast-
+  forward or "skip ahead through days." A turn advances when the
+  player clicks "End Turn" — typically after spending their movement
+  points, but they may also click End Turn without taking any actions
+  (e.g., to wait for caravans they hired to arrive, or for news to
+  reach them). The world simulates one day per click. Long stretches
+  of waiting are just many End Turn clicks; the UI may bind a hot-
+  key to make this fast in practice.
 
 ## Space — physical scale (locked)
 

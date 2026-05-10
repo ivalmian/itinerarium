@@ -203,6 +203,51 @@ and pick up news from other caravans they meet.
 Arbitrage is **real labor**: finding the spread is part of the
 game, not a UI feature.
 
+## Communicated price discovery via guilds (locked)
+
+NPC merchants are not isolated — they share information through
+**merchant guilds**. Guilds are mid-level information hubs that
+mediate price gossip without breaking pillar 1 (no global market).
+A guild lives at a settlement; its members are NPC caravan owners
+based there. Information flows:
+
+1. **A caravan observes a price.** It updates its own price book.
+2. **On return to its home guild's settlement, it deposits a copy
+   of recent observations to the guild's price ledger** (a
+   settlement-attached, guild-owned price book).
+3. **Other guild members who arrive at the guild can read the
+   ledger** — paying a guild membership fee or already being a
+   member. This is a per-day update, not instant: a member
+   arriving on day D reads observations the guild had on day D.
+4. **Guilds talk to each other via traveling merchants.** When a
+   member visits a different guild (different city), they exchange
+   a subset of ledgers (also for a fee). This is the long-haul
+   rumor channel.
+
+Why this matters (and why no stampedes):
+
+- A spike in pottery price at City B reaches the guild in City A
+  several days later (when the caravan that observed it returns).
+- Guild members in City A then see the spike — but they all
+  receive the same info on the same day, and they each rationally
+  decide based on travel time, capacity, current cargo, and other
+  guild members' likely actions. **Not all jump at once because
+  the calculation includes "expected competition" — if every
+  guild member is heading to City B, the price will collapse by
+  the time mine arrives, so I should pick a different route.**
+- Crowding-aware planning: each NPC trader's planner accounts for
+  visible competing caravans planning the same route (visible via
+  the spatial index + guild gossip). Some defect to nearby
+  alternatives; only N caravans actually commit to City B.
+- Result: the price spike attracts more caravans over a few days
+  (not all at once), the surplus arrives gradually, the price
+  normalizes over a week, and the system settles. Natural
+  liquidity, no stampedes.
+
+Guilds are also the network through which the player's reputation
+spreads among honest merchants (cross-ref
+[13 — Reputation](13-reputation-and-relationships.md)).
+
 ## The off-map global market (locked)
 
 Beyond the playable map there is an abstract **global market**.
