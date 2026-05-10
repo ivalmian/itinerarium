@@ -60,12 +60,12 @@ async function main(): Promise<void> {
   }
   console.log('\n=== Conflict & politics ===');
   console.log(
-    'year,caravan_robbed,settlement_raided,patrol_dispatched,patrol_engaged,bandit_recruited,fence_traded,news_carrier_spawned,news_carrier_arrived,reputation_updated',
+    'year,caravan_robbed,settlement_raided,patrol_dispatched,patrol_engaged,bandit_recruited,fence_traded,news_carrier_spawned,news_carrier_arrived,reputation_updated,local_trade',
   );
   for (let y = 1; y <= 10; y++) {
     const b = yearBuckets[y] ?? {};
     console.log(
-      `${y},${b.caravan_robbed ?? 0},${b.settlement_raided ?? 0},${b.patrol_dispatched ?? 0},${b.patrol_engaged ?? 0},${b.bandit_recruited ?? 0},${b.fence_traded ?? 0},${b.news_carrier_spawned ?? 0},${b.news_carrier_arrived ?? 0},${b.reputation_updated ?? 0}`,
+      `${y},${b.caravan_robbed ?? 0},${b.settlement_raided ?? 0},${b.patrol_dispatched ?? 0},${b.patrol_engaged ?? 0},${b.bandit_recruited ?? 0},${b.fence_traded ?? 0},${b.news_carrier_spawned ?? 0},${b.news_carrier_arrived ?? 0},${b.reputation_updated ?? 0},${b.local_trade ?? 0}`,
     );
   }
   console.log('\nFinal world state:');
