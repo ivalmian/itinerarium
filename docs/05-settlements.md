@@ -87,6 +87,39 @@ Self-sufficiency rules of thumb:
   the supply lines and a city dies — exactly the consequence the
   player can engineer or suffer.
 
+### Dynamic catchment recompute (locked)
+
+Catchment is **not** static. A settlement that grows from 500 → 5,000
+people farms more land; a settlement that shrinks 5,000 → 500
+abandons fields back to wilderness. The procgen-assigned catchment
+is just the day-0 baseline.
+
+Per-settlement, every annual phase:
+
+1. Compare `current_pop` to `catchmentBaselinePop` (the population at
+   which the catchment was last sized).
+2. If `|current_pop − baselinePop| / baselinePop > 0.25` AND
+   `today − catchmentDayLastChanged > 365`: trigger a recompute.
+3. New catchment radius:
+   `r' = catchmentRadiusFor(tier) × sqrt(current_pop / typicalPopForTier(tier))`
+   (radius scales with √pop — area is what scales linearly with people).
+4. Released hexes (in old catchment, not in new): clear ownership
+   (`setOwner(grid, hex, null)`); buildings on those hexes are
+   abandoned (their owner stockpiles are NOT drained — the buildings
+   still belong to their owner but no longer produce).
+5. Claimed hexes (in new catchment, not in old): only if no
+   neighboring settlement already owns them. Contested hexes go to
+   the more populous settlement; ties broken by deterministic
+   settlement-id sort.
+6. Update `catchmentBaselinePop = current_pop` and
+   `catchmentDayLastChanged = today`.
+
+The 365-day cooldown prevents thrashing during rapid population
+swings (epidemic year + bounce-back).
+
+This is what makes a city visibly **swell** in the burn-in viewer
+when its trade arms grow, and **shrink** when a plague strikes.
+
 ## Ownership of catchment hexes (locked)
 
 Every catchment hex (every field, pasture, forest patch, mine

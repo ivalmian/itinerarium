@@ -41,7 +41,8 @@ reflects current intent.
   is wilderness between 3–5 settled clusters.
 - ~1,000–1,500 settlement entities; ~6,000 named characters;
   ~700k–1.2M modeled people in stratified pools.
-- SVG placeholder rendering, viewport-culled.
+- WebGL/PixiJS rendering for the burn-in viewer (see docs/16);
+  the eventual player UI may revisit this. Viewport-culled.
 - Deterministic sim with seeded RNG.
 - Data-oriented (Structure-of-Arrays) layout.
 - Sim loop separable from rendering — Web Worker candidate.
@@ -81,6 +82,10 @@ reflects current intent.
   and the locked decisions
 - [Debug strategies](docs/14-debug-strategies.md) — how to triage a
   failing burn-in (instruments + failure patterns + checklist)
+- [v1.5 cleanups](docs/15-v1-5-cleanups.md) — outstanding hacks +
+  acceptance criteria for the v1.5 sweep
+- [Burn-in viewer](docs/16-viewer.md) — browser viewer that runs
+  the sim live (PixiJS, pannable hex map, time controls)
 
 ## Working norms in this repo
 
