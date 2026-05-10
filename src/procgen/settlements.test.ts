@@ -162,9 +162,7 @@ describe('siteSettlements — siting rules', () => {
     for (const s of sites) {
       if (s.kind !== 'capital' && s.kind !== 'city') continue;
       // Anchor is always part of the urban set.
-      const inUrban = s.urbanHexes.some(
-        (h) => h.q === s.anchor.q && h.r === s.anchor.r,
-      );
+      const inUrban = s.urbanHexes.some((h) => h.q === s.anchor.q && h.r === s.anchor.r);
       expect(inUrban).toBe(true);
       // Each urban hex should be within distance (urbanHexes.length - 1) of anchor.
       for (const h of s.urbanHexes) {
@@ -382,4 +380,3 @@ describe('siteSettlements — anchor reachability', () => {
     }
   });
 });
-

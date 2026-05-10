@@ -52,8 +52,7 @@ export interface SettlementSiteOpts {
   readonly clusterRadiusHexes?: number;
 }
 
-const isWaterTile = (t: Terrain): boolean =>
-  t === 'lake' || t === 'river' || t === 'coast';
+const isWaterTile = (t: Terrain): boolean => t === 'lake' || t === 'river' || t === 'coast';
 
 /**
  * Tiles a settlement absolutely cannot anchor on. Mountains/dense_forest are
@@ -156,9 +155,7 @@ const scoreSecondarySite = (h: Hex, grid: HexGrid): number => {
   };
   let score = baseByTerrain[tile.terrain];
   const hasWater =
-    tile.hasRiver ||
-    tile.hasCoast ||
-    grid.neighborsOf(h).some(([, t]) => isWaterTile(t.terrain));
+    tile.hasRiver || tile.hasCoast || grid.neighborsOf(h).some(([, t]) => isWaterTile(t.terrain));
   if (hasWater) score += 1;
   return score;
 };
@@ -482,4 +479,3 @@ export const siteSettlements = (opts: SettlementSiteOpts): readonly SettlementSi
 
   return sites;
 };
-

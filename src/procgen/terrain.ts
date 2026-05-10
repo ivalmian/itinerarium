@@ -30,12 +30,7 @@ import { createRng, type Rng } from '../sim/rng.js';
 import { resourceId, type ResourceId } from '../sim/types.js';
 import { hex, hexNeighbors } from '../sim/world/hex.js';
 import { createGrid, type HexGrid } from '../sim/world/grid.js';
-import {
-  type Climate,
-  type HexDeposit,
-  type HexTile,
-  type Terrain,
-} from '../sim/world/terrain.js';
+import { type Climate, type HexDeposit, type HexTile, type Terrain } from '../sim/world/terrain.js';
 
 export interface TerrainGenOpts {
   readonly seed: string;
