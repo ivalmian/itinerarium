@@ -93,8 +93,8 @@ import {
   type PendingBuilding,
   type Settlement,
 } from './world/settlement.js';
-import { dayOfYearToSeason, type Season } from './world/terrain.js';
-import { hexDistance, hexEquals, type Hex } from './world/hex.js';
+import { dayOfYearToSeason, isPassable, type Season } from './world/terrain.js';
+import { hexDistance, hexEquals, hexKey, hexesWithinRange, type Hex } from './world/hex.js';
 import {
   jobId,
   resourceId,
@@ -247,6 +247,14 @@ export type TickEvent =
       readonly fromJob: JobId;
       readonly toJob: JobId;
       readonly count: number;
+    }
+  | {
+      readonly type: 'local_trade';
+      readonly fromSettlement: SettlementId;
+      readonly toSettlement: SettlementId;
+      readonly resource: ResourceId;
+      readonly quantity: number;
+      readonly coinPaid: number;
     };
 
 export interface TickResult {
@@ -295,6 +303,13 @@ export const tick = (inputs: TickInputs): TickResult => {
 
   // --- Phase 4: Trade ------------------------------------------------------
   tradePhase(world, events);
+  // After every settlement clears its market, run the petty-merchant /
+  // villager-pickup-cart pass that arbitrages price spreads between
+  // settlements within 3 hexes (docs/06 §"Local trade between nearby
+  // settlements", docs/08 §"Per-settlement markets, regional smoothing").
+  // This is what keeps ~8000 separate markets aligned into a regional
+  // price gradient instead of 8000 disconnected wells.
+  localTradePhase(world, season, today, events);
 
   // --- Phase 5: Demographics ----------------------------------------------
   demographicsPhase(world, today, rng.derive('demographics'), events);
@@ -860,6 +875,255 @@ const parseSellerOwner = (sourceId: string): ActorId | null => {
   if (at <= 0) return null;
   return sourceId.slice(0, at) as ActorId;
 };
+
+// --- Phase 4b: Local trade (regional smoothing) -----------------------------
+
+/**
+ * Petty merchants and villager pickup carts that walk between nearby
+ * settlements (≤3 hexes) every day, arbitraging local price spreads with
+ * small loads. Per docs/06 §"Local trade between nearby settlements" and
+ * docs/08 §"Per-settlement markets, regional smoothing".
+ *
+ * For each unordered settlement pair (A, B) within 3 hexes whose anchors are
+ * both on passable terrain in the current season:
+ *   - For each tradable resource R for which BOTH settlements have observed
+ *     a clearing price:
+ *       - Add a transport-cost surcharge per the docs/06 distance table.
+ *       - If the spread (after transport cost) is positive, pick the cheaper
+ *         settlement as seller and the dearer as buyer.
+ *       - Find any seller-side actor with stock>0 and any buyer-side actor
+ *         with treasury>0; move ≤MAX_PETTY_LOAD_KG worth of R from seller
+ *         to buyer at the midpoint price (split the spread).
+ *       - The petty merchant takes a 5% cut on the spread; in v1.5 we just
+ *         absorb it (no separate merchant household ledger; tracked as a
+ *         follow-up).
+ *
+ * Determinism: settlements are visited in insertion order; pairs are formed
+ * with seller.id < buyer.id (lexicographic) so each unordered pair is
+ * visited at most once per tick. Within a pair, owners are scanned in their
+ * current `stockpileOwners` order (the same order all other phases use).
+ *
+ * Performance: a hex-keyed spatial index of settlement anchors is built once
+ * per phase; each settlement enumerates only its 3-radius hex neighborhood
+ * (~37 hexes) instead of comparing against all N settlements (an O(N²) walk
+ * is unacceptable at the future-state ~8000-settlement scale).
+ *
+ * Same-hex (distance 0) is supported with zero transport cost — that is the
+ * canonical pagus + dependent-hamlets case from docs/05 §"Same-hex
+ * coexistence".
+ */
+const localTradePhase = (
+  world: WorldState,
+  season: Season,
+  today: Day,
+  events: TickEvent[],
+): void => {
+  void today;
+  // Build hex → settlements index once. Multiple settlements may share a hex
+  // (the pagus + hamlets case); the entry is therefore an array.
+  const settlementsByAnchorHex = new Map<string, Settlement[]>();
+  for (const s of world.settlements.values()) {
+    const k = hexKey(s.anchor);
+    let bucket = settlementsByAnchorHex.get(k);
+    if (bucket === undefined) {
+      bucket = [];
+      settlementsByAnchorHex.set(k, bucket);
+    }
+    bucket.push(s);
+  }
+
+  // Cache anchor passability per phase. v1 approximation: a pair is feasible
+  // if both anchors are on passable terrain this season. Real path
+  // reachability across intervening hexes would require an A* call per pair
+  // and is deferred to v1.5+ when long-haul caravan AI consolidation lands.
+  const passableAtAnchor = new Map<string, boolean>();
+  const isAnchorPassable = (s: Settlement): boolean => {
+    const k = hexKey(s.anchor);
+    const cached = passableAtAnchor.get(k);
+    if (cached !== undefined) return cached;
+    const tile = world.grid.get(s.anchor);
+    // If the tile isn't in the grid (test stub), treat as passable so unit
+    // tests don't have to populate every hex with terrain just to exercise
+    // local trade.
+    const ok = tile === undefined ? true : isPassable(tile.terrain, season);
+    passableAtAnchor.set(k, ok);
+    return ok;
+  };
+
+  for (const a of world.settlements.values()) {
+    if (!isAnchorPassable(a)) continue;
+    // Enumerate every hex within 3 of A's anchor and look up settlements
+    // anchored there. This is O(37 * pairsPerHex) per A, vs O(N) naive.
+    for (const neighborHex of hexesWithinRange(a.anchor, LOCAL_TRADE_MAX_HEX_DISTANCE)) {
+      const bucket = settlementsByAnchorHex.get(hexKey(neighborHex));
+      if (bucket === undefined) continue;
+      for (const b of bucket) {
+        // Determinism: visit each unordered pair once, with id ordering.
+        if (String(a.id) >= String(b.id)) continue;
+        if (!isAnchorPassable(b)) continue;
+        const dist = hexDistance(a.anchor, b.anchor);
+        if (dist > LOCAL_TRADE_MAX_HEX_DISTANCE) continue;
+        const transportCost = TRANSPORT_COST_BY_DISTANCE[dist] ?? 0;
+        for (const resId of LOCAL_TRADE_RESOURCES) {
+          tryLocalTrade(world, a, b, resId, transportCost, events);
+        }
+      }
+    }
+  }
+};
+
+const tryLocalTrade = (
+  world: WorldState,
+  a: Settlement,
+  b: Settlement,
+  resId: ResourceId,
+  transportCost: number,
+  events: TickEvent[],
+): void => {
+  const priceA = a.market.lastClearingPrice.get(resId);
+  const priceB = b.market.lastClearingPrice.get(resId);
+  if (priceA === undefined || priceB === undefined) return;
+  if (priceA <= 0 || priceB <= 0) return;
+  // Pick seller = cheaper, buyer = dearer; only fire if spread covers
+  // transport. The PETTY_MERCHANT_CUT is also netted out so we don't trade
+  // away the merchant's livelihood.
+  let seller: Settlement;
+  let buyer: Settlement;
+  let sellerPrice: number;
+  let buyerPrice: number;
+  if (priceA + transportCost < priceB) {
+    seller = a;
+    buyer = b;
+    sellerPrice = priceA;
+    buyerPrice = priceB;
+  } else if (priceB + transportCost < priceA) {
+    seller = b;
+    buyer = a;
+    sellerPrice = priceB;
+    buyerPrice = priceA;
+  } else {
+    return;
+  }
+  const spread = buyerPrice - sellerPrice - transportCost;
+  if (spread <= 0) return;
+  // Petty merchant absorbs a small cut of the spread; if the residual
+  // spread is non-positive, no trade is attractive enough to walk.
+  const netSpread = spread * (1 - PETTY_MERCHANT_CUT);
+  if (netSpread <= 0) return;
+
+  // Settle at the midpoint price (split the spread). The buyer pays
+  // mid; the seller receives mid. Transport cost is implicit in the
+  // gap between sellerPrice + transportCost ≤ mid ≤ buyerPrice.
+  const midPrice = (sellerPrice + buyerPrice) / 2;
+  if (midPrice <= 0) return;
+
+  const sellerActor = pickSellerActor(world, seller, resId);
+  if (sellerActor === null) return;
+  const buyerActor = pickBuyerActor(world, buyer);
+  if (buyerActor === null) return;
+
+  const def = getResource(resId);
+  const weightKgPerUnit = def.weightKgPerUnit;
+  if (weightKgPerUnit <= 0) return;
+
+  const sellerStock = sellerActor.stockpile.get(resId) ?? 0;
+  if (sellerStock <= 0) return;
+  const maxByLoad = MAX_PETTY_LOAD_KG / weightKgPerUnit;
+  const maxByTreasury = buyerActor.treasury / midPrice;
+  const qty = Math.min(maxByLoad, sellerStock, maxByTreasury);
+  if (qty <= 1e-9) return;
+
+  const coinPaid = qty * midPrice;
+  // Apply the transfer.
+  decreaseStockpile(sellerActor, resId, qty);
+  const buyerCurrent = buyerActor.stockpile.get(resId) ?? 0;
+  buyerActor.stockpile.set(resId, buyerCurrent + qty);
+  sellerActor.treasury = sellerActor.treasury + coinPaid;
+  buyerActor.treasury = buyerActor.treasury - coinPaid;
+  recordOutflow(seller, resId, qty);
+  recordInflow(buyer, resId, qty);
+
+  events.push({
+    type: 'local_trade',
+    fromSettlement: seller.id,
+    toSettlement: buyer.id,
+    resource: resId,
+    quantity: qty,
+    coinPaid,
+  });
+};
+
+const pickSellerActor = (
+  world: WorldState,
+  settlement: Settlement,
+  resId: ResourceId,
+): Actor | null => {
+  for (const id of settlement.stockpileOwners) {
+    const actor = world.actors.get(id);
+    if (actor === undefined) continue;
+    const stock = actor.stockpile.get(resId) ?? 0;
+    if (stock > 0) return actor;
+  }
+  return null;
+};
+
+const pickBuyerActor = (world: WorldState, settlement: Settlement): Actor | null => {
+  for (const id of settlement.stockpileOwners) {
+    const actor = world.actors.get(id);
+    if (actor === undefined) continue;
+    if (actor.treasury > 0) return actor;
+  }
+  return null;
+};
+
+/** Maximum hex distance for petty trade (docs/06 §"Distance and cost"). */
+const LOCAL_TRADE_MAX_HEX_DISTANCE = 3;
+
+/**
+ * Per-pair, per-day, per-resource cap. ~50 kg is a single villager's basket
+ * or a one-mule load — bigger flows are the long-haul caravan AI's job.
+ * docs/06 §"Local trade between nearby settlements".
+ */
+const MAX_PETTY_LOAD_KG = 50;
+
+/**
+ * Petty-merchant cut on the spread. v1.5 just absorbs this (no separate
+ * merchant household actor); deferred follow-up tracks merchant
+ * household ledgers so the cut accrues somewhere.
+ */
+const PETTY_MERCHANT_CUT = 0.05;
+
+/**
+ * Coin-per-kg surcharge for moving petty cargo across the pair distance.
+ * Tabled by hex distance per docs/06 §"Distance and cost".
+ */
+const TRANSPORT_COST_BY_DISTANCE: Readonly<Record<number, number>> = {
+  0: 0,
+  1: 0.005,
+  2: 0.01,
+  3: 0.02,
+};
+
+/**
+ * Resources eligible for the local-trade pass. Mirrors the trade phase's
+ * tradable set, plus the small-volume goods listed in the implementation
+ * plan that have observed prices via production inflow→supply chains.
+ */
+const LOCAL_TRADE_RESOURCES: readonly ResourceId[] = [
+  resourceId('food.grain'),
+  resourceId('food.flour'),
+  resourceId('food.bread'),
+  resourceId('food.wine'),
+  resourceId('food.olive_oil'),
+  resourceId('food.cheese'),
+  resourceId('goods.cloth'),
+  resourceId('goods.tools'),
+  resourceId('food.olives'),
+  resourceId('food.grapes'),
+  resourceId('material.wood'),
+  resourceId('material.charcoal'),
+  resourceId('metal.iron'),
+];
 
 // --- Phase 5: Demographics --------------------------------------------------
 
