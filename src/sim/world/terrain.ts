@@ -73,6 +73,21 @@ export interface HexTile {
   hasRiver: boolean;
   hasCoast: boolean;
   road: RoadGrade;
+  /**
+   * Footfall counter that drives emergent road formation. Per docs/06
+   * §"Trail wear → emergent dirt roads": each unit (caravan crew +
+   * pack animals + news carrier + patrol soldier) entering this hex
+   * adds wear; daily decay -1; on threshold (default 100) a 'none' hex
+   * upgrades to 'dirt'; sustained low wear demotes 'dirt' back to
+   * 'none'. Roman roads neither accrue wear nor decay.
+   *
+   * Procgen-laid dirt+roman hexes seed roadWear=100 so they don't
+   * immediately decay below the downgrade threshold.
+   *
+   * Optional + nullable so the dozens of test fixtures that declare
+   * tiles inline don't all break; when absent treat as 0.
+   */
+  roadWear?: number;
   /** Settlement-level ownership; null = unowned wilderness. */
   ownerActor: ActorId | null;
   /** Mineable / extractable deposit on this hex, if any. */

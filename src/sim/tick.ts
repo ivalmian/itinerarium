@@ -228,6 +228,22 @@ export type TickEvent =
       readonly released: number;
     }
   | {
+      readonly type: 'road_upgraded';
+      readonly hex: Hex;
+      readonly toGrade: 'dirt';
+    }
+  | {
+      readonly type: 'road_downgraded';
+      readonly hex: Hex;
+      readonly fromGrade: 'dirt';
+    }
+  | {
+      readonly type: 'road_reset';
+      readonly promotedToDirt: number;
+      readonly demotedToNone: number;
+      readonly romanKept: number;
+    }
+  | {
       readonly type: 'building_invested';
       readonly settlement: SettlementId;
       readonly building: BuildingId;
@@ -316,6 +332,20 @@ export const tick = (inputs: TickInputs): TickResult => {
 
   // --- Phase 6: Politics ---------------------------------------------------
   politicsPhase(world, rng.derive('politics'), today, events);
+
+  // --- Trail wear decay + threshold check ---------------------------------
+  // Daily decay: -1 wear per hex; on threshold, upgrade 'none' → 'dirt';
+  // sustained low wear demotes 'dirt' → 'none'. Roman roads exempt.
+  // Per docs/06 §"Trail wear → emergent dirt roads".
+  trailWearTickPhase(world, events);
+
+  // --- Day-1825 road reset (one-time) ------------------------------------
+  // Per docs/07 §"Phase 2 — Stabilization" + docs/14 §"Year-5 road reset":
+  // promote heavily-worn trails, demote unused dirt roads, reset wear.
+  // The reset day is open-coded so it's identical across worlds.
+  if (today === ROAD_RESET_DAY) {
+    roadResetPhase(world, events);
+  }
 
   // --- Annual hook (after the day's main work, before incrementing day) ----
   // The "year boundary" is when (day + 1) % YEAR_DAYS === 0 — i.e. the day
@@ -738,6 +768,10 @@ const movementPhase = (
         });
       }
     }
+    // Trail wear: per docs/06 §"Trail wear → emergent dirt roads".
+    // Each pack animal + crew member entering this hex compacts the
+    // trail. A 50-mule + 12-crew caravan adds ~56 wear per hex.
+    const wearPerHex = caravanTrailWear(c);
     for (const moved of result.hexesMoved) {
       events.push({
         type: 'caravan_moved',
@@ -745,6 +779,7 @@ const movementPhase = (
         from: before,
         to: { q: moved.q, r: moved.r },
       });
+      addRoadWear(world, moved, wearPerHex);
     }
   }
   // News carriers walk per docs/13. Their arrival → reputation update is
@@ -752,11 +787,121 @@ const movementPhase = (
   if (world.newsCarriers !== undefined) {
     for (const [id, carrier] of world.newsCarriers) {
       if (carrier.arrived) continue;
+      const before = { q: carrier.position.q, r: carrier.position.r };
       const next = tickCarrierWithGrid({ carrier, grid: world.grid, season, today });
       world.newsCarriers.set(id, next);
+      // News carriers are single people on foot — small wear contribution.
+      if (!hexEquals(before, next.position)) {
+        addRoadWear(world, next.position, WEAR_PER_NEWS_CARRIER);
+      }
     }
   }
+  // Patrols are handled in politicsPhase, but they walk a route step
+  // per tick — wear is added inside patrolPhase where the step is taken.
   void hexEquals;
+};
+
+// --- Trail wear helpers (docs/06 §"Trail wear → emergent dirt roads") ----
+
+const WEAR_PER_PACK_ANIMAL = 1.0;
+const WEAR_PER_CREW = 0.5;
+const WEAR_PER_NEWS_CARRIER = 0.2;
+const WEAR_PER_PATROL_SOLDIER = 0.5;
+const WEAR_DECAY_PER_DAY = 1.0;
+const DIRT_UPGRADE_THRESHOLD = 100;
+const DIRT_DOWNGRADE_THRESHOLD = 20;
+/** Day 1825 = end of pre-road burn-in phase (per docs/07 + docs/14). */
+const ROAD_RESET_DAY = 1825;
+
+const caravanTrailWear = (c: Caravan): number => {
+  let crew = 0;
+  for (const m of c.crew) crew += m.count;
+  let animals = 0;
+  for (const k of Object.keys(c.animals) as (keyof typeof c.animals)[]) {
+    animals += c.animals[k] ?? 0;
+  }
+  return crew * WEAR_PER_CREW + animals * WEAR_PER_PACK_ANIMAL;
+};
+
+const addRoadWear = (world: WorldState, h: Hex, amount: number): void => {
+  if (amount <= 0) return;
+  const tile = world.grid.get(h);
+  if (tile === undefined) return;
+  // Roman roads neither accrue wear nor decay (engineered + maintained).
+  if (tile.road === 'roman') return;
+  tile.roadWear = (tile.roadWear ?? 0) + amount;
+};
+
+/**
+ * Daily wear maintenance: every non-Roman hex with wear > 0 loses
+ * WEAR_DECAY_PER_DAY. Wear past DIRT_UPGRADE_THRESHOLD on a 'none' hex
+ * promotes to 'dirt'. Sustained wear < DIRT_DOWNGRADE_THRESHOLD on a
+ * 'dirt' hex demotes back to 'none'.
+ *
+ * Iterates the entire grid; cheap because the per-tile work is just a
+ * subtract + branch. At 6,400 hexes (80×80) this is ~0.1 ms.
+ */
+const trailWearTickPhase = (world: WorldState, events: TickEvent[]): void => {
+  for (const [h, tile] of world.grid.tiles()) {
+    if (tile.road === 'roman') continue;
+    let wear = tile.roadWear ?? 0;
+    if (wear > 0) {
+      wear = Math.max(0, wear - WEAR_DECAY_PER_DAY);
+      tile.roadWear = wear;
+    }
+    if (tile.road === 'none' && wear >= DIRT_UPGRADE_THRESHOLD) {
+      // Skip impassable terrain — no road can be there.
+      const t = tile.terrain;
+      if (t === 'lake' || t === 'river' || t === 'mountains') continue;
+      tile.road = 'dirt';
+      events.push({ type: 'road_upgraded', hex: { q: h.q, r: h.r }, toGrade: 'dirt' });
+    } else if (tile.road === 'dirt' && wear < DIRT_DOWNGRADE_THRESHOLD) {
+      tile.road = 'none';
+      events.push({ type: 'road_downgraded', hex: { q: h.q, r: h.r }, fromGrade: 'dirt' });
+    }
+  }
+};
+
+/**
+ * One-time road reset at day 1825 (end of phase 2a, before phase 2b).
+ * Per docs/07 + docs/14:
+ *   - Roman roads kept (engineered, maintained).
+ *   - Worn-in trails (roadWear ≥ DIRT_UPGRADE_THRESHOLD on a non-Roman
+ *     hex) become 'dirt'.
+ *   - Procgen-laid 'dirt' hexes with roadWear < DIRT_DOWNGRADE_THRESHOLD
+ *     reset to 'none'.
+ *   - All wear counters reset to baseline (100 for kept dirt, 0 for none).
+ */
+const roadResetPhase = (world: WorldState, events: TickEvent[]): void => {
+  let promotedToDirt = 0;
+  let demotedToNone = 0;
+  let romanKept = 0;
+  for (const [, tile] of world.grid.tiles()) {
+    if (tile.road === 'roman') {
+      romanKept++;
+      tile.roadWear = 100;
+      continue;
+    }
+    const wear = tile.roadWear ?? 0;
+    const t = tile.terrain;
+    const passable = t !== 'lake' && t !== 'river' && t !== 'mountains';
+    if (tile.road === 'dirt') {
+      if (wear < DIRT_DOWNGRADE_THRESHOLD) {
+        tile.road = 'none';
+        tile.roadWear = 0;
+        demotedToNone++;
+      } else {
+        tile.roadWear = 100;
+      }
+    } else if (tile.road === 'none' && wear >= DIRT_UPGRADE_THRESHOLD && passable) {
+      tile.road = 'dirt';
+      tile.roadWear = 100;
+      promotedToDirt++;
+    } else {
+      tile.roadWear = 0;
+    }
+  }
+  events.push({ type: 'road_reset', promotedToDirt, demotedToNone, romanKept });
 };
 
 // --- Phase 4: Trade ---------------------------------------------------------
@@ -2560,6 +2705,11 @@ const patrolPhase = (
 
     // Persist patrol mutations.
     world.patrols.set(patrolId, result.patrol);
+
+    // Trail wear from the patrol step. Soldier-on-foot weight per docs/06.
+    if (!hexEquals(patrol.position, result.patrol.position)) {
+      addRoadWear(world, result.patrol.position, result.patrol.unit.count * WEAR_PER_PATROL_SOLDIER);
+    }
 
     // Emit dispatch event when the patrol steps into a hex containing a
     // known camp — proxy for "patrol detected & moved on it". Helps the
