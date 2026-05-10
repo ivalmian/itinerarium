@@ -82,6 +82,29 @@ month. Requires:
 **Acceptance:** burn-in passes the 10-year watchdog with the
 realistic recipe ratios (C2) AND the reduced bootstrap.
 
+**Three architectural gaps block reaching the spec target**
+(diagnosed during C5 attempts):
+
+1. Same-tick topological sort means downstream recipes consume
+   their inputs the same day they're produced — a buffer day of
+   slack doesn't accumulate, so a thin chain cascades into local
+   famine within ~60 days at spec bootstrap.
+2. One-building-per-type-per-settlement at procgen leaves no
+   inter-tick slack; daily capacity resets each tick. C4
+   (dynamic investment, now landed) addresses this over years
+   but not within the first month.
+3. The pre-C6 universal-labor estimator hid role-level
+   under-staffing; with C6's `jobAllocations` driving the
+   production engine, role mismatches surface as
+   `recipe_blocked(reason='labor')` and the monthly hook nudges
+   workers — but at ~8%/yr that's slow.
+
+So C5-final waits for either: (a) C4-built buildings to
+accumulate over years AND C6 to converge on the right
+allocation, OR (b) a smarter procgen worker distribution +
+multi-pair monthly reallocation in C6. Neither is blocking;
+the 180-day cushion holds the slack while we mature the others.
+
 **Cross-refs:** `docs/05-settlements.md` §"Hardening",
 `src/procgen/seed.ts` `seedCityCorporation`,
 `docs/14-debug-strategies.md`. **Depends on C4.**
