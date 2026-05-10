@@ -270,11 +270,15 @@ describe('seedWorld', () => {
         hamlet: 'hamlet',
       };
       for (const site of w.bySite) {
-        if (!(site.kind in expectMap)) continue;
+        const tier = expectMap[site.kind];
+        if (tier === undefined) continue;
+        // Per docs/05 §"Same-hex coexistence" multiple settlements may share
+        // an anchor (a village + up to 5 hamlets). Match by anchor *and*
+        // expected tier so the lookup is unambiguous.
         const settlement = [...w.settlements.values()].find(
-          (s) => s.anchor.q === site.anchor.q && s.anchor.r === site.anchor.r,
+          (s) => s.anchor.q === site.anchor.q && s.anchor.r === site.anchor.r && s.tier === tier,
         );
-        expect(settlement?.tier).toBe(expectMap[site.kind]);
+        expect(settlement?.tier).toBe(tier);
       }
     });
   });
@@ -282,9 +286,29 @@ describe('seedWorld', () => {
   describe('population pyramid', () => {
     it('total population per settlement matches the procgen estimate within ±10%', () => {
       const w = buildFixtureWorld();
+      // Per docs/05 §"Same-hex coexistence" multiple settlements may share
+      // an anchor (a village + up to 5 hamlets). Resolve to the right
+      // settlement by matching anchor + tier.
+      const tierForSite = (kind: string, pop: number): string => {
+        switch (kind) {
+          case 'capital':
+            return 'large_city';
+          case 'city':
+            return pop >= 15000 ? 'large_city' : 'small_city';
+          case 'town':
+            return 'town';
+          case 'village':
+            return 'village';
+          case 'hamlet':
+            return 'hamlet';
+          default:
+            return '';
+        }
+      };
       for (const site of w.bySite) {
+        const tier = tierForSite(site.kind, site.estimatedPopulation);
         const settlement = [...w.settlements.values()].find(
-          (s) => s.anchor.q === site.anchor.q && s.anchor.r === site.anchor.r,
+          (s) => s.anchor.q === site.anchor.q && s.anchor.r === site.anchor.r && s.tier === tier,
         );
         const total = settlement?.population.total() ?? 0;
         const expected = site.estimatedPopulation;

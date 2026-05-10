@@ -1129,15 +1129,39 @@ const SITE_ORDER: ReadonlyMap<SettlementSite['kind'], number> = new Map([
 ]);
 
 const orderSitesForCatchment = (sites: readonly SettlementSite[]): readonly SettlementSite[] => {
+  // Per docs/05 §"Same-hex coexistence": when two settlements compete for
+  // the same hex (in particular when they share an urban hex), the larger
+  // settlement gets first pick of the surrounding ring. The closer-wins
+  // rule already lives inside computeCatchment via the `alreadyClaimed`
+  // set; we extend it here by ordering same-tier sites by estimated
+  // population (descending) so the bigger village/hamlet runs first.
+  // Ties broken deterministically by axial coordinate for reproducibility.
   return [...sites].sort((a, b) => {
     const ai = SITE_ORDER.get(a.kind) ?? 99;
     const bi = SITE_ORDER.get(b.kind) ?? 99;
-    return ai - bi;
+    if (ai !== bi) return ai - bi;
+    if (b.estimatedPopulation !== a.estimatedPopulation) {
+      return b.estimatedPopulation - a.estimatedPopulation;
+    }
+    if (a.anchor.q !== b.anchor.q) return a.anchor.q - b.anchor.q;
+    return a.anchor.r - b.anchor.r;
   });
 };
 
 const claimVillageHexes = (grid: HexGrid, settlement: Settlement, owner: ActorId): void => {
-  for (const u of settlement.urbanHexes) setOwner(grid, u, owner);
+  // Per docs/05 §"Same-hex coexistence": when a hamlet shares an urban hex
+  // with a larger village (or village with a town), the larger settlement
+  // retains hex ownership. Catchment hexes have already been arbitrated by
+  // `computeCatchment`'s closer-wins rule — no two settlements share a
+  // catchment hex — so we always claim those.
+  for (const u of settlement.urbanHexes) {
+    const tile = grid.get(u);
+    if (tile === undefined) continue;
+    if (tile.ownerActor === null) {
+      tile.ownerActor = owner;
+    }
+    // else: a larger-tier settlement already owns this hex; skip.
+  }
   for (const c of settlement.catchmentHexes) setOwner(grid, c, owner);
 };
 
