@@ -9,6 +9,7 @@ import { seedCaravans } from '../src/procgen/seedCaravans.ts';
 import { tick } from '../src/sim/tick.ts';
 import { createRng } from '../src/sim/rng.ts';
 import { AGE_BANDS, type AgeBand } from '../src/sim/population/cohort.ts';
+import { CHARACTER_CLASSES, type CharacterClass } from '../src/sim/population/types.ts';
 
 /**
  * Sum population across all settlements, broken down by age band.
@@ -35,6 +36,35 @@ const printPyramid = (label: string, p: Record<AgeBand, number>): void => {
     const pct = total > 0 ? (n / total) * 100 : 0;
     const bar = '█'.repeat(Math.min(40, Math.round(pct * 2)));
     console.log(`  ${b.padStart(5, ' ')}: ${String(n).padStart(7, ' ')}  ${pct.toFixed(1).padStart(5, ' ')}%  ${bar}`);
+  }
+};
+
+/**
+ * Per-class population summary across the world. Verifies that
+ * patrician / plebeian / freedman / slave / foreigner cohorts are
+ * all running through tickDaily + tickYearly (per docs/04 + the
+ * user-asked check).
+ */
+const classBreakdown = (world: WorldState): Record<CharacterClass, number> => {
+  const out = {} as Record<CharacterClass, number>;
+  for (const c of CHARACTER_CLASSES) out[c] = 0;
+  for (const s of world.settlements.values()) {
+    for (const [key, n] of s.population.cohorts()) {
+      out[key.class] += n;
+    }
+  }
+  return out;
+};
+
+const printClassBreakdown = (label: string, b: Record<CharacterClass, number>): void => {
+  let total = 0;
+  for (const c of CHARACTER_CLASSES) total += b[c];
+  console.log(`\n--- Class breakdown: ${label} (total ${total.toLocaleString()}) ---`);
+  for (const c of CHARACTER_CLASSES) {
+    const n = b[c];
+    const pct = total > 0 ? (n / total) * 100 : 0;
+    const bar = '█'.repeat(Math.min(40, Math.round(pct)));
+    console.log(`  ${c.padStart(11, ' ')}: ${String(n).padStart(7, ' ')}  ${pct.toFixed(1).padStart(5, ' ')}%  ${bar}`);
   }
 };
 
@@ -124,5 +154,9 @@ async function main(): Promise<void> {
   for (const snap of pyramidSnapshots) {
     printPyramid(snap.label, snap.pyramid);
   }
+  // Per-class breakdown at the year-10 mark — verifies that patrician /
+  // plebeian / freedman / slave / foreigner cohorts are all running
+  // through tickDaily + tickYearly, not just a "plebeian only" simulation.
+  printClassBreakdown('Year 10', classBreakdown(world));
 }
 main();
