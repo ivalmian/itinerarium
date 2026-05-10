@@ -51,8 +51,18 @@ describe('runSmokeScenario', () => {
 
   it('builds the documented faction structure (1 capital + 3 villages + governor + 1 family + 1 bandit camp + 2 caravans)', async () => {
     const result = await runSmokeScenario();
-    // 1 capital + 3 villages
-    expect(result.world.settlements.size).toBe(4);
+    // 1 capital + 3 villages × 3 disagg factor (per docs/15 §C9 v1.5
+    // disaggregation; smoke scenario asks for 3 villages, procgen produces
+    // up to 9 entities). Hamlets are 0 in this scenario.
+    const settlements = result.world.settlements.size;
+    const capitals = [...result.world.settlements.values()].filter((s) => s.tier === 'large_city');
+    const villages = [...result.world.settlements.values()].filter((s) => s.tier === 'village');
+    expect(capitals.length).toBe(1);
+    // The 3x disagg factor may produce fewer if the tiny smoke grid can't
+    // accommodate; allow the historical 3-villages floor up to the new ceiling.
+    expect(villages.length).toBeGreaterThanOrEqual(3);
+    expect(villages.length).toBeLessThanOrEqual(9);
+    expect(settlements).toBe(capitals.length + villages.length);
     // Governor + family + 1 city corp + 3 village/hamlet leaders + bandit_camp actor
     // We just assert the named-actor counts are in the expected band,
     // and that each documented role exists at least once.
