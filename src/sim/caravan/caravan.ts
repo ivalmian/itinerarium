@@ -1,0 +1,395 @@
+/**
+ * Caravan: the protagonists of the simulation.
+ *
+ * docs/06-caravans.md: a caravan is a unit with crew, animals,
+ * vehicles, cargo, treasury, and route knowledge. The player has
+ * one; the world has hundreds. They run on the same code.
+ *
+ * Movement, ration/fodder consumption, and capacity are computed
+ * here from per-unit reference numbers (docs/06 §"Animal &
+ * vehicle reference"). Cargo weight uses the resource catalog
+ * (T1) for per-resource kg.
+ *
+ * Daily MP is reduced by load fraction, terrain, road grade,
+ * season, and seasonally impassable terrain (mountains in winter,
+ * marshes in spring, lakes always).
+ */
+
+import { getResource } from '../resources/index.js';
+import type { Day } from '../types.js';
+import type { ActorId, CaravanId, Coin, Position, Quantity, ResourceId } from '../types.js';
+import { isPassable, type RoadGrade, type Season, type Terrain } from '../world/terrain.js';
+
+// --- Animals ---------------------------------------------------------------
+
+export type AnimalKind = 'donkey' | 'mule' | 'horse' | 'camel' | 'ox';
+
+export const ANIMAL_KINDS = [
+  'donkey',
+  'mule',
+  'horse',
+  'camel',
+  'ox',
+] as const satisfies readonly AnimalKind[];
+
+export interface AnimalSpec {
+  readonly kind: AnimalKind;
+  readonly carryKg: number;
+  readonly fodderKgPerDay: number;
+  /** Hexes per day on a Roman road, laden — pre-load-and-terrain modifiers. */
+  readonly baseMpPerDay: number;
+}
+
+export const ANIMAL_SPECS: Readonly<Record<AnimalKind, AnimalSpec>> = Object.freeze({
+  donkey: { kind: 'donkey', carryKg: 50, fodderKgPerDay: 3, baseMpPerDay: 20 },
+  mule: { kind: 'mule', carryKg: 100, fodderKgPerDay: 6, baseMpPerDay: 25 },
+  horse: { kind: 'horse', carryKg: 80, fodderKgPerDay: 7, baseMpPerDay: 30 },
+  camel: { kind: 'camel', carryKg: 180, fodderKgPerDay: 3, baseMpPerDay: 22 },
+  // Oxen are usually team-pulling a wagon; their carry rating is for
+  // pack use without a vehicle. Fodder is per ox.
+  ox: { kind: 'ox', carryKg: 100, fodderKgPerDay: 10, baseMpPerDay: 12 },
+});
+
+// --- Vehicles --------------------------------------------------------------
+
+export type VehicleKind = 'pack_saddle' | 'light_cart' | 'ox_cart' | 'heavy_wagon';
+
+export const VEHICLE_KINDS = [
+  'pack_saddle',
+  'light_cart',
+  'ox_cart',
+  'heavy_wagon',
+] as const satisfies readonly VehicleKind[];
+
+export interface VehicleSpec {
+  readonly kind: VehicleKind;
+  /** Carry kg added by the vehicle itself (over and above the animals pulling it). */
+  readonly carryKg: number;
+  /** Fodder for the team pulling this vehicle (in addition to listed animals). */
+  readonly fodderKgPerDay: number;
+  readonly baseMpPerDay: number;
+  readonly needsRoad: boolean;
+}
+
+export const VEHICLE_SPECS: Readonly<Record<VehicleKind, VehicleSpec>> = Object.freeze({
+  // A pack saddle is metadata; capacity is on the animal itself.
+  pack_saddle: {
+    kind: 'pack_saddle',
+    carryKg: 0,
+    fodderKgPerDay: 0,
+    baseMpPerDay: 25,
+    needsRoad: false,
+  },
+  light_cart: {
+    kind: 'light_cart',
+    carryKg: 200,
+    fodderKgPerDay: 0,
+    baseMpPerDay: 22,
+    needsRoad: false,
+  },
+  ox_cart: {
+    kind: 'ox_cart',
+    carryKg: 500,
+    fodderKgPerDay: 0,
+    baseMpPerDay: 15,
+    needsRoad: true,
+  },
+  heavy_wagon: {
+    kind: 'heavy_wagon',
+    carryKg: 1200,
+    fodderKgPerDay: 0,
+    baseMpPerDay: 12,
+    needsRoad: true,
+  },
+});
+
+// --- Crew ------------------------------------------------------------------
+
+export type CrewKind = 'merchant' | 'drover' | 'caravan_guard' | 'soldier';
+
+export const CREW_KINDS = [
+  'merchant',
+  'drover',
+  'caravan_guard',
+  'soldier',
+] as const satisfies readonly CrewKind[];
+
+export interface CrewMember {
+  readonly kind: CrewKind;
+  count: number;
+  /** 0..1 weapon equipment level (used by future battle system). */
+  weapons: number;
+  /** 0..1 armor equipment level. */
+  armor: number;
+}
+
+const RATION_KG_PER_CREW_PER_DAY = 0.4;
+
+// --- Caravan ---------------------------------------------------------------
+
+export interface PriceObservation {
+  readonly price: number;
+  readonly observedOnDay: Day;
+}
+
+export interface Caravan {
+  readonly id: CaravanId;
+  ownerActor: ActorId;
+  position: Position;
+  destination: Position | null;
+  crew: CrewMember[];
+  animals: Partial<Record<AnimalKind, number>>;
+  vehicles: Partial<Record<VehicleKind, number>>;
+  cargo: Map<ResourceId, Quantity>;
+  treasury: Coin;
+  /** Hexes available to spend today. Recomputed at start of each day. */
+  mpRemainingToday: number;
+  /** Recent local prices observed: hexKey → resource → observation. */
+  priceBook: Map<ResourceId, Map<string, PriceObservation>>;
+  /** 0..1 average crew/animal health (rations, fatigue, infection erode it). */
+  health: number;
+}
+
+export interface CreateCaravanInput {
+  readonly id: CaravanId;
+  readonly ownerActor: ActorId;
+  readonly position: Position;
+  readonly crew: readonly CrewMember[];
+  readonly animals: Partial<Record<AnimalKind, number>>;
+  readonly vehicles: Partial<Record<VehicleKind, number>>;
+  readonly destination?: Position | null;
+  readonly treasury?: Coin;
+}
+
+const validateAnimals = (animals: Partial<Record<AnimalKind, number>>): void => {
+  for (const k of Object.keys(animals) as AnimalKind[]) {
+    const n = animals[k];
+    if (n === undefined) continue;
+    if (!Number.isFinite(n) || n < 0) {
+      throw new Error(`Caravan animals[${k}] must be non-negative, got ${n}`);
+    }
+  }
+};
+
+const validateVehicles = (vehicles: Partial<Record<VehicleKind, number>>): void => {
+  for (const k of Object.keys(vehicles) as VehicleKind[]) {
+    const n = vehicles[k];
+    if (n === undefined) continue;
+    if (!Number.isFinite(n) || n < 0) {
+      throw new Error(`Caravan vehicles[${k}] must be non-negative, got ${n}`);
+    }
+  }
+};
+
+const validateCrew = (crew: readonly CrewMember[]): void => {
+  if (crew.length === 0) {
+    throw new Error('Caravan must have at least one crew entry');
+  }
+  for (const m of crew) {
+    if (!Number.isFinite(m.count) || m.count <= 0) {
+      throw new Error(`Caravan crew ${m.kind} count must be positive, got ${m.count}`);
+    }
+  }
+};
+
+export const createCaravan = (input: CreateCaravanInput): Caravan => {
+  validateCrew(input.crew);
+  validateAnimals(input.animals);
+  validateVehicles(input.vehicles);
+  return {
+    id: input.id,
+    ownerActor: input.ownerActor,
+    position: { q: input.position.q, r: input.position.r },
+    destination:
+      input.destination !== undefined && input.destination !== null
+        ? { q: input.destination.q, r: input.destination.r }
+        : null,
+    crew: input.crew.map((m) => ({ ...m })),
+    animals: { ...input.animals },
+    vehicles: { ...input.vehicles },
+    cargo: new Map(),
+    treasury: input.treasury ?? 0,
+    mpRemainingToday: 0,
+    priceBook: new Map(),
+    health: 1,
+  };
+};
+
+// --- Capacity --------------------------------------------------------------
+
+export const totalCarryKg = (c: Caravan): number => {
+  let kg = 0;
+  for (const k of ANIMAL_KINDS) {
+    const n = c.animals[k] ?? 0;
+    kg += n * ANIMAL_SPECS[k].carryKg;
+  }
+  for (const k of VEHICLE_KINDS) {
+    const n = c.vehicles[k] ?? 0;
+    kg += n * VEHICLE_SPECS[k].carryKg;
+  }
+  return kg;
+};
+
+export const totalCargoWeightKg = (c: Caravan): number => {
+  let kg = 0;
+  for (const [res, qty] of c.cargo) {
+    const def = getResource(res);
+    kg += def.weightKgPerUnit * qty;
+  }
+  return kg;
+};
+
+export const loadFraction = (c: Caravan): number => {
+  const cap = totalCarryKg(c);
+  if (cap <= 0) return 0;
+  const w = totalCargoWeightKg(c);
+  if (w <= 0) return 0;
+  return Math.min(1, w / cap);
+};
+
+export const totalCrewCount = (c: Caravan): number => {
+  let n = 0;
+  for (const m of c.crew) n += m.count;
+  return n;
+};
+
+// --- Consumption -----------------------------------------------------------
+
+export const dailyCrewRationKg = (c: Caravan): number => {
+  return totalCrewCount(c) * RATION_KG_PER_CREW_PER_DAY;
+};
+
+export const dailyAnimalFodderKg = (c: Caravan): number => {
+  let kg = 0;
+  for (const k of ANIMAL_KINDS) {
+    const n = c.animals[k] ?? 0;
+    kg += n * ANIMAL_SPECS[k].fodderKgPerDay;
+  }
+  for (const k of VEHICLE_KINDS) {
+    const n = c.vehicles[k] ?? 0;
+    kg += n * VEHICLE_SPECS[k].fodderKgPerDay;
+  }
+  return kg;
+};
+
+// --- Movement --------------------------------------------------------------
+
+/**
+ * Slowest base MP across the caravan's animals and vehicles. The
+ * caravan moves only as fast as its slowest unit. If a vehicle
+ * needs a road and the current hex has none, that vehicle's
+ * effective MP collapses (factored in by the road multiplier).
+ */
+const slowestBaseMp = (c: Caravan): number => {
+  let slowest = Number.POSITIVE_INFINITY;
+  for (const k of ANIMAL_KINDS) {
+    if ((c.animals[k] ?? 0) > 0) {
+      slowest = Math.min(slowest, ANIMAL_SPECS[k].baseMpPerDay);
+    }
+  }
+  for (const k of VEHICLE_KINDS) {
+    if ((c.vehicles[k] ?? 0) > 0) {
+      slowest = Math.min(slowest, VEHICLE_SPECS[k].baseMpPerDay);
+    }
+  }
+  return Number.isFinite(slowest) ? slowest : 0;
+};
+
+const hasRoadDependentVehicle = (c: Caravan): boolean => {
+  for (const k of VEHICLE_KINDS) {
+    if ((c.vehicles[k] ?? 0) > 0 && VEHICLE_SPECS[k].needsRoad) return true;
+  }
+  return false;
+};
+
+const roadMultiplier = (road: RoadGrade): number => {
+  switch (road) {
+    case 'roman':
+      return 1;
+    case 'dirt':
+      return 0.8;
+    case 'none':
+      // Off-road. Combined with the terrain multiplier this reaches the
+      // docs/06 ~10 hex/day for laden mule on hills (25 × 1.04 × 0.5 × 0.75).
+      return 0.5;
+  }
+};
+
+const terrainMultiplier = (t: Terrain): number => {
+  switch (t) {
+    case 'urban':
+    case 'plains':
+    case 'fertile_valley':
+    case 'steppe':
+    case 'coast':
+      return 1;
+    case 'forest':
+      return 0.85;
+    case 'hills':
+      return 0.75;
+    case 'desert':
+      return 0.7;
+    case 'dense_forest':
+      return 0.5;
+    case 'marsh':
+      return 0.5;
+    case 'mountains':
+      return 0.4;
+    case 'river':
+      return 0.7;
+    case 'ruin':
+      return 0.8;
+    case 'lake':
+      return 0;
+  }
+};
+
+const seasonMultiplier = (t: Terrain, season: Season): number => {
+  if (t === 'mountains') {
+    if (season === 'winter') return 0.05;
+    if (season === 'autumn' || season === 'spring') return 0.7;
+    return 1;
+  }
+  if (t === 'marsh' && season === 'spring') return 0.4;
+  if (season === 'winter') return 0.85;
+  return 1;
+};
+
+/**
+ * MP allowance for one day. Multiplies slowest-unit base MP by
+ * load factor (1.0 empty → ~0.7 fully laden), road grade,
+ * terrain, and season. Returns 0 for impassable terrain (lake,
+ * mountains in winter, marsh in spring) and for road-dependent
+ * vehicles off any road.
+ */
+export const dailyMpAllowance = (
+  c: Caravan,
+  terrain: Terrain,
+  road: RoadGrade,
+  season: Season,
+): number => {
+  if (!isPassable(terrain, season)) return 0;
+
+  // A road-only vehicle on an unroaded hex is effectively stuck.
+  if (hasRoadDependentVehicle(c) && road === 'none') {
+    if (terrain !== 'plains' && terrain !== 'fertile_valley') return 0;
+    // On hard plains an ox-cart can creep along, but very slowly.
+  }
+
+  const base = slowestBaseMp(c);
+  if (base <= 0) return 0;
+
+  // docs/06 base MPs are calibrated for a laden caravan in good
+  // conditions. An empty caravan moves ~20% faster; a fully laden
+  // one moves at the base rate. Linear in load fraction.
+  const load = loadFraction(c);
+  const loadMult = 1.2 - 0.2 * load;
+
+  const mp =
+    base *
+    loadMult *
+    roadMultiplier(road) *
+    terrainMultiplier(terrain) *
+    seasonMultiplier(terrain, season);
+  return Math.max(0, mp);
+};
