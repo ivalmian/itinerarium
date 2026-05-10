@@ -193,7 +193,7 @@ The bottleneck will be the simulation, not the renderer. At
 thread. If we go to the full 500×500 grid, the sim will need to
 move to a Web Worker.
 
-## File layout (new)
+## File layout
 
 ```
 viewer/
@@ -201,10 +201,14 @@ viewer/
   main.ts             # app bootstrap
   app.ts              # main loop (drives sim ticks + rendering)
   map/
-    hexMap.ts         # PIXI hex grid renderer
-    settlements.ts    # settlement glyph layer
+    hexMap.ts         # PIXI hex grid renderer (neighbor-aware tiles)
+    settlements.ts    # settlement glyph layer (tier-aware + same-hex stacking)
     caravans.ts       # caravan sprite layer
     banditCamps.ts    # camp glyph layer
+    buildings.ts      # sub-hex building marker layer
+    catchment.ts      # catchment shading layer
+    rivers.ts         # river overlay
+    roads.ts          # roads overlay (sub-hex segments)
     overlays.ts       # heat-map overlays
     coords.ts         # axial → screen pixel conversion
   ui/
@@ -212,6 +216,7 @@ viewer/
     timeControls.ts   # play/pause/speed buttons
     settlementPanel.ts
     caravanPanel.ts
+    banditCampPanel.ts
     resourcePanel.ts
     eventLog.ts
   state/
