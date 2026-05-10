@@ -112,8 +112,10 @@ the 180-day cushion holds the slack while we mature the others.
 
 **Status (2026-05):** procgen + same-hex movement short-circuits
 landed. Local trade runs over settlement pairs with distance 0
-costing 0 transport. [TODO] Viewer stack-glyphs and full-scale
-performance work remain.
+costing 0 transport. Viewer stack-glyphs are landed (see
+`viewer/map/settlements.ts`). Full-scale performance work
+(settlements-by-hex spatial index for the 3,000–8,000 entity
+target) remains.
 
 **Pre-v1.5 hack (now fixed):** procgen generated aggregated
 "village" entities representing multiple real-world villages and
@@ -144,8 +146,6 @@ its own hex with no neighbors of the same type sharing it.
    `src/sim/reputation/newsMovement.test.ts`.
 
 **Still open:**
-- [TODO] Viewer: same-hex settlements should render as a stack with
-  offset glyphs so they're individually clickable.
 - [TODO] Performance: `tickPhase` per-settlement loops are tolerable at
   ~341 entities (60-100 ms/tick) but become hot paths at the full
   500×500 / 3,000-8,000 entity target. A settlements-by-hex index
@@ -207,14 +207,246 @@ deleted once the corresponding current-scope TODO lands.
 (Comments about the old charcoal/iron/timber hacks have already
 been removed by the C2 work.)
 
+## C10 — Storage capacity discipline [TODO]
+
+**Current state:** docs/05 §"Storage capacity" specifies finite
+per-resource stockpile capacity backed by `granary` / `warehouse` /
+`cistern` buildings + a small per-capita household baseline. **Code
+does not enforce any capacity limit at any point.** Stockpiles can
+grow without bound.
+
+**Why it doesn't bite today:** with the current burn-in scale and
+the 180-day grain bootstrap (C5), no settlement accumulates enough
+of any one resource to exceed a realistic granary's capacity. So the
+absent constraint isn't visible in test output. It would matter
+once C5 reduces bootstraps and once dynamic investment (C4) drives
+real surpluses.
+
+**Realistic implementation:**
+1. Add `storageCapacity: Map<ResourceId, Quantity>` to each
+   building catalog entry that stores anything (granary, warehouse,
+   cistern); zero/absent for buildings that don't store.
+2. Add a small per-capita household baseline (~50 kg mixed) so even
+   buildingless hamlets don't reject all goods.
+3. Compute `effectiveCapacity(settlement, resource)` = sum across
+   buildings + per-adult baseline.
+4. In every code path that adds to a stockpile (production output,
+   caravan delivery, grant), clamp at `effectiveCapacity` and emit a
+   `stockpile_capped` event for the rejected delta. Producers can
+   either let goods spoil or sell at depressed prices.
+5. Initial seed flows past the cap by setting `bypassCapacity = true`
+   during `seedWorld`; no bypass during the tick loop.
+
+**Acceptance:** at year 10, no settlement holds >2× the realistic
+capacity of any resource. Bursting harvests visibly cap; granary-
+poor settlements show the constraint in their event log.
+
+**Cross-refs:** `docs/05-settlements.md` §"Storage capacity",
+`docs/02-resources.md` (unit weights),
+`src/sim/buildings/catalog.ts`.
+
+## C11 — Roman-road maintenance cost [TODO]
+
+**Current state:** Roman roads neither accrue wear nor decay (per
+`addRoadWear` and `trailWearTickPhase` in `src/sim/tick.ts`). They
+are effectively immortal.
+
+**Why it's a hack:** historically Roman roads required active
+maintenance — labor, lime mortar, occasional reconstruction. A
+province whose tax revenue is captured by bandits or a corrupt
+governor should eventually see its arteries degrade. Today they
+don't, so a defunded province retains its full transport advantage.
+
+**Realistic implementation:** every Roman-road hex consumes a small
+daily resource flow (lumber + cut_stone + a few road_worker hours)
+from the governor's office or the local family that owns the
+adjacent estate. A road that goes unmaintained for N days
+(default ~365) downgrades to `dirt` and starts accruing wear like
+any other dirt road.
+
+**Acceptance:** in a burn-in where the governor's treasury is
+deliberately drained (by ambushed tax shipments), the Roman road
+network visibly degrades over 1-2 years.
+
+**Cross-refs:** `docs/06-caravans.md` §"Trail wear",
+`src/sim/tick.ts` `trailWearTickPhase`.
+
+## C12 — Promote raw milk to a tracked resource [TODO]
+
+**Current state:** the dairy chain has no explicit `food.milk`
+resource. `make_cheese` consumes `livestock.cattle`/sheep herd
+units conceptually, but milk is never in any actor's stockpile.
+
+**Decision needed:** promote `food.milk` to a Tier 0/1 resource
+(short shelf life, mostly local consumption) or keep it implicit.
+The argument for promoting it: it's a real Roman-era trade good
+near cities; a cheese-making town buys daily milk from
+surrounding villages.
+
+**Acceptance:** decision recorded; if promoted, the resource
+catalog (docs/02), recipe catalog (docs/03), and consumption
+schedules (docs/04 + market scheduleBuilder) all updated together.
+
+**Cross-refs:** `docs/02-resources.md` `food.cheese`,
+`docs/03-production.md` `raise_sheep` + `make_cheese`.
+
+## C13 — Copper / tin intermediates for bronze [TODO]
+
+**Current state:** `alloy_bronze` consumes ore directly. There is
+no `metal.copper` or `metal.tin` in the resource catalog.
+
+**Decision needed:** add `metal.copper` + `metal.tin` so smelting
+and alloying are separate steps (matches reality), or keep the
+direct ore-to-bronze recipe (simpler).
+
+**Acceptance:** decision recorded; if intermediates are added,
+recipes and the steady-state analyzer both updated.
+
+**Cross-refs:** `docs/02-resources.md` `metal.bronze`,
+`docs/03-production.md` `alloy_bronze`.
+
+## C14 — Construction labor specialization [TODO]
+
+**Current state:** `constructionPhase` consumes generic worker-days
+from the settlement's labor pool, not specifically mason or
+carpenter days.
+
+**Realistic:** different building types want different specialist
+mixes — a granary needs lots of mason days plus some carpenter
+days; a smithy is the opposite. Specialization should drive who
+actually contributes.
+
+**Acceptance:** building completion rate visibly varies based on
+the settlement's mason/carpenter allocation; under-staffed
+settlements take longer to complete heavy stoneworks.
+
+**Cross-refs:** `docs/08-money-and-trade.md` §"Construction is
+heavy", `src/sim/tick.ts` `constructionPhase`.
+
+## C15 — Per-settlement, per-resource time-series CSV [TODO]
+
+**Current state:** `scripts/debug-activity.ts` dumps global yearly
+aggregates and a pyramid snapshot. There is no per-settlement,
+per-resource per-tick time series.
+
+**Why it matters:** docs/14 lists this as the workhorse instrument
+for triaging burn-in failures (famine cascades, price explosions,
+production starvation). Without it, we read tea leaves from
+aggregate counters.
+
+**Realistic implementation:** runner-side flag (`--instruments`)
+that, per (settlement, resource) on a configurable subset (or
+all), accumulates `{stockpile, inflows, outflows, lastClearingPrice,
+unmetDemandAtClearingPrice}` per tick into one CSV. Acceptance:
+charting one such CSV during a known-failing burn-in shows the
+collapse pattern.
+
+**Cross-refs:** `docs/14-debug-strategies.md`
+§"Per-settlement, per-resource time series",
+`src/burnin/runner.ts`.
+
+## C16 — Cascading consequences of price explosion [TODO]
+
+**Current state:** prices are capped at a sane multiple of base
+price. There are no riots, edicts, or mob looting events when a
+city's grain price spikes through the cap.
+
+**Realistic (per docs/08):** sustained inelastic-demand price
+spikes should trigger a chain of named events — first riots
+(idle population pressure rises), then governor edicts (price
+caps, forced sale of patrician stockpiles), then mob looting
+(stockpile transfers from rich actors to poor population).
+
+**Acceptance:** in a deliberately-induced famine burn-in, the
+event log shows `riot`, `edict_issued`, and `mob_looting` events
+in order. Prices stop runaway because the underlying constraint
+gets relaxed (forced sales).
+
+**Cross-refs:** `docs/08-money-and-trade.md` §"Market clearing",
+`docs/14-debug-strategies.md` Pattern F.
+
+## C17 — Merchant guilds for price discovery [TODO]
+
+**Current state:** caravans each carry a personal `priceBook`.
+There is no `Guild` actor type, no settlement-attached price
+ledger, and no per-arrival ledger exchange.
+
+**Why it matters:** docs/08 §"Communicated price discovery via
+guilds" is explicitly locked as a design decision (Decision #27
+in docs/10). Without guilds, NPC caravan AI either flies blind
+(only its own observations) or tacitly assumes information it
+shouldn't have. Crowding-aware planning per docs/08 isn't
+possible without the shared-but-delayed information channel guilds
+provide.
+
+**Realistic implementation:**
+1. New `Guild` actor type, one per city of size ≥ town. Each
+   guild has a `priceLedger: Map<ResourceId, Map<HexId, PriceObs>>`
+   and a member set (NPC caravan owners).
+2. On a member caravan arriving at the guild's home settlement,
+   it deposits a configurable subset of recent observations into
+   the ledger.
+3. On a member caravan departing the guild's home settlement, it
+   reads the ledger into its own `priceBook`.
+4. When two members of different guilds are co-located, they
+   exchange a slice of ledgers (the long-haul rumor channel).
+5. NPC `planCaravanRoute` factors in visible competing
+   commitments (other members planning the same trip) so the
+   guild knows everyone won't pile onto the same spread.
+
+**Acceptance:** in a burn-in, an artificial spike in pottery
+price at City B is reflected in City A's guild ledger several
+days later (matching the round-trip time of the caravan that
+observed it), and 2-3 caravans (not all members) commit to a
+City B run rather than all of them stampeding.
+
+**Cross-refs:** `docs/08-money-and-trade.md` §"Communicated price
+discovery via guilds", `docs/10-scope-and-questions.md`
+Decision 27.
+
+## C18 — GoalStack for goal-bearing units [TODO]
+
+**Current state:** caravans carry a single `destination: Position |
+null`, not a stack of persistent goals. Patrols carry a route.
+News carriers carry a destination + a payload. Migration columns
+carry a destination. There is no shared `GoalStack` model.
+
+**Why it matters:** docs/06 §"Goal-bearing units" + Decision #26
+in docs/10 lock the design: caravans, migration columns, military
+units, and patrols all carry one or more persistent goals on a
+stack (`move_to / trade_at / escort / patrol / return_home /
+flee_to`) so they can do multi-leg, multi-week intents like "haul
+wine to City B and return with grain." Today this is approximated
+by per-tick re-planning, which works for simple round trips but
+makes complex behavior (escort an ally caravan, then go home,
+then wait for a season) hard to express.
+
+**Realistic implementation:** add `goalStack: Goal[]` to the
+relevant unit types. The per-tick AI pops the top goal when it
+completes, falls back to the next. `escort` becomes a real goal
+(stay within N hexes of another unit) instead of a special-case
+in the patrol code.
+
+**Acceptance:** an NPC trader runs a 30-day round trip with
+trade goals stacked at both endpoints, never needs daily
+re-planning, and the goal stack serializes cleanly in the
+WorldState snapshot.
+
+**Cross-refs:** `docs/06-caravans.md` §"Goal-bearing units",
+`docs/10-scope-and-questions.md` Decision 26,
+`src/sim/caravan/caravan.ts`, `src/sim/caravan/ai.ts`.
+
 ## Order of operations
 
 C4 dynamic investment and C8 construction time are landed. Remaining
 order:
-- Finish C9's local-trade/viewer/performance follow-ups.
+- Finish C9's performance follow-up (settlements-by-hex index).
 - Reduce C5 bootstrap stockpiles after burn-in stays stable without
   the cushion.
 - Delete C7 bootstrap-only safeguards once C5-final lands.
+- C10–C18 are independent and can be tackled in any order; pick by
+  burn-in pain (C15 unblocks better diagnostics; C10 + C17 are
+  the highest-leverage realism gaps).
 
 ## Already landed
 
