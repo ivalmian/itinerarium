@@ -353,6 +353,89 @@ describe('runRecipe — combined constraints', () => {
   });
 });
 
+describe('runRecipe — requires (present-but-not-consumed)', () => {
+  // Synthetic "shear wool" style recipe: 0.01 sheep PRESENT (not consumed)
+  // → 0.55 wool / instance. Mirrors recipes.ts shear_wool semantics so the
+  // engine behavior stays in sync with the catalog representation.
+  const wool = resourceId('material.wool');
+  const sheep = resourceId('livestock.sheep');
+  const shepherd = jobId('shepherd');
+  const pasture = buildingId('pasture');
+  const shearRecipe: ProductionRecipe = {
+    id: recipeId('shear_wool'),
+    inputs: new Map<ResourceId, Quantity>(),
+    requires: new Map<ResourceId, Quantity>([[sheep, 0.01]]),
+    outputs: new Map<ResourceId, Quantity>([[wool, 0.55]]),
+    labor: new Map<JobId, number>([[shepherd, 0.1]]),
+    building: pasture,
+  };
+
+  const shearRequest = (overrides: Partial<RecipeRunRequest> = {}): RecipeRunRequest => ({
+    recipe: shearRecipe,
+    building: { id: pasture, capacityRemaining: 1 },
+    ownerActor: OWNER,
+    laborAvailable: new Map<JobId, number>([[shepherd, 0.1]]),
+    inputStocks: new Map<ResourceId, Quantity>([[sheep, 100]]),
+    season: 'spring',
+    ...overrides,
+  });
+
+  it('runs at full fraction when the required-present resource is abundant', () => {
+    const r = runRecipe(shearRequest());
+    expect(r.ranAtFraction).toBe(1);
+    expect(r.outputsProduced.get(wool)).toBe(0.55);
+  });
+
+  it('does NOT consume the required-present resource (no entry in inputsConsumed)', () => {
+    const r = runRecipe(shearRequest());
+    // The whole point of requires: the herd is present, not eaten.
+    expect(r.inputsConsumed.get(sheep)).toBeUndefined();
+    expect(r.inputsConsumed.size).toBe(0);
+  });
+
+  it('aborts with missing_input when the required-present resource is absent', () => {
+    const r = runRecipe(shearRequest({ inputStocks: new Map() }));
+    expect(r.ranAtFraction).toBe(0);
+    expect(r.shortfall?.reason).toBe('missing_input');
+    expect(r.shortfall?.detail).toContain('livestock.sheep');
+  });
+
+  it('scales down when the required-present resource is short', () => {
+    // Need 0.01 per instance, only 0.005 present → fraction 0.5.
+    const r = runRecipe(
+      shearRequest({ inputStocks: new Map<ResourceId, Quantity>([[sheep, 0.005]]) }),
+    );
+    expect(r.ranAtFraction).toBeCloseTo(0.5);
+    expect(r.outputsProduced.get(wool)).toBeCloseTo(0.275);
+    // Still no consumption of the herd.
+    expect(r.inputsConsumed.get(sheep)).toBeUndefined();
+  });
+
+  it('takes the worst-case across inputs and requires', () => {
+    // Hybrid recipe: needs salt (consumed) AND sheep (present).
+    const salt = resourceId('mineral.salt');
+    const hybrid: ProductionRecipe = {
+      ...shearRecipe,
+      inputs: new Map<ResourceId, Quantity>([[salt, 1]]),
+      requires: new Map<ResourceId, Quantity>([[sheep, 0.01]]),
+    };
+    // Inputs allow 2 instances (2 salt / 1 needed), requires allows 0.5
+    // (0.005 sheep / 0.01 needed). worst case = 0.5.
+    const r = runRecipe(
+      shearRequest({
+        recipe: hybrid,
+        inputStocks: new Map<ResourceId, Quantity>([
+          [salt, 2],
+          [sheep, 0.005],
+        ]),
+      }),
+    );
+    expect(r.ranAtFraction).toBeCloseTo(0.5);
+    expect(r.inputsConsumed.get(salt)).toBeCloseTo(0.5);
+    expect(r.inputsConsumed.get(sheep)).toBeUndefined();
+  });
+});
+
 describe('runRecipe — determinism', () => {
   it('produces identical results for identical requests', () => {
     const a = runRecipe(baseRequest());

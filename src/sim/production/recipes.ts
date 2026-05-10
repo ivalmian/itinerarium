@@ -25,6 +25,17 @@ export { SEASONS, type Season };
 export interface RecipeDef {
   readonly id: RecipeId;
   readonly inputs: ReadonlyMap<ResourceId, Quantity>;
+  /**
+   * Resources that must be PRESENT in the owner's stockpile for the recipe
+   * to run, but are NOT consumed. Modeling pattern: a standing herd is
+   * present at the pasture and produces wool / milk per herd-unit per day,
+   * but shearing or milking does not deplete the herd. See docs/03
+   * "livestock are stocks, not flows".
+   *
+   * `requires[r]` factors into the fraction calculation (recipe scales down
+   * if `requires[r] / available < 1`), but no deduction happens at run-time.
+   */
+  readonly requires: ReadonlyMap<ResourceId, Quantity>;
   readonly labor: ReadonlyMap<JobId, number>;
   readonly building: BuildingId;
   readonly outputs: ReadonlyMap<ResourceId, Quantity>;
@@ -35,6 +46,7 @@ export interface RecipeDef {
 interface RecipeInput {
   readonly id: string;
   readonly inputs?: Readonly<Record<string, Quantity>>;
+  readonly requires?: Readonly<Record<string, Quantity>>;
   readonly labor: Readonly<Record<string, number>>;
   readonly building: string;
   readonly outputs: Readonly<Record<string, Quantity>>;
@@ -138,7 +150,10 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'shear_wool',
-    inputs: { 'livestock.sheep': 0.01 },
+    // Sheep are PRESENT in the pasture and provide a wool flow; shearing
+    // does not consume the herd. Slaughter is the only herd-consuming
+    // recipe. See docs/03 "livestock are stocks, not flows".
+    requires: { 'livestock.sheep': 0.01 },
     labor: { shepherd: 0.1 },
     building: 'pasture',
     outputs: { 'material.wool': 0.55 },
@@ -147,7 +162,9 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'milk_dairy',
-    inputs: { 'livestock.cattle': 0.005 },
+    // Cattle are PRESENT in the dairy and provide a milk flow; milking
+    // does not consume the herd. See shear_wool above.
+    requires: { 'livestock.cattle': 0.005 },
     labor: { dairy_worker: 1 },
     building: 'dairy',
     outputs: { 'food.cheese': 8 },
@@ -546,6 +563,10 @@ const buildCatalog = (): ReadonlyMap<RecipeId, RecipeDef> => {
     for (const [resKey, qty] of Object.entries(input.inputs ?? {})) {
       inputs.set(resourceId(resKey), qty);
     }
+    const requires = new Map<ResourceId, Quantity>();
+    for (const [resKey, qty] of Object.entries(input.requires ?? {})) {
+      requires.set(resourceId(resKey), qty);
+    }
     const labor = new Map<JobId, number>();
     for (const [jobKey, wd] of Object.entries(input.labor)) {
       labor.set(jobId(jobKey), wd);
@@ -557,6 +578,7 @@ const buildCatalog = (): ReadonlyMap<RecipeId, RecipeDef> => {
     const def: RecipeDef = Object.freeze({
       id,
       inputs: freezeMap(inputs),
+      requires: freezeMap(requires),
       labor: freezeMap(labor),
       building: buildingId(input.building),
       outputs: freezeMap(outputs),

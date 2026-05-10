@@ -295,6 +295,40 @@ describe('recipe registry', () => {
     });
   });
 
+  describe('requires (present-but-not-consumed)', () => {
+    it('shear_wool declares sheep in requires, not inputs', () => {
+      const r = getRecipe(recipeId('shear_wool'));
+      // The herd is PRESENT, not consumed.
+      expect(r.requires.get(resourceId('livestock.sheep'))).toBe(0.01);
+      expect(r.inputs.has(resourceId('livestock.sheep'))).toBe(false);
+    });
+
+    it('milk_dairy declares cattle in requires, not inputs', () => {
+      const r = getRecipe(recipeId('milk_dairy'));
+      expect(r.requires.get(resourceId('livestock.cattle'))).toBe(0.005);
+      expect(r.inputs.has(resourceId('livestock.cattle'))).toBe(false);
+    });
+
+    it('slaughter_for_meat_and_hides keeps cattle in inputs (it actually slaughters)', () => {
+      const r = getRecipe(recipeId('slaughter_for_meat_and_hides'));
+      expect(r.inputs.get(resourceId('livestock.cattle'))).toBe(0.02);
+      expect(r.requires.has(resourceId('livestock.cattle'))).toBe(false);
+    });
+
+    it('every recipe has a requires map (defaults to empty)', () => {
+      for (const r of allRecipes()) {
+        expect(r.requires).toBeInstanceOf(Map);
+      }
+    });
+
+    it('requires map is read-only', () => {
+      const r = getRecipe(recipeId('shear_wool'));
+      expect(() => {
+        (r.requires as Map<unknown, unknown>).clear();
+      }).toThrow();
+    });
+  });
+
   describe('immutability', () => {
     it('catalog entries cannot be mutated through the public API', () => {
       const def: RecipeDef = getRecipe(recipeId('mill_grain'));
