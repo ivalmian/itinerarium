@@ -1,4 +1,14 @@
 export {
+  runBurnIn,
+  type BurnInOpts,
+  type BurnInReport,
+  type BurnInSummary,
+  type DatedInvariantViolation,
+  type InvariantFrequency,
+  type SnapshotFrequency,
+} from './runner.js';
+
+export {
   STANDARD_INVARIANTS,
   caravanCargoNonNegative,
   caravanCrewPositive,
@@ -20,3 +30,12 @@ export {
   type InvariantViolation,
   type PreviousSummary,
 } from './invariants.js';
+
+export {
+  renderAsciiMap,
+  renderSettlementSummary,
+  renderWorldSnapshot,
+  type AsciiMapAux,
+  type AsciiMapBounds,
+  type AsciiMapOpts,
+} from './visualize.js';
