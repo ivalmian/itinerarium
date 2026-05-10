@@ -197,7 +197,7 @@ describe('tickEdgeHubs — imports', () => {
 describe('tickEdgeHubs — exports', () => {
   const farEdge = hex(-50, 0);
 
-  it('does NOT export bulk grain even with high spawn prob and big stockpile', () => {
+  it('does NOT export low-value bulk staples (grain, ordinary cloth) at any distance', () => {
     const config = baseConfig({
       baseImportSpawnProbPerDay: 0,
       baseExportSpawnProbPerDay: 1.0,
@@ -205,12 +205,10 @@ describe('tickEdgeHubs — exports', () => {
     });
     const localPrices = new Map<ResourceId, number>([
       [grain, 1],
-      [oliveOil, 2],
       [cloth, 8],
     ]);
     const available = new Map<ResourceId, Quantity>([
       [grain, 100000],
-      [oliveOil, 5000],
       [cloth, 5000],
     ]);
     const result = tickEdgeHubs({
@@ -221,11 +219,81 @@ describe('tickEdgeHubs — exports', () => {
       cityExportSources: [exportSource(aquileia, hex(0, 0), localPrices, available)],
       rng: createRng('bulk-no-export'),
     });
-    // None of the resulting caravans should carry these bulk goods as their primary cargo.
+    // None of the resulting caravans should carry these bulk goods.
     for (const c of result.newCaravans) {
       expect(c.cargo.has(grain)).toBe(false);
-      expect(c.cargo.has(oliveOil)).toBe(false);
       expect(c.cargo.has(cloth)).toBe(false);
+    }
+  });
+
+  it('exports amphora-packed olive oil + wine when local surplus depresses prices over a reasonable distance', () => {
+    // Per docs/06 §"Exports" + docs/08: amphora oil/wine CAN export
+    // "in good years when quality or scarcity makes the spread high
+    // enough". Same margin filter as everything else.
+    const nearEdge = hex(-30, 0);
+    const config = baseConfig({
+      baseImportSpawnProbPerDay: 0,
+      baseExportSpawnProbPerDay: 1.0,
+      edgeHexes: [nearEdge],
+    });
+    // Surplus year: local prices well below the amphora-export global.
+    const localPrices = new Map<ResourceId, number>([
+      [oliveOil, 2],
+      [wine, 3],
+    ]);
+    const available = new Map<ResourceId, Quantity>([
+      [oliveOil, 200],
+      [wine, 200],
+    ]);
+    const result = tickEdgeHubs({
+      config,
+      today: 100,
+      season: 'summer',
+      cityImportTargets: [],
+      cityExportSources: [exportSource(aquileia, hex(0, 0), localPrices, available)],
+      rng: createRng('amphora-export'),
+    });
+    expect(result.newCaravans.length).toBeGreaterThan(0);
+    for (const c of result.newCaravans) {
+      const cargoResources = Array.from(c.cargo.keys());
+      expect(cargoResources.length).toBeGreaterThan(0);
+      // Cargo should be one of the amphora staples (the higher-margin
+      // pick wins per bestExportFor).
+      for (const r of cargoResources) {
+        expect([oliveOil, wine]).toContain(r);
+      }
+    }
+  });
+
+  it('does NOT export amphora oil/wine when local price is already at or near the global price', () => {
+    // No spread → no profit → no export. The same filter that lets
+    // bulk grain stay home keeps amphora goods home when there's no
+    // surplus to liquidate.
+    const nearEdge = hex(-30, 0);
+    const config = baseConfig({
+      baseImportSpawnProbPerDay: 0,
+      baseExportSpawnProbPerDay: 1.0,
+      edgeHexes: [nearEdge],
+    });
+    const localPrices = new Map<ResourceId, number>([
+      [oliveOil, 145],
+      [wine, 195],
+    ]);
+    const available = new Map<ResourceId, Quantity>([
+      [oliveOil, 200],
+      [wine, 200],
+    ]);
+    const result = tickEdgeHubs({
+      config,
+      today: 100,
+      season: 'summer',
+      cityImportTargets: [],
+      cityExportSources: [exportSource(aquileia, hex(0, 0), localPrices, available)],
+      rng: createRng('amphora-no-spread'),
+    });
+    for (const c of result.newCaravans) {
+      expect(c.cargo.has(oliveOil)).toBe(false);
+      expect(c.cargo.has(wine)).toBe(false);
     }
   });
 
