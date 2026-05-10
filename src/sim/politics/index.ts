@@ -34,3 +34,22 @@ export {
   LATIN_PRAENOMEN_MALE,
   moveTo,
 } from './character.js';
+
+export type {
+  SettlementTaxView,
+  SizedShipment,
+  TaxAssessment,
+  TaxAssessmentInputs,
+  TaxKind,
+  TaxRatesPercent,
+  TaxShipmentInputs,
+} from './taxShipment.js';
+export {
+  HARVEST_TRIBUTE_DAY_OF_YEAR,
+  MONTHLY_ASSESSMENT_INTERVAL_DAYS,
+  assessTaxes,
+  createTaxShipmentCaravan,
+  isHarvestTributeDay,
+  isMonthlyAssessmentDay,
+  sizeShipmentForCargo,
+} from './taxShipment.js';
