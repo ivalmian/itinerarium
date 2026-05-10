@@ -20,3 +20,23 @@ export {
 
 export type { VitalRates } from './vitalRates.js';
 export { ROMAN_VITAL_RATES, tickDaily, tickYearly } from './vitalRates.js';
+
+export type {
+  ActiveInfection,
+  DiseaseDef,
+  EndemicResult,
+  EpidemicTriggerResult,
+  InfectionTickResult,
+  SettlementHealth,
+  TransmitResult,
+} from './disease.js';
+export {
+  DISEASES,
+  applyEndemicMortality,
+  createSettlementHealth,
+  declareQuarantine,
+  isQuarantined,
+  maybeTriggerEpidemic,
+  tickInfection,
+  transmitFromCaravan,
+} from './disease.js';
