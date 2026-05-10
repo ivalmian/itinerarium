@@ -1,0 +1,867 @@
+/**
+ * Initial state seeding: turn a procgen output (terrain grid + settlement
+ * sites) into a complete WorldState ready for the burn-in tick loop.
+ *
+ * Reference: docs/07-geography.md "Phase 1 — Procgen, step 10: Seed initial
+ * state" and docs/11-politics-and-ownership.md (governor + patrician
+ * families + village leadership + hex-level ownership).
+ *
+ * Pillar 1 ("no hidden hands") is the reason this file exists. Every actor
+ * (family, free village, hamlet household, governor's office, city
+ * corporation) is a real ledger holder; every named character has an
+ * identity, age, and faction; every catchment hex is owned by exactly one
+ * actor. That ownership graph is what later economy / politics / reputation
+ * systems read from — there is no aggregate "settlement pool".
+ *
+ * The seeder is deterministic in the seed: same opts → same world. All RNG
+ * flows through `Rng.derive('label')` so adding new sub-systems doesn't
+ * perturb existing streams.
+ */
+
+import { createRng, type Rng } from '../sim/rng.js';
+import { tierOfPopulation, createSettlement, type Settlement } from '../sim/world/settlement.js';
+import {
+  CHARACTER_CLASSES,
+  AGE_BANDS,
+  agedKey,
+  type AgeBand,
+  type CharacterClass,
+  type Sex,
+} from '../sim/population/index.js';
+import {
+  ACTOR_KINDS,
+  createActor,
+  createCharacter,
+  createFaction,
+  generateFullName,
+  generateLatinNomen,
+  type Actor,
+  type Faction,
+  type NamedCharacter,
+} from '../sim/politics/index.js';
+import { createReputationTable, type ReputationTable } from '../sim/reputation/table.js';
+import type { Caravan } from '../sim/caravan/caravan.js';
+import {
+  actorId,
+  characterId,
+  factionId,
+  resourceId,
+  settlementId,
+  type ActorId,
+  type CaravanId,
+  type CharacterId,
+  type Day,
+  type FactionId,
+  type SettlementId,
+} from '../sim/types.js';
+import type { HexGrid } from '../sim/world/grid.js';
+import { hexEquals, hexKey, hexesWithinRange, type Hex } from '../sim/world/hex.js';
+import type { SettlementSite } from './settlements.js';
+
+// --- Public types -----------------------------------------------------------
+
+export interface WorldState {
+  day: Day;
+  readonly grid: HexGrid;
+  readonly settlements: Map<SettlementId, Settlement>;
+  readonly actors: Map<ActorId, Actor>;
+  readonly factions: Map<FactionId, Faction>;
+  readonly characters: Map<CharacterId, NamedCharacter>;
+  readonly caravans: Map<CaravanId, Caravan>;
+  readonly reputation: ReputationTable;
+  /**
+   * Diagnostic: the procgen sites that were used to seed this world, in the
+   * same order seedSettlements() returned them. Useful for tests and tooling
+   * that wants to walk back from a Settlement to its kind/estimatedPopulation.
+   */
+  readonly bySite: readonly SettlementSite[];
+}
+
+export interface SeedOpts {
+  readonly seed: string;
+  readonly grid: HexGrid;
+  readonly settlementSites: readonly SettlementSite[];
+  /**
+   * Patrician families per city (and per the capital). Default 4. Per docs/11,
+   * the historical bracket is 3–7. Defensive bounds: must be in [1, 12].
+   */
+  readonly patricianFamiliesPerCity?: number;
+  /**
+   * Fraction of villages that are free villages (vs. patron-client). Default
+   * 0.2 (20%) per docs/11 ("less common").
+   */
+  readonly freeVillageFraction?: number;
+}
+
+// --- Catchment computation --------------------------------------------------
+
+/**
+ * Catchment radius in hexes per docs/05 §"Catchment". 1 km/hex.
+ * Hamlet ≈ 1, Village ≈ 2, Town ≈ 3, City ≈ 5, Capital ≈ 5.
+ */
+const catchmentRadiusFor = (kind: SettlementSite['kind']): number => {
+  switch (kind) {
+    case 'hamlet':
+      return 1;
+    case 'village':
+      return 2;
+    case 'town':
+      return 3;
+    case 'city':
+      return 5;
+    case 'capital':
+      return 5;
+  }
+};
+
+/**
+ * The catchment hexes for a site: every hex within radius around any of its
+ * urban hexes that exists in the grid AND is not itself one of the site's
+ * urban hexes AND has not already been claimed by a closer settlement.
+ */
+const computeCatchment = (
+  site: SettlementSite,
+  grid: HexGrid,
+  alreadyClaimed: ReadonlySet<string>,
+): Hex[] => {
+  const radius = catchmentRadiusFor(site.kind);
+  const urbanKeys = new Set(site.urbanHexes.map(hexKey));
+  const out: Hex[] = [];
+  const seen = new Set<string>();
+  for (const u of site.urbanHexes) {
+    for (const candidate of hexesWithinRange(u, radius)) {
+      const k = hexKey(candidate);
+      if (urbanKeys.has(k)) continue;
+      if (seen.has(k)) continue;
+      if (alreadyClaimed.has(k)) continue;
+      if (!grid.has(candidate)) continue;
+      seen.add(k);
+      out.push(candidate);
+    }
+  }
+  return out;
+};
+
+// --- Tier mapping -----------------------------------------------------------
+
+const tierFromSiteKind = (
+  kind: SettlementSite['kind'],
+  estimatedPopulation: number,
+): Settlement['tier'] => {
+  switch (kind) {
+    case 'capital':
+      return 'large_city';
+    case 'city':
+      return tierOfPopulation(estimatedPopulation) === 'large_city' ? 'large_city' : 'small_city';
+    case 'town':
+      return 'town';
+    case 'village':
+      return 'village';
+    case 'hamlet':
+      return 'hamlet';
+  }
+};
+
+// --- Population pyramid -----------------------------------------------------
+
+/**
+ * Roman demographic pyramid by 5-year age band, summing to 1.0. Heavy at the
+ * bottom (high birthrate, high child mortality, fewer elders). Numbers are a
+ * simplification of model life-table West Level 3 rescaled to the 17 bands
+ * in our cohort module. Tuning is downstream.
+ */
+const AGE_PYRAMID: Record<AgeBand, number> = {
+  '0-4': 0.135,
+  '5-9': 0.115,
+  '10-14': 0.1,
+  '15-19': 0.09,
+  '20-24': 0.08,
+  '25-29': 0.075,
+  '30-34': 0.07,
+  '35-39': 0.06,
+  '40-44': 0.055,
+  '45-49': 0.045,
+  '50-54': 0.04,
+  '55-59': 0.035,
+  '60-64': 0.03,
+  '65-69': 0.025,
+  '70-74': 0.018,
+  '75-79': 0.012,
+  '80+': 0.015,
+};
+
+interface ClassMix {
+  readonly patrician: number;
+  readonly plebeian: number;
+  readonly freedman: number;
+  readonly slave: number;
+  readonly foreigner: number;
+}
+
+/**
+ * Per-tier class mix per docs/04 §"Class structure". Hamlets are mostly free
+ * smallholders with no slaves; villages have a handful; towns and cities
+ * have the full pyramid including patricians and a slave class.
+ */
+const classMixForTier = (tier: Settlement['tier']): ClassMix => {
+  switch (tier) {
+    case 'hamlet':
+      // No patricians, no slaves; mostly plebs + a few freedmen + an
+      // occasional foreigner trader passing through.
+      return {
+        patrician: 0,
+        plebeian: 0.95,
+        freedman: 0.04,
+        slave: 0,
+        foreigner: 0.01,
+      };
+    case 'village':
+      return {
+        patrician: 0,
+        plebeian: 0.85,
+        freedman: 0.05,
+        slave: 0.08,
+        foreigner: 0.02,
+      };
+    case 'town':
+      return {
+        patrician: 0.01,
+        plebeian: 0.78,
+        freedman: 0.05,
+        slave: 0.13,
+        foreigner: 0.03,
+      };
+    case 'small_city':
+      return {
+        patrician: 0.02,
+        plebeian: 0.72,
+        freedman: 0.06,
+        slave: 0.16,
+        foreigner: 0.04,
+      };
+    case 'large_city':
+      return {
+        patrician: 0.025,
+        plebeian: 0.7,
+        freedman: 0.07,
+        slave: 0.18,
+        foreigner: 0.025,
+      };
+  }
+};
+
+/**
+ * Distribute a single integer total across the 17 age bands using the pyramid
+ * weights. Uses largest-remainder rounding so the sum is always exactly total.
+ */
+const distributeAcrossAges = (total: number): readonly { age: AgeBand; count: number }[] => {
+  if (total <= 0) return AGE_BANDS.map((age) => ({ age, count: 0 }));
+  const raw = AGE_BANDS.map((age) => ({ age, exact: AGE_PYRAMID[age] * total }));
+  const floored = raw.map((r) => ({
+    age: r.age,
+    count: Math.floor(r.exact),
+    frac: r.exact - Math.floor(r.exact),
+  }));
+  let assigned = floored.reduce((a, b) => a + b.count, 0);
+  const remainder = total - assigned;
+  // Sort by descending fractional remainder; bump the top `remainder` entries.
+  const order = floored
+    .map((_, i) => i)
+    .sort((a, b) => {
+      const fa = floored[a]?.frac ?? 0;
+      const fb = floored[b]?.frac ?? 0;
+      return fb - fa;
+    });
+  for (let i = 0; i < remainder; i++) {
+    const idx = order[i];
+    if (idx === undefined) break;
+    const entry = floored[idx];
+    if (entry === undefined) break;
+    entry.count += 1;
+    assigned += 1;
+  }
+  return floored.map((f) => ({ age: f.age, count: f.count }));
+};
+
+const SEX_SPLIT: readonly Sex[] = ['male', 'female'];
+
+/**
+ * Fill a settlement's PopulationPool from a target total + class mix. The
+ * algorithm: split the total into class buckets via the mix, then split each
+ * class bucket across the age pyramid, then split each age bucket 50/50
+ * between male and female (with a one-person odd-bucket fix).
+ */
+const seedPopulation = (settlement: Settlement, total: number): void => {
+  if (total <= 0) return;
+  const mix = classMixForTier(settlement.tier);
+  const byClass: Record<CharacterClass, number> = {
+    patrician: Math.round(total * mix.patrician),
+    plebeian: Math.round(total * mix.plebeian),
+    freedman: Math.round(total * mix.freedman),
+    slave: Math.round(total * mix.slave),
+    foreigner: Math.round(total * mix.foreigner),
+  };
+  // Reconcile rounding so the class sum equals total.
+  let classSum = 0;
+  for (const c of CHARACTER_CLASSES) classSum += byClass[c];
+  // Allocate any drift to plebeians (the dominant class).
+  byClass.plebeian += total - classSum;
+  if (byClass.plebeian < 0) byClass.plebeian = 0;
+
+  for (const klass of CHARACTER_CLASSES) {
+    const classTotal = byClass[klass];
+    if (classTotal <= 0) continue;
+    const ageBuckets = distributeAcrossAges(classTotal);
+    for (const { age, count } of ageBuckets) {
+      if (count <= 0) continue;
+      const male = Math.floor(count / 2);
+      const female = count - male;
+      if (male > 0) {
+        settlement.population.set({ age, sex: 'male', class: klass }, male);
+      }
+      if (female > 0) {
+        settlement.population.set({ age, sex: 'female', class: klass }, female);
+      }
+    }
+  }
+  // SEX_SPLIT is referenced indirectly above; keep the binding for future
+  // generators that need the full sex enumeration.
+  void SEX_SPLIT;
+};
+
+// --- Stockpiles -------------------------------------------------------------
+
+const GRAIN_KG_PER_DAY = 0.4; // docs/04 §"Consumption per adult per day"
+const KG_PER_MODIUS = 6.7; // see resources/catalog.ts food.grain
+const GRAIN_DAYS_OF_RESERVE = 30; // ~one month buffer per docs/11.5 §"Granary stocks"
+
+const grainModiiForPopulation = (totalPop: number, days: number): number => {
+  const kg = totalPop * GRAIN_KG_PER_DAY * days;
+  return Math.round(kg / KG_PER_MODIUS);
+};
+
+const grantStockpile = (actor: Actor, resource: string, qty: number): void => {
+  if (qty <= 0) return;
+  actor.stockpile.set(resourceId(resource), qty);
+};
+
+// --- Hex ownership ----------------------------------------------------------
+
+const setOwner = (grid: HexGrid, hex: Hex, owner: ActorId | null): void => {
+  const tile = grid.get(hex);
+  if (tile === undefined) return;
+  tile.ownerActor = owner;
+};
+
+// --- ID generators ----------------------------------------------------------
+
+let _idCounter = 0;
+const resetIdCounter = (): void => {
+  _idCounter = 0;
+};
+const nextId = (prefix: string): string => {
+  _idCounter += 1;
+  return `${prefix}-${String(_idCounter).padStart(5, '0')}`;
+};
+
+// --- Settlement / actor / character builders --------------------------------
+
+interface BuildContext {
+  readonly rng: Rng;
+  readonly grid: HexGrid;
+  readonly settlements: Map<SettlementId, Settlement>;
+  readonly actors: Map<ActorId, Actor>;
+  readonly factions: Map<FactionId, Faction>;
+  readonly characters: Map<CharacterId, NamedCharacter>;
+}
+
+const addActor = (ctx: BuildContext, actor: Actor): void => {
+  ctx.actors.set(actor.id, actor);
+};
+
+const addFaction = (ctx: BuildContext, faction: Faction): void => {
+  ctx.factions.set(faction.id, faction);
+};
+
+const addCharacter = (ctx: BuildContext, character: NamedCharacter): void => {
+  ctx.characters.set(character.id, character);
+};
+
+const addSettlement = (ctx: BuildContext, settlement: Settlement): void => {
+  ctx.settlements.set(settlement.id, settlement);
+};
+
+interface FamilySeed {
+  readonly actor: Actor;
+  readonly faction: Faction;
+  readonly patriarch: NamedCharacter;
+  readonly nomen: string;
+}
+
+const seedPatricianFamily = (
+  ctx: BuildContext,
+  city: Settlement,
+  cityNameHint: string,
+): FamilySeed => {
+  const familyRng = ctx.rng.derive(`family-${nextId('fam')}`);
+  const nomen = generateLatinNomen(familyRng);
+  const aId = actorId(nextId('actor'));
+  const fId = factionId(nextId('faction'));
+  const cId = characterId(nextId('char'));
+  const actor = createActor({
+    id: aId,
+    kind: 'patrician_family',
+    name: `Family ${nomen} of ${cityNameHint}`,
+    homeSettlement: city.id,
+    treasury: familyRng.int(2000, 8000),
+  });
+  const patriarch = createCharacter({
+    id: cId,
+    name: generateFullName(familyRng, 'male'),
+    age: familyRng.int(35, 60),
+    sex: 'male',
+    class: 'patrician',
+    faction: fId,
+    role: 'patriarch',
+    location: city.anchor,
+  });
+  const faction = createFaction({
+    id: fId,
+    actor: aId,
+    name: `Family ${nomen}`,
+    members: [cId],
+  });
+  addActor(ctx, actor);
+  addFaction(ctx, faction);
+  addCharacter(ctx, patriarch);
+  city.factions.push(fId);
+  city.stockpileOwners.push(aId);
+  return { actor, faction, patriarch, nomen };
+};
+
+const seedGovernor = (ctx: BuildContext, capital: Settlement, capitalName: string): void => {
+  const govRng = ctx.rng.derive('governor');
+  const aId = actorId(nextId('actor'));
+  const fId = factionId(nextId('faction'));
+  const cId = characterId(nextId('char'));
+  const actor = createActor({
+    id: aId,
+    kind: 'governor_office',
+    name: `Provincial Governor's Office of ${capitalName}`,
+    homeSettlement: capital.id,
+    treasury: govRng.int(20000, 50000),
+  });
+  const governor = createCharacter({
+    id: cId,
+    name: generateFullName(govRng, 'male'),
+    age: govRng.int(40, 65),
+    sex: 'male',
+    class: 'patrician',
+    faction: fId,
+    role: 'governor',
+    location: capital.anchor,
+  });
+  const faction = createFaction({
+    id: fId,
+    actor: aId,
+    name: `Office of the Governor`,
+    members: [cId],
+  });
+  addActor(ctx, actor);
+  addFaction(ctx, faction);
+  addCharacter(ctx, governor);
+  capital.factions.push(fId);
+  capital.stockpileOwners.push(aId);
+};
+
+const seedCityCorporation = (
+  ctx: BuildContext,
+  settlement: Settlement,
+  settlementName: string,
+): Actor => {
+  const aId = actorId(nextId('actor'));
+  const actor = createActor({
+    id: aId,
+    kind: 'city_corporation',
+    name: `Corporation of ${settlementName}`,
+    homeSettlement: settlement.id,
+    treasury: 5000,
+  });
+  addActor(ctx, actor);
+  settlement.stockpileOwners.push(aId);
+  // Granary stockpile sized to ~30 days of grain for the population.
+  grantStockpile(
+    actor,
+    'food.grain',
+    grainModiiForPopulation(settlement.population.total(), GRAIN_DAYS_OF_RESERVE),
+  );
+  return actor;
+};
+
+const seedFreeVillage = (
+  ctx: BuildContext,
+  settlement: Settlement,
+  settlementName: string,
+): Actor => {
+  const villageRng = ctx.rng.derive(`free-village-${String(settlement.id)}`);
+  const aId = actorId(nextId('actor'));
+  const fId = factionId(nextId('faction'));
+  const elderId = characterId(nextId('char'));
+  const actor = createActor({
+    id: aId,
+    kind: 'free_village',
+    name: `Free Village of ${settlementName}`,
+    homeSettlement: settlement.id,
+    treasury: villageRng.int(50, 300),
+  });
+  const elder = createCharacter({
+    id: elderId,
+    name: generateFullName(villageRng, 'male'),
+    age: villageRng.int(45, 70),
+    sex: 'male',
+    class: 'plebeian',
+    faction: fId,
+    role: 'elder',
+    location: settlement.anchor,
+  });
+  const faction = createFaction({
+    id: fId,
+    actor: aId,
+    name: `Council of ${settlementName}`,
+    members: [elderId],
+  });
+  addActor(ctx, actor);
+  addFaction(ctx, faction);
+  addCharacter(ctx, elder);
+  settlement.factions.push(fId);
+  settlement.stockpileOwners.push(aId);
+  // Modest grain + tools so the village isn't starting from zero.
+  const pop = settlement.population.total();
+  grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, 14));
+  grantStockpile(actor, 'goods.tools', Math.max(2, Math.floor(pop / 30)));
+  return actor;
+};
+
+const seedClientVillage = (ctx: BuildContext, settlement: Settlement, patron: Actor): void => {
+  const villageRng = ctx.rng.derive(`client-village-${String(settlement.id)}`);
+  // The patron's faction is in the city, but we still want a named headman in
+  // the village. The headman belongs to the patron's faction (a freedman
+  // managing the estate) so reputation lookups walk back to the patron.
+  const headmanId = characterId(nextId('char'));
+  // Find the patron's faction (each patrician_family has exactly one).
+  const patronFaction = [...ctx.factions.values()].find((f) => f.actor === patron.id);
+  if (patronFaction === undefined) {
+    throw new Error(`seedClientVillage: patron ${String(patron.id)} has no faction`);
+  }
+  const headman = createCharacter({
+    id: headmanId,
+    name: generateFullName(villageRng, 'male'),
+    age: villageRng.int(35, 60),
+    sex: 'male',
+    class: 'freedman',
+    faction: patronFaction.id,
+    role: 'headman',
+    location: settlement.anchor,
+  });
+  patronFaction.members.push(headmanId);
+  addCharacter(ctx, headman);
+  settlement.factions.push(patronFaction.id);
+  settlement.stockpileOwners.push(patron.id);
+  // The patron grants modest seed stocks held at the village (in their name).
+  const pop = settlement.population.total();
+  grantStockpile(patron, 'food.grain', grainModiiForPopulation(pop, 14));
+  grantStockpile(patron, 'goods.tools', Math.max(2, Math.floor(pop / 30)));
+};
+
+const seedHamlet = (ctx: BuildContext, settlement: Settlement, settlementName: string): Actor => {
+  const hamletRng = ctx.rng.derive(`hamlet-${String(settlement.id)}`);
+  const aId = actorId(nextId('actor'));
+  const fId = factionId(nextId('faction'));
+  const headmanId = characterId(nextId('char'));
+  const actor = createActor({
+    id: aId,
+    kind: 'hamlet_household',
+    name: `Household of ${settlementName}`,
+    homeSettlement: settlement.id,
+    treasury: hamletRng.int(10, 80),
+  });
+  const headman = createCharacter({
+    id: headmanId,
+    name: generateFullName(hamletRng, 'male'),
+    age: hamletRng.int(35, 60),
+    sex: 'male',
+    class: 'plebeian',
+    faction: fId,
+    role: 'headman',
+    location: settlement.anchor,
+  });
+  const faction = createFaction({
+    id: fId,
+    actor: aId,
+    name: `Household of ${settlementName}`,
+    members: [headmanId],
+  });
+  addActor(ctx, actor);
+  addFaction(ctx, faction);
+  addCharacter(ctx, headman);
+  settlement.factions.push(fId);
+  settlement.stockpileOwners.push(aId);
+  const pop = settlement.population.total();
+  grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, 30));
+  grantStockpile(actor, 'goods.tools', Math.max(1, Math.floor(pop / 20)));
+  return actor;
+};
+
+// --- Settlement naming ------------------------------------------------------
+
+const settlementNameFor = (rng: Rng, kind: SettlementSite['kind']): string => {
+  // Lightweight Roman placename generator. Real procgen could use a more
+  // varied corpus; this is enough to make the world legible.
+  const ROOTS = [
+    'Aquileia',
+    'Patavium',
+    'Verona',
+    'Mediolanum',
+    'Cremona',
+    'Bononia',
+    'Ravenna',
+    'Brixia',
+    'Mantua',
+    'Pisaurum',
+    'Ariminum',
+    'Faventia',
+    'Forum Cornelii',
+    'Fanum Fortunae',
+    'Volsinii',
+    'Praeneste',
+    'Tibur',
+    'Nomentum',
+    'Cumae',
+    'Capua',
+    'Salernum',
+    'Beneventum',
+    'Suessa',
+    'Reate',
+    'Spoletium',
+    'Asculum',
+    'Hadria',
+    'Auximum',
+    'Camerinum',
+    'Iguvium',
+  ];
+  const ABSURDLY_SMALL_ROOTS = ['Vicus Albus', 'Pagus Niger', 'Mons Calidus', 'Vallis Frigida'];
+  const root = rng.pick(kind === 'hamlet' ? [...ROOTS, ...ABSURDLY_SMALL_ROOTS] : ROOTS);
+  switch (kind) {
+    case 'capital':
+    case 'city':
+      return root;
+    case 'town':
+      return root;
+    case 'village':
+      return `Pagus ${root}`;
+    case 'hamlet':
+      return root.startsWith('Pagus') || root.startsWith('Vicus') ? root : `Vicus ${root}`;
+  }
+};
+
+// --- Main entry -------------------------------------------------------------
+
+export const seedWorld = (opts: SeedOpts): WorldState => {
+  resetIdCounter();
+  const rng = createRng(opts.seed);
+  const familiesPerCity = clampFamilies(opts.patricianFamiliesPerCity ?? 4);
+  const freeFraction = clampFraction(opts.freeVillageFraction ?? 0.2);
+
+  const ctx: BuildContext = {
+    rng,
+    grid: opts.grid,
+    settlements: new Map(),
+    actors: new Map(),
+    factions: new Map(),
+    characters: new Map(),
+  };
+
+  // Phase 1: build Settlement entities for every site, with catchments
+  // assigned in city → town → village → hamlet order so larger settlements
+  // claim their catchment first.
+  const order = orderSitesForCatchment(opts.settlementSites);
+  const claimed = new Set<string>();
+  for (const u of order.flatMap((s) => s.urbanHexes)) {
+    claimed.add(hexKey(u));
+  }
+  const siteToSettlement = new Map<SettlementSite, Settlement>();
+  for (const site of order) {
+    const catchment = computeCatchment(site, opts.grid, claimed);
+    for (const c of catchment) claimed.add(hexKey(c));
+    const tier = tierFromSiteKind(site.kind, site.estimatedPopulation);
+    const sId = settlementId(nextId('settlement'));
+    const nameRng = rng.derive(`name-${nextId('name')}`);
+    const settlement = createSettlement({
+      id: sId,
+      tier,
+      name: settlementNameFor(nameRng, site.kind),
+      anchor: site.anchor,
+      urbanHexes: site.urbanHexes,
+      catchmentHexes: catchment,
+    });
+    seedPopulation(settlement, site.estimatedPopulation);
+    addSettlement(ctx, settlement);
+    siteToSettlement.set(site, settlement);
+  }
+
+  // Phase 2: governor in the capital.
+  const capitalSite = opts.settlementSites.find((s) => s.kind === 'capital');
+  if (capitalSite !== undefined) {
+    const capital = siteToSettlement.get(capitalSite);
+    if (capital !== undefined) {
+      seedGovernor(ctx, capital, capital.name);
+    }
+  }
+
+  // Phase 3: city corporations + patrician families per city/capital.
+  const familiesByCity = new Map<SettlementId, FamilySeed[]>();
+  for (const site of opts.settlementSites) {
+    if (site.kind !== 'city' && site.kind !== 'capital') continue;
+    const city = siteToSettlement.get(site);
+    if (city === undefined) continue;
+    seedCityCorporation(ctx, city, city.name);
+    const seeds: FamilySeed[] = [];
+    for (let i = 0; i < familiesPerCity; i++) {
+      seeds.push(seedPatricianFamily(ctx, city, city.name));
+    }
+    familiesByCity.set(city.id, seeds);
+  }
+
+  // Phase 4: town corporations (small-ish stockpile owner).
+  for (const site of opts.settlementSites) {
+    if (site.kind !== 'town') continue;
+    const town = siteToSettlement.get(site);
+    if (town === undefined) continue;
+    seedCityCorporation(ctx, town, town.name);
+  }
+
+  // Phase 5: villages — assign as patron-client to a nearby family or as a
+  // free village. Hex ownership flows from this choice.
+  const allFamilies: FamilySeed[] = [...familiesByCity.values()].flat();
+  const villageRng = rng.derive('village-leadership');
+  for (const site of opts.settlementSites) {
+    if (site.kind !== 'village') continue;
+    const village = siteToSettlement.get(site);
+    if (village === undefined) continue;
+    const isFree = villageRng.next() < freeFraction || allFamilies.length === 0;
+    if (isFree) {
+      const owner = seedFreeVillage(ctx, village, village.name);
+      claimVillageHexes(ctx.grid, village, owner.id);
+    } else {
+      const patron = villageRng.pick(allFamilies).actor;
+      seedClientVillage(ctx, village, patron);
+      claimVillageHexes(ctx.grid, village, patron.id);
+    }
+  }
+
+  // Phase 6: hamlets — each gets its own household actor.
+  for (const site of opts.settlementSites) {
+    if (site.kind !== 'hamlet') continue;
+    const hamlet = siteToSettlement.get(site);
+    if (hamlet === undefined) continue;
+    const owner = seedHamlet(ctx, hamlet, hamlet.name);
+    claimVillageHexes(ctx.grid, hamlet, owner.id);
+  }
+
+  // Phase 7: ensure city / town urban + catchment hexes are owned. Default
+  // owner is the city_corporation; if a city has families, distribute
+  // catchment hexes across them round-robin so estates feel real.
+  for (const site of opts.settlementSites) {
+    if (site.kind !== 'city' && site.kind !== 'capital' && site.kind !== 'town') continue;
+    const settlement = siteToSettlement.get(site);
+    if (settlement === undefined) continue;
+    const cityCorp = [...ctx.actors.values()].find(
+      (a) => a.kind === 'city_corporation' && a.homeSettlement === settlement.id,
+    );
+    if (cityCorp === undefined) continue;
+    for (const u of settlement.urbanHexes) {
+      setOwner(ctx.grid, u, cityCorp.id);
+    }
+    const families = familiesByCity.get(settlement.id) ?? [];
+    if (families.length === 0) {
+      for (const c of settlement.catchmentHexes) setOwner(ctx.grid, c, cityCorp.id);
+    } else {
+      let rri = 0;
+      for (const c of settlement.catchmentHexes) {
+        const fam = families[rri % families.length];
+        if (fam === undefined) {
+          setOwner(ctx.grid, c, cityCorp.id);
+        } else {
+          setOwner(ctx.grid, c, fam.actor.id);
+        }
+        rri += 1;
+      }
+    }
+  }
+
+  // Phase 8: ensure wilderness (any tile not in any settlement) is unowned.
+  // Most procgen tiles default to ownerActor=null already, but be defensive
+  // for re-seeds: clear any tile we did not explicitly claim.
+  for (const tile of opts.grid.tiles()) {
+    const [hex] = tile;
+    if (!claimed.has(hexKey(hex))) {
+      setOwner(opts.grid, hex, null);
+    }
+  }
+
+  return {
+    day: 0,
+    grid: opts.grid,
+    settlements: ctx.settlements,
+    actors: ctx.actors,
+    factions: ctx.factions,
+    characters: ctx.characters,
+    caravans: new Map<CaravanId, Caravan>(),
+    reputation: createReputationTable(),
+    bySite: opts.settlementSites,
+  };
+};
+
+// --- helpers ----------------------------------------------------------------
+
+const SITE_ORDER: ReadonlyMap<SettlementSite['kind'], number> = new Map([
+  ['capital', 0],
+  ['city', 1],
+  ['town', 2],
+  ['village', 3],
+  ['hamlet', 4],
+]);
+
+const orderSitesForCatchment = (sites: readonly SettlementSite[]): readonly SettlementSite[] => {
+  return [...sites].sort((a, b) => {
+    const ai = SITE_ORDER.get(a.kind) ?? 99;
+    const bi = SITE_ORDER.get(b.kind) ?? 99;
+    return ai - bi;
+  });
+};
+
+const claimVillageHexes = (grid: HexGrid, settlement: Settlement, owner: ActorId): void => {
+  for (const u of settlement.urbanHexes) setOwner(grid, u, owner);
+  for (const c of settlement.catchmentHexes) setOwner(grid, c, owner);
+};
+
+const clampFamilies = (n: number): number => {
+  if (!Number.isFinite(n)) return 4;
+  const i = Math.round(n);
+  if (i < 1) return 1;
+  if (i > 12) return 12;
+  return i;
+};
+
+const clampFraction = (f: number): number => {
+  if (!Number.isFinite(f)) return 0;
+  if (f < 0) return 0;
+  if (f > 1) return 1;
+  return f;
+};
+
+// References to keep ts-prune from flagging these as unused; they're part of
+// the public surface that callers (tests + future ticks) reach via WorldState.
+void hexEquals;
+void agedKey;
+void ACTOR_KINDS;
