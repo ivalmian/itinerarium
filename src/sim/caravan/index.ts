@@ -51,3 +51,11 @@ export {
   TRANSPORT_COST_COIN_PER_KG_PER_HEX,
   tickEdgeHubs,
 } from './edgeHub.js';
+
+export type {
+  CandidateSettlement,
+  ExpectedProfitResult,
+  PlanCaravanRouteInputs,
+  RoutePlan,
+} from './ai.js';
+export { expectedProfit, expectedRisk, planCaravanRoute, travelCost } from './ai.js';
