@@ -34,6 +34,7 @@
 
 import { allBuildings } from './buildings/catalog.js';
 import { tickCaravanMovement } from './caravan/movement.js';
+import { planCaravanRoute } from './caravan/ai.js';
 import {
   aggregateDemand,
   comfortDemand,
@@ -184,7 +185,7 @@ export const tick = (inputs: TickInputs): TickResult => {
   demographicsPhase(world, today, rng.derive('demographics'), events);
 
   // --- Phase 6: Politics ---------------------------------------------------
-  politicsPhase(world);
+  politicsPhase(world, rng.derive('politics'), today);
 
   // --- Annual hook (after the day's main work, before incrementing day) ----
   // The "year boundary" is when (day + 1) % YEAR_DAYS === 0 — i.e. the day
@@ -802,11 +803,80 @@ const demographicsPhase = (world: WorldState, today: Day, rng: Rng, events: Tick
 
 // --- Phase 6: Politics ------------------------------------------------------
 
-const politicsPhase = (world: WorldState): void => {
+const politicsPhase = (world: WorldState, rng: Rng, today: Day): void => {
   // Reputation decay applies once per tick; entries below ε are pruned.
   world.reputation.decayTick(REPUTATION_HALF_LIFE_DAYS);
-  // Other political moves (governor edicts, family decisions, tax spawning)
-  // plug in here in later iterations.
+  // Caravan re-planning: every NPC caravan sitting at its destination
+  // observes local prices, restocks its price book, and picks a new
+  // destination via the NPC AI. Without this loop trade circulates
+  // exactly ZERO after the seeded caravans complete their first leg —
+  // the v1 baseline issue (see docs/06 §"Caravan lifecycle in the tick
+  // loop").
+  caravanReplanPhase(world, rng.derive('caravan-replan'), today);
+};
+
+const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day): void => {
+  // Build the candidate-settlements list once per tick (constant per day).
+  const candidates: { id: SettlementId; hex: Hex; tier: Settlement['tier'] }[] = [];
+  for (const s of world.settlements.values()) {
+    candidates.push({ id: s.id, hex: s.anchor, tier: s.tier });
+  }
+  if (candidates.length < 2) return;
+
+  // Index settlements by anchor hex for the price-book observation step.
+  const settlementByAnchor = new Map<string, Settlement>();
+  for (const s of world.settlements.values()) {
+    settlementByAnchor.set(`${s.anchor.q},${s.anchor.r}`, s);
+  }
+
+  for (const [cId, c] of world.caravans) {
+    if (c.destination === null) continue;
+    if (!hexEquals(c.position, c.destination)) continue; // not yet arrived
+
+    // 1. Record observed local prices into caravan's price book.
+    const local = settlementByAnchor.get(`${c.position.q},${c.position.r}`);
+    if (local !== undefined) {
+      for (const [resource, price] of local.market.lastClearingPrice) {
+        if (!Number.isFinite(price) || price <= 0) continue;
+        let book = c.priceBook.get(resource);
+        if (book === undefined) {
+          book = new Map<string, { price: number; observedOnDay: Day }>();
+          c.priceBook.set(resource, book);
+        }
+        book.set(`${c.position.q},${c.position.r}`, { price, observedOnDay: today });
+      }
+    }
+
+    // 2. Plan next route.
+    const plan = planCaravanRoute({
+      caravan: c,
+      candidateSettlements: candidates,
+      knownPrices: c.priceBook,
+      knownBanditDensity: new Map(), // v1: no bandit-density signal yet
+      knownToll: () => 0, // v1: no toll signal yet
+      rng: rng.derive(String(cId)),
+    });
+
+    if (plan !== null) {
+      // Set new destination. Cargo isn't restocked here (that's a market
+      // operation handled separately); the planner's expected profit
+      // reflects what it expects to be able to load.
+      c.destination = plan.destination;
+    } else {
+      // No profitable plan — usually because the caravan has empty cargo
+      // and/or hasn't observed enough destinations to compute spreads.
+      // Fall back to "scout to a random different settlement" so the
+      // caravan keeps moving and accumulates price observations. This is
+      // what unspecialized merchants did historically: travel to gossip
+      // and find out where prices are good.
+      const rngHere = rng.derive(`${String(cId)}-fallback`);
+      const filtered = candidates.filter((s) => !hexEquals(s.hex, c.position));
+      if (filtered.length > 0) {
+        const pick = rngHere.pick(filtered);
+        c.destination = { q: pick.hex.q, r: pick.hex.r };
+      }
+    }
+  }
 };
 
 // --- Annual hook ------------------------------------------------------------
