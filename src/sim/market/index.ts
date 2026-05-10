@@ -13,3 +13,12 @@ export {
   type StatusOpts,
   type SubsistenceOpts,
 } from './demand.js';
+
+export {
+  aggregateSupply,
+  ownerSupply,
+  type OwnerSupplyOpts,
+  type SupplyBreakpoint,
+  type SupplySchedule,
+  type SupplySource,
+} from './supply.js';
