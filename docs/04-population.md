@@ -65,29 +65,39 @@ Two ticks together drive demographics:
   **per-fertile-female birth binomial** for new infants. Children
   *appear* in the 0-4 band the day they're born.
 - `tickYearly(pool, rng)` fires once per game year (in the annual
-  hook). It **ages every cohort one band up**: the 0-4 cohort
-  becomes 5-9, the 5-9 becomes 10-14, …, the 75-79 absorbs into
-  80+. No births or deaths happen in this tick — that's tickDaily's
-  job all year long.
+  hook). Per cohort, **20% of its members age into the next band**
+  each year — the standard discretization for 5-year buckets, since
+  on average 1 of 5 residents has their next-band birthday each
+  calendar year. So a 0-4 cohort of 100 contributes ~20 to 5-9 and
+  retains ~80 (which is then refilled continuously by tickDaily
+  births). The 80+ band is absorbing: it accepts ~20% of 75-79 with
+  no further outflow. No births or deaths happen in this tick —
+  that's tickDaily's job all year long.
 
 So in any 365-day burn-in segment, every adult has had ~365 daily
 mortality samples and every fertile woman has had ~365 daily birth
-chances. At year-end, the pyramid shifts up one band. After 5 burn-
-in years a new cohort has entered the 0-4 band and the old 75-79
-cohort has aged into 80+ where most have died.
+chances. At year-end, the pyramid drifts gently up: each cohort
+hands a fifth of its residents to the next band. After 5 burn-in
+years the pyramid has reshuffled significantly but no individual
+"birth wave" has propagated wholesale through it (an earlier
+implementation aged 100% per year, producing exactly that
+pathology).
 
-**Verifying it's working** (debug instrument planned in
-`scripts/debug-activity.ts`): dump the global pyramid (sum across
-all settlements) at year 0, 1, 5, and 10. Expect:
+**Verifying it's working** — `scripts/debug-activity.ts` snapshots
+the global pyramid (sum across all settlements) at year 0, 1, 5,
+and 10. Expect:
 
-- Year 5 pyramid shifted: the year-0 0-4 band is now in 5-9; a
-  new 0-4 cohort exists; year-0 80+ has shrunk by ~50% (geometric
-  mortality).
-- Year 10: another band-shift; the year-0 0-4 has now reached 10-14;
-  the year-0 80+ has effectively died out and been replaced by the
-  year-0 70-74 having aged up + survived.
-- Total population should be roughly stable in good years (~+0.5%/yr)
-  and visibly drop in famine/plague years.
+- Year 5 vs. year 0: the 0-4 cohort still exists (~12% of total
+  population in steady state), refilled by ongoing births. Mid-life
+  bands smoothly increase as the surviving 0-4s of year 0 partly
+  age up. The 80+ band stays small but non-zero — geometric
+  mortality balances inflow.
+- Year 10: similar shape, total population roughly stable
+  (~+0.5%/yr in good years) and visibly drops in famine/plague
+  years.
+- Anti-pattern (failure mode of the old 100%/yr code): a single
+  bulge propagating up the pyramid with the 0-4 band at zero each
+  year-end. If the snapshot shows that, demographics are broken.
 
 If a burn-in shows a frozen pyramid (no aging-up of cohorts) or no
 new 0-4 babies appearing, demographics are not running and the
