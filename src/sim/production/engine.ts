@@ -37,6 +37,14 @@ import type { Season } from '../world/terrain.js';
 export interface ProductionRecipe {
   readonly id: RecipeId;
   readonly inputs: ReadonlyMap<ResourceId, Quantity>;
+  /**
+   * Resources that must be PRESENT in the owner's stockpile but are NOT
+   * consumed. Factors into the fraction calculation (recipe scales down if
+   * `requires[r] / available < 1`) but no deduction happens at run-time.
+   * See docs/03 "livestock are stocks, not flows". Optional for callers
+   * with synthetic test recipes.
+   */
+  readonly requires?: ReadonlyMap<ResourceId, Quantity>;
   readonly outputs: ReadonlyMap<ResourceId, Quantity>;
   readonly labor: ReadonlyMap<JobId, number>;
   readonly building: BuildingId;
@@ -150,6 +158,26 @@ export const runRecipe = (req: RecipeRunRequest): RecipeRunResult => {
   }
   if (!Number.isFinite(inputFraction)) {
     inputFraction = Number.POSITIVE_INFINITY;
+  }
+
+  // Requires gate. A "present-but-not-consumed" resource (e.g. the
+  // standing herd at a pasture). Factors into the fraction calculation
+  // — entirely missing aborts the run, present-but-short scales it down
+  // — but the resource is NEVER deducted from the stockpile downstream.
+  // Modeling pattern: shearing/milking are flow extractions on top of a
+  // standing herd stock. See docs/03 "livestock are stocks, not flows".
+  if (recipe.requires !== undefined) {
+    for (const [resource, needed] of recipe.requires) {
+      if (needed <= 0) continue;
+      const available = inputStocks.get(resource) ?? 0;
+      if (available <= 0) {
+        return noRun({
+          reason: 'missing_input',
+          detail: `missing required-present ${String(resource)} for recipe ${String(recipe.id)}`,
+        });
+      }
+      inputFraction = Math.min(inputFraction, available / needed);
+    }
   }
 
   // Building capacity is in recipe-instances per day. capacityRemaining=50

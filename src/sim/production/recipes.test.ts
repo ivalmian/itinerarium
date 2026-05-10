@@ -192,23 +192,23 @@ describe('recipe registry', () => {
       expect(r.outputs.get(resourceId('food.flour'))).toBe(45);
     });
 
-    it('bake_bread: 30 flour + 0.5 wood → 40 bread with 1 baker', () => {
+    it('bake_bread: 30 flour + 5 wood → 40 bread with 1 baker', () => {
       const r = getRecipe(recipeId('bake_bread'));
       expect(r.inputs.get(resourceId('food.flour'))).toBe(30);
-      // Wood reduced from docs/03's 5 → 0.5 for v1 burn-in stability;
-      // realistic ratio restored in v1.5 once trade closes the loop.
-      expect(r.inputs.get(resourceId('material.wood'))).toBe(0.5);
+      // docs/03: a baker burns ~5 kg of oven fuel per day (restored in v1.5
+      // once the forester/charcoal chain landed and trade closed the loop).
+      expect(r.inputs.get(resourceId('material.wood'))).toBe(5);
       expect(r.outputs.get(resourceId('food.bread'))).toBe(40);
     });
 
-    it('smelt_iron: 6 ore + 10 charcoal → 2 iron with 1 smelter', () => {
+    it('smelt_iron: 60 ore + 100 charcoal → 15 iron with 1 smelter', () => {
       const r = getRecipe(recipeId('smelt_iron'));
       // Roman bloomery: ~3-5 kg ore + ~6-10 kg charcoal yields ~1 kg
-      // bloom iron (after slag loss). We round to 2 kg/recipe so the
-      // ratio sits between historical and slightly idealized.
-      expect(r.inputs.get(resourceId('mineral.iron_ore'))).toBe(6);
-      expect(r.inputs.get(resourceId('material.charcoal'))).toBe(10);
-      expect(r.outputs.get(resourceId('metal.iron'))).toBe(2);
+      // bloom iron. docs/03 worked example: scaled to a per-recipe-instance
+      // bloomery-day at 60+100→15. Bloomery is genuinely charcoal-heavy.
+      expect(r.inputs.get(resourceId('mineral.iron_ore'))).toBe(60);
+      expect(r.inputs.get(resourceId('material.charcoal'))).toBe(100);
+      expect(r.outputs.get(resourceId('metal.iron'))).toBe(15);
     });
 
     it('forge_tools: 5 iron + 2 lumber + 3 charcoal → 15 tools with 1 smith', () => {
@@ -292,6 +292,40 @@ describe('recipe registry', () => {
     it('returns empty for a non-input resource', () => {
       const out = recipesByInput(resourceId('exotic.silk'));
       expect(out.length).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  describe('requires (present-but-not-consumed)', () => {
+    it('shear_wool declares sheep in requires, not inputs', () => {
+      const r = getRecipe(recipeId('shear_wool'));
+      // The herd is PRESENT, not consumed.
+      expect(r.requires.get(resourceId('livestock.sheep'))).toBe(0.01);
+      expect(r.inputs.has(resourceId('livestock.sheep'))).toBe(false);
+    });
+
+    it('milk_dairy declares cattle in requires, not inputs', () => {
+      const r = getRecipe(recipeId('milk_dairy'));
+      expect(r.requires.get(resourceId('livestock.cattle'))).toBe(0.005);
+      expect(r.inputs.has(resourceId('livestock.cattle'))).toBe(false);
+    });
+
+    it('slaughter_for_meat_and_hides keeps cattle in inputs (it actually slaughters)', () => {
+      const r = getRecipe(recipeId('slaughter_for_meat_and_hides'));
+      expect(r.inputs.get(resourceId('livestock.cattle'))).toBe(0.02);
+      expect(r.requires.has(resourceId('livestock.cattle'))).toBe(false);
+    });
+
+    it('every recipe has a requires map (defaults to empty)', () => {
+      for (const r of allRecipes()) {
+        expect(r.requires).toBeInstanceOf(Map);
+      }
+    });
+
+    it('requires map is read-only', () => {
+      const r = getRecipe(recipeId('shear_wool'));
+      expect(() => {
+        (r.requires as Map<unknown, unknown>).clear();
+      }).toThrow();
     });
   });
 

@@ -25,6 +25,17 @@ export { SEASONS, type Season };
 export interface RecipeDef {
   readonly id: RecipeId;
   readonly inputs: ReadonlyMap<ResourceId, Quantity>;
+  /**
+   * Resources that must be PRESENT in the owner's stockpile for the recipe
+   * to run, but are NOT consumed. Modeling pattern: a standing herd is
+   * present at the pasture and produces wool / milk per herd-unit per day,
+   * but shearing or milking does not deplete the herd. See docs/03
+   * "livestock are stocks, not flows".
+   *
+   * `requires[r]` factors into the fraction calculation (recipe scales down
+   * if `requires[r] / available < 1`), but no deduction happens at run-time.
+   */
+  readonly requires: ReadonlyMap<ResourceId, Quantity>;
   readonly labor: ReadonlyMap<JobId, number>;
   readonly building: BuildingId;
   readonly outputs: ReadonlyMap<ResourceId, Quantity>;
@@ -35,6 +46,7 @@ export interface RecipeDef {
 interface RecipeInput {
   readonly id: string;
   readonly inputs?: Readonly<Record<string, Quantity>>;
+  readonly requires?: Readonly<Record<string, Quantity>>;
   readonly labor: Readonly<Record<string, number>>;
   readonly building: string;
   readonly outputs: Readonly<Record<string, Quantity>>;
@@ -58,13 +70,11 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'harvest_grain',
-    // Tools wear out over years, not days. 0.001/recipe means 1000
-    // recipe-instances per tool unit — roughly 1 sickle per acre-year
-    // of cultivation, which matches the historical Roman record.
-    // Pre-v1.5: this stops smithy production from being load-bearing
-    // for burn-in stability. v1.5: restore higher rate once smithies
-    // produce sustainably.
-    inputs: { 'goods.tools': 0.001 },
+    // Tools wear: ~1 sickle replaced per farmer per year ≈ 0.005/day
+    // (working ~200 farmer-days per year per sickle). This restores the
+    // realistic per-recipe wear rate and makes the smithy/forge_tools
+    // chain load-bearing for the world's tool supply.
+    inputs: { 'goods.tools': 0.005 },
     labor: { farmer: 1 },
     building: 'farm',
     outputs: { 'food.grain': 80 },
@@ -138,7 +148,10 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'shear_wool',
-    inputs: { 'livestock.sheep': 0.01 },
+    // Sheep are PRESENT in the pasture and provide a wool flow; shearing
+    // does not consume the herd. Slaughter is the only herd-consuming
+    // recipe. See docs/03 "livestock are stocks, not flows".
+    requires: { 'livestock.sheep': 0.01 },
     labor: { shepherd: 0.1 },
     building: 'pasture',
     outputs: { 'material.wool': 0.55 },
@@ -147,7 +160,9 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'milk_dairy',
-    inputs: { 'livestock.cattle': 0.005 },
+    // Cattle are PRESENT in the dairy and provide a milk flow; milking
+    // does not consume the herd. See shear_wool above.
+    requires: { 'livestock.cattle': 0.005 },
     labor: { dairy_worker: 1 },
     building: 'dairy',
     outputs: { 'food.cheese': 8 },
@@ -169,11 +184,11 @@ const DEFS: readonly RecipeInput[] = [
     inputs: { 'goods.tools': 0.05 },
     labor: { forester: 1 },
     building: 'forester_camp',
-    // Bumped from 1.5 → 10 per recipe-instance to satisfy downstream
-    // demand (bake_bread + burn_charcoal + saw_lumber consume 15-25
-    // wood/instance combined). v1.5: drop back when we model multi-
-    // building forester operations and trade carries surplus.
-    outputs: { 'material.wood': 10 },
+    // Realistic: a Roman forester crew yields ~1.5 cords/day. The wood
+    // chain is now load-bearing on multi-building forester operations
+    // and inter-settlement trade circulating wood from forester villages
+    // to charcoal/baker hubs (per docs/06 caravan re-routing).
+    outputs: { 'material.wood': 1.5 },
     notes: 'One cord every ~16 hours of effort, scaled per-crew at v1.',
   },
   {
@@ -296,11 +311,15 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'bake_bread',
-    inputs: { 'food.flour': 30, 'material.wood': 0.5 },
+    // A baker burns ~5 kg of oven fuel per day; we now restore the
+    // realistic ratio so bakeries are real wood consumers (and the
+    // forester/charcoal chain is genuinely load-bearing for the food
+    // chain, per docs/03 worked example).
+    inputs: { 'food.flour': 30, 'material.wood': 5 },
     labor: { baker: 1 },
     building: 'bakery',
     outputs: { 'food.bread': 40 },
-    notes: 'Wood reduced for v1 burn-in stability; oven fuel still required but light.',
+    notes: 'Wood ~5 kg/day per baker (oven fuel). docs/03 worked example.',
   },
   {
     id: 'press_olives',
@@ -407,15 +426,17 @@ const DEFS: readonly RecipeInput[] = [
   {
     id: 'smelt_iron',
     // Historical Roman bloomery: ~3-5 kg ore + ~6-10 kg charcoal yields
-    // 1 kg of bloom iron (after slag loss). We model 6 ore + 10 charcoal
-    // → 2 iron (an idealized output rate). Smelters that lose their
-    // charcoal supply STOP — iron is downstream of the wood chain.
-    inputs: { 'mineral.iron_ore': 6, 'material.charcoal': 10 },
+    // 1 kg of bloom iron (after slag loss). docs/03 worked example uses
+    // a per-recipe-instance scale of 60 ore + 100 charcoal → 15 iron
+    // (one bloomery-day at ~15 kg of usable bloom). Bloomery is genuinely
+    // charcoal-heavy: each smelt draws ~7× its iron weight in fuel, so
+    // the charcoal kiln + forester chain has to keep up.
+    inputs: { 'mineral.iron_ore': 60, 'material.charcoal': 100 },
     labor: { smelter: 1 },
     building: 'bloomery',
-    outputs: { 'metal.iron': 2 },
+    outputs: { 'metal.iron': 15 },
     notes:
-      'Roman bloomery yield: ~3-5 kg ore + 6-10 kg charcoal → 1 kg iron. We round to 2 kg/recipe.',
+      'Roman bloomery: ~60 kg ore + ~100 kg charcoal → ~15 kg bloom iron per smelter-day (docs/03 worked example).',
   },
   {
     id: 'alloy_bronze',
@@ -546,6 +567,10 @@ const buildCatalog = (): ReadonlyMap<RecipeId, RecipeDef> => {
     for (const [resKey, qty] of Object.entries(input.inputs ?? {})) {
       inputs.set(resourceId(resKey), qty);
     }
+    const requires = new Map<ResourceId, Quantity>();
+    for (const [resKey, qty] of Object.entries(input.requires ?? {})) {
+      requires.set(resourceId(resKey), qty);
+    }
     const labor = new Map<JobId, number>();
     for (const [jobKey, wd] of Object.entries(input.labor)) {
       labor.set(jobId(jobKey), wd);
@@ -557,6 +582,7 @@ const buildCatalog = (): ReadonlyMap<RecipeId, RecipeDef> => {
     const def: RecipeDef = Object.freeze({
       id,
       inputs: freezeMap(inputs),
+      requires: freezeMap(requires),
       labor: freezeMap(labor),
       building: buildingId(input.building),
       outputs: freezeMap(outputs),

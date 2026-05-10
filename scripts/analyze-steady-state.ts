@@ -153,6 +153,13 @@ const solveBackchain = (finalDemand: Map<ResourceId, number>): {
     const x = qty / bestOutput;
     intensities.set(best.id, (intensities.get(best.id) ?? 0) + x);
     // Recursively demand inputs and labor.
+    //
+    // Intentionally NOT back-chaining recipe.requires here: those are
+    // present-but-not-consumed (e.g. the standing herd at a pasture).
+    // They factor into building/labor sizing of the producing recipe
+    // (raise_sheep / raise_cattle re-grow the herd at the same daily
+    // rate) but they do not represent a per-recipe-instance demand.
+    // Treating them as inputs would double-count herd demand by ~50×.
     for (const [inp, inpQty] of best.inputs) {
       pending.push({ res: inp, qty: inpQty * x, depth: depth + 1 });
     }
