@@ -274,7 +274,10 @@ const traceRivers = (
   }
   if (candidates.length === 0) return;
   candidates.sort((a, b) => b.e - a.e);
-  const springCount = Math.max(1, Math.floor(candidates.length * 0.05));
+  // More springs → more rivers, more tributary opportunities. Roughly 15%
+  // of mountain hexes spawn a spring; this gives several rivers per
+  // continent worth of mountain rather than one trickle.
+  const springCount = Math.max(2, Math.floor(candidates.length * 0.15));
   const springs = rng.shuffle(candidates.slice(0, Math.min(candidates.length, springCount * 3)));
   const taken = springs.slice(0, springCount);
   const visited = new Set<number>();
@@ -313,6 +316,116 @@ const traceRivers = (
       if (bestQ === q && bestR === r) break; // local minimum
       q = bestQ;
       r = bestR;
+    }
+  }
+};
+
+/**
+ * Forest cohesion smoothing (one majority-vote pass): a hex flips INTO
+ * forest if ≥4 of its 6 neighbours are forest, and OUT of forest if ≤1
+ * are. Removes single-hex forest specks in deserts and single-hex
+ * desert/plains specks inside large forests. Per docs/07 §"Realism rules".
+ */
+const smoothForest = (pre: PreTile[], W: number, H: number): void => {
+  const isForest = (t: Terrain): boolean => t === 'forest' || t === 'dense_forest';
+  // Snapshot to read neighbour state without seeing in-pass changes.
+  const snapshot: Terrain[] = pre.map((p) => p.terrain);
+  for (let r = 0; r < H; r++) {
+    for (let q = 0; q < W; q++) {
+      const i = r * W + q;
+      const cur = snapshot[i] as Terrain;
+      // Don't mess with water, mountains, marsh — only flat-land flips.
+      if (
+        cur === 'coast' ||
+        cur === 'lake' ||
+        cur === 'river' ||
+        cur === 'mountains' ||
+        cur === 'marsh' ||
+        cur === 'urban' ||
+        cur === 'ruin'
+      ) {
+        continue;
+      }
+      let forestNeighbours = 0;
+      let totalLandNeighbours = 0;
+      for (const n of hexNeighbors(hex(q, r))) {
+        if (n.q < 0 || n.q >= W || n.r < 0 || n.r >= H) continue;
+        const ni = n.r * W + n.q;
+        const nt = snapshot[ni] as Terrain;
+        if (nt === 'coast' || nt === 'lake' || nt === 'river') continue;
+        totalLandNeighbours++;
+        if (isForest(nt)) forestNeighbours++;
+      }
+      if (totalLandNeighbours === 0) continue;
+      if (isForest(cur)) {
+        if (forestNeighbours <= 1) {
+          // Eject — become whatever the majority is around (default plains).
+          (pre[i] as PreTile).terrain = 'plains';
+        }
+      } else {
+        if (forestNeighbours >= 4) {
+          (pre[i] as PreTile).terrain = 'forest';
+        }
+      }
+    }
+  }
+};
+
+/**
+ * Coastline smoothing (one pass):
+ *   - water hex (coast/lake) with ≥5 land neighbours → flips to plains
+ *     (no isolated puddles)
+ *   - land hex with ≥5 water neighbours → flips to coast
+ *     (no thin peninsulas surrounded by sea)
+ */
+const smoothCoastline = (pre: PreTile[], W: number, H: number): void => {
+  const isWater = (t: Terrain): boolean => t === 'coast' || t === 'lake';
+  const snapshot: Terrain[] = pre.map((p) => p.terrain);
+  for (let r = 0; r < H; r++) {
+    for (let q = 0; q < W; q++) {
+      const i = r * W + q;
+      const cur = snapshot[i] as Terrain;
+      if (cur === 'river' || cur === 'mountains') continue;
+      let waterNeighbours = 0;
+      let totalNeighbours = 0;
+      for (const n of hexNeighbors(hex(q, r))) {
+        if (n.q < 0 || n.q >= W || n.r < 0 || n.r >= H) continue;
+        const ni = n.r * W + n.q;
+        const nt = snapshot[ni] as Terrain;
+        totalNeighbours++;
+        if (isWater(nt)) waterNeighbours++;
+      }
+      if (totalNeighbours < 5) continue;
+      if (isWater(cur) && waterNeighbours <= 1) {
+        // Tiny puddle → land.
+        (pre[i] as PreTile).terrain = 'plains';
+      } else if (!isWater(cur) && waterNeighbours >= 5) {
+        // Thin peninsula sticking into sea → coast.
+        (pre[i] as PreTile).terrain = 'coast';
+      }
+    }
+  }
+};
+
+/**
+ * Mark hexes adjacent to a river as `fertile_valley` if they were plains.
+ * Rivers irrigate; fertile valleys cluster along them. Per docs/07 §"Plains–
+ * fertile_valley distinction".
+ */
+const fertileValleyAlongRivers = (pre: PreTile[], W: number, H: number): void => {
+  for (let r = 0; r < H; r++) {
+    for (let q = 0; q < W; q++) {
+      const i = r * W + q;
+      const t = pre[i] as PreTile;
+      if (t.terrain !== 'plains') continue;
+      for (const n of hexNeighbors(hex(q, r))) {
+        if (n.q < 0 || n.q >= W || n.r < 0 || n.r >= H) continue;
+        const ni = n.r * W + n.q;
+        if ((pre[ni] as PreTile).terrain === 'river') {
+          t.terrain = 'fertile_valley';
+          break;
+        }
+      }
     }
   }
 };
@@ -450,13 +563,21 @@ export const generateTerrain = (opts: TerrainGenOpts): HexGrid => {
     }
   }
 
-  // Inland depressions become lakes; true sea-touching low ground stays coast.
+  // Realism passes (per docs/07 §"Realism rules"):
+  //   1. Forest cohesion smoothing — kills isolated forest specks and fills
+  //      tiny clearings inside large forests.
+  //   2. Coastline smoothing — eats thin peninsulas, fills tiny puddles.
+  //   3. Reclassify inland depressions as lakes (depends on smoothed coast).
+  //   4. River tracing from multiple springs (tributaries).
+  //   5. Fertile valleys along rivers.
+  //   6. Coast adjacency flags.
+  //   7. Ore deposits.
+  smoothForest(pre, W, H);
+  smoothCoastline(pre, W, H);
   reclassifyInlandWater(pre, W, H);
-  // Mark hasCoast on land tiles adjacent to sea.
-  markCoastAdjacency(pre, W, H);
-  // Trace rivers from mountain springs downhill.
   traceRivers(pre, W, H, fields, rng.derive('rivers'));
-  // Place ore deposits on mountains/hills.
+  fertileValleyAlongRivers(pre, W, H);
+  markCoastAdjacency(pre, W, H);
   placeDeposits(pre, W, H, fields);
 
   // Materialize into a HexGrid.
