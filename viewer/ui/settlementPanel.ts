@@ -7,7 +7,9 @@
  */
 
 import type { WorldState } from '../../src/procgen/seed.js';
-import type { ViewerState } from '../state/viewerState.js';
+import type { SettlementId } from '../../src/sim/types.js';
+import { hexEquals } from '../../src/sim/world/hex.js';
+import { setSelection, type ViewerState } from '../state/viewerState.js';
 
 export interface SettlementPanel {
   update(world: WorldState): void;
@@ -49,6 +51,38 @@ export const createSettlementPanel = (opts: SettlementPanelOpts): SettlementPane
     meta.style.marginBottom = '6px';
     meta.textContent = `pop ${s.population.total().toLocaleString()} · ${s.buildings.length} buildings · anchor (${s.anchor.q},${s.anchor.r})`;
     root.appendChild(meta);
+
+    // Stacked-with affordance — list other settlements that share this anchor
+    // hex (docs/05 §"Same-hex coexistence"). Each is a click-target that
+    // switches the selection to the sibling.
+    const siblings: { readonly id: SettlementId; readonly name: string; readonly tier: string }[] = [];
+    for (const other of world.settlements.values()) {
+      if (other.id === s.id) continue;
+      if (!hexEquals(other.anchor, s.anchor)) continue;
+      siblings.push({ id: other.id, name: other.name, tier: other.tier });
+    }
+    if (siblings.length > 0) {
+      const stackHeader = document.createElement('div');
+      stackHeader.style.color = 'var(--muted)';
+      stackHeader.style.fontSize = '11px';
+      stackHeader.style.marginBottom = '4px';
+      stackHeader.textContent = `Stacked with (same hex): ${siblings.length}`;
+      root.appendChild(stackHeader);
+      const stackList = document.createElement('div');
+      stackList.style.marginBottom = '6px';
+      for (const sib of siblings) {
+        const link = document.createElement('button');
+        link.className = 'copy-btn';
+        link.style.marginRight = '4px';
+        link.style.marginBottom = '2px';
+        link.textContent = `${sib.name} (${sib.tier})`;
+        link.addEventListener('click', () => {
+          setSelection(state, { kind: 'settlement', id: sib.id });
+        });
+        stackList.appendChild(link);
+      }
+      root.appendChild(stackList);
+    }
 
     // Aggregate stockpiles across all stockpile owners.
     const totals = new Map<string, number>();
