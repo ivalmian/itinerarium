@@ -359,14 +359,15 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'burn_charcoal',
-    inputs: { 'material.wood': 1 },
+    // Historical: ~5 kg of wood yields ~1 kg of charcoal in a clamp burn.
+    // We model 4 wood → 1 charcoal as a slightly generous Roman-era
+    // production rate (closer to industrial-era kilns). The forester /
+    // sawmill chain has to keep up.
+    inputs: { 'material.wood': 4 },
     labor: { collier: 1 },
     building: 'charcoal_kiln',
-    // Realistic ratio is ~5 wood/charcoal; for v1 burn-in stability we
-    // run 0.67 wood/charcoal so the chain isn't bottlenecked. v1.5
-    // restores realism once trade redistributes surplus wood.
-    outputs: { 'material.charcoal': 1.5 },
-    notes: 'Bootstrapping ratio for v1; tighten in v1.5.',
+    outputs: { 'material.charcoal': 1 },
+    notes: 'Historical: clamp-burned charcoal at ~4-5 kg wood per kg charcoal.',
   },
   {
     id: 'saw_lumber',
@@ -405,11 +406,16 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'smelt_iron',
+    // Historical Roman bloomery: ~3-5 kg ore + ~6-10 kg charcoal yields
+    // 1 kg of bloom iron (after slag loss). We model 6 ore + 10 charcoal
+    // → 2 iron (an idealized output rate). Smelters that lose their
+    // charcoal supply STOP — iron is downstream of the wood chain.
     inputs: { 'mineral.iron_ore': 6, 'material.charcoal': 10 },
     labor: { smelter: 1 },
     building: 'bloomery',
-    outputs: { 'metal.iron': 15 },
-    notes: 'Bootstrapping ratio for v1; tighten in v1.5.',
+    outputs: { 'metal.iron': 2 },
+    notes:
+      'Roman bloomery yield: ~3-5 kg ore + 6-10 kg charcoal → 1 kg iron. We round to 2 kg/recipe.',
   },
   {
     id: 'alloy_bronze',

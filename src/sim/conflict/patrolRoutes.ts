@@ -273,7 +273,10 @@ export const routeForGarrisonPatrol = (basedAt: Settlement, grid: HexGrid): read
     basedAt,
     grid,
     radiusHexes: GARRISON_RADIUS,
-    preferRoadGrade: 'roman',
+    // 'any' covers passable terrain so the garrison still gets a real loop
+    // even before procgen lays down Roman roads. Without this fallback, the
+    // BFS finds nothing and patrols collapse to a tiny urban loop.
+    preferRoadGrade: 'any',
   });
 
 export const routeForCityWatch = (basedAt: Settlement, grid: HexGrid): readonly Hex[] =>
@@ -281,7 +284,7 @@ export const routeForCityWatch = (basedAt: Settlement, grid: HexGrid): readonly 
     basedAt,
     grid,
     radiusHexes: CITY_WATCH_RADIUS,
-    preferRoadGrade: 'dirt',
+    preferRoadGrade: 'any',
   });
 
 export const routeForFamilyGuard = (basedAt: Settlement, grid: HexGrid): readonly Hex[] =>

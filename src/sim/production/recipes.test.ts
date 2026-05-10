@@ -201,13 +201,14 @@ describe('recipe registry', () => {
       expect(r.outputs.get(resourceId('food.bread'))).toBe(40);
     });
 
-    it('smelt_iron: 6 ore + 10 charcoal → 15 iron with 1 smelter', () => {
+    it('smelt_iron: 6 ore + 10 charcoal → 2 iron with 1 smelter', () => {
       const r = getRecipe(recipeId('smelt_iron'));
-      // Ore + charcoal reduced 10x from docs/03 worked example for v1
-      // burn-in stability; realistic ratios restored in v1.5.
+      // Roman bloomery: ~3-5 kg ore + ~6-10 kg charcoal yields ~1 kg
+      // bloom iron (after slag loss). We round to 2 kg/recipe so the
+      // ratio sits between historical and slightly idealized.
       expect(r.inputs.get(resourceId('mineral.iron_ore'))).toBe(6);
       expect(r.inputs.get(resourceId('material.charcoal'))).toBe(10);
-      expect(r.outputs.get(resourceId('metal.iron'))).toBe(15);
+      expect(r.outputs.get(resourceId('metal.iron'))).toBe(2);
     });
 
     it('forge_tools: 5 iron + 2 lumber + 3 charcoal → 15 tools with 1 smith', () => {
