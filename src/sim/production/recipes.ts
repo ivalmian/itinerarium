@@ -169,8 +169,12 @@ const DEFS: readonly RecipeInput[] = [
     inputs: { 'goods.tools': 0.05 },
     labor: { forester: 1 },
     building: 'forester_camp',
-    outputs: { 'material.wood': 1.5 },
-    notes: 'One cord every ~16 hours of effort.',
+    // Bumped from 1.5 → 10 per recipe-instance to satisfy downstream
+    // demand (bake_bread + burn_charcoal + saw_lumber consume 15-25
+    // wood/instance combined). v1.5: drop back when we model multi-
+    // building forester operations and trade carries surplus.
+    outputs: { 'material.wood': 10 },
+    notes: 'One cord every ~16 hours of effort, scaled per-crew at v1.',
   },
   {
     id: 'quarry_stone',
@@ -292,11 +296,11 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'bake_bread',
-    inputs: { 'food.flour': 30, 'material.wood': 5 },
+    inputs: { 'food.flour': 30, 'material.wood': 0.5 },
     labor: { baker: 1 },
     building: 'bakery',
     outputs: { 'food.bread': 40 },
-    notes: 'docs/03 worked example. Bread spoils in days; consumed locally.',
+    notes: 'Wood reduced for v1 burn-in stability; oven fuel still required but light.',
   },
   {
     id: 'press_olives',
@@ -355,11 +359,14 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'burn_charcoal',
-    inputs: { 'material.wood': 8 },
+    inputs: { 'material.wood': 1 },
     labor: { collier: 1 },
     building: 'charcoal_kiln',
+    // Realistic ratio is ~5 wood/charcoal; for v1 burn-in stability we
+    // run 0.67 wood/charcoal so the chain isn't bottlenecked. v1.5
+    // restores realism once trade redistributes surplus wood.
     outputs: { 'material.charcoal': 1.5 },
-    notes: 'Wood-intensive: ~5 kg wood per kg charcoal.',
+    notes: 'Bootstrapping ratio for v1; tighten in v1.5.',
   },
   {
     id: 'saw_lumber',
@@ -398,11 +405,11 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'smelt_iron',
-    inputs: { 'mineral.iron_ore': 60, 'material.charcoal': 100 },
+    inputs: { 'mineral.iron_ore': 6, 'material.charcoal': 10 },
     labor: { smelter: 1 },
     building: 'bloomery',
     outputs: { 'metal.iron': 15 },
-    notes: 'docs/03 worked example. Charcoal-heavy.',
+    notes: 'Bootstrapping ratio for v1; tighten in v1.5.',
   },
   {
     id: 'alloy_bronze',

@@ -192,17 +192,21 @@ describe('recipe registry', () => {
       expect(r.outputs.get(resourceId('food.flour'))).toBe(45);
     });
 
-    it('bake_bread: 30 flour + 5 wood → 40 bread with 1 baker', () => {
+    it('bake_bread: 30 flour + 0.5 wood → 40 bread with 1 baker', () => {
       const r = getRecipe(recipeId('bake_bread'));
       expect(r.inputs.get(resourceId('food.flour'))).toBe(30);
-      expect(r.inputs.get(resourceId('material.wood'))).toBe(5);
+      // Wood reduced from docs/03's 5 → 0.5 for v1 burn-in stability;
+      // realistic ratio restored in v1.5 once trade closes the loop.
+      expect(r.inputs.get(resourceId('material.wood'))).toBe(0.5);
       expect(r.outputs.get(resourceId('food.bread'))).toBe(40);
     });
 
-    it('smelt_iron: 60 ore + 100 charcoal → 15 iron with 1 smelter', () => {
+    it('smelt_iron: 6 ore + 10 charcoal → 15 iron with 1 smelter', () => {
       const r = getRecipe(recipeId('smelt_iron'));
-      expect(r.inputs.get(resourceId('mineral.iron_ore'))).toBe(60);
-      expect(r.inputs.get(resourceId('material.charcoal'))).toBe(100);
+      // Ore + charcoal reduced 10x from docs/03 worked example for v1
+      // burn-in stability; realistic ratios restored in v1.5.
+      expect(r.inputs.get(resourceId('mineral.iron_ore'))).toBe(6);
+      expect(r.inputs.get(resourceId('material.charcoal'))).toBe(10);
       expect(r.outputs.get(resourceId('metal.iron'))).toBe(15);
     });
 

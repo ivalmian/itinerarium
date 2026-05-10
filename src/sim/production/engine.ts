@@ -112,9 +112,10 @@ export const runRecipe = (req: RecipeRunRequest): RecipeRunResult => {
   }
 
   // Labor gate. Every required role must be present in some quantity;
-  // otherwise no run. Once present, the recipe scales by the worst-case
-  // ratio of available / required across roles.
-  let laborFraction = 1;
+  // otherwise no run. Recipe instance count is bounded by the worst-case
+  // ratio of available / required across roles. NOT capped at 1 — high
+  // labor allows running many instances in parallel up to building cap.
+  let laborFraction = Number.POSITIVE_INFINITY;
   for (const [role, required] of recipe.labor) {
     if (required <= 0) continue;
     const available = laborAvailable.get(role) ?? 0;
@@ -126,11 +127,16 @@ export const runRecipe = (req: RecipeRunRequest): RecipeRunResult => {
     }
     laborFraction = Math.min(laborFraction, available / required);
   }
+  if (!Number.isFinite(laborFraction)) {
+    // Recipe declares no labor — labor is not a binding constraint.
+    laborFraction = Number.POSITIVE_INFINITY;
+  }
 
   // Input gate. A required input that is entirely missing aborts the
   // recipe; a present-but-short input scales the run by available /
-  // required, taking the worst case.
-  let inputFraction = 1;
+  // required, taking the worst case. NOT capped at 1 — abundant inputs
+  // allow many instances up to building cap.
+  let inputFraction = Number.POSITIVE_INFINITY;
   for (const [resource, required] of recipe.inputs) {
     if (required <= 0) continue;
     const available = inputStocks.get(resource) ?? 0;
@@ -142,11 +148,19 @@ export const runRecipe = (req: RecipeRunRequest): RecipeRunResult => {
     }
     inputFraction = Math.min(inputFraction, available / required);
   }
+  if (!Number.isFinite(inputFraction)) {
+    inputFraction = Number.POSITIVE_INFINITY;
+  }
 
-  // Building capacity ratio. capacityRemaining of 1 = one full recipe-
-  // instance, 0.5 = half. Cap at 1 so a building with ample slack does
-  // not let a recipe over-run its own per-day inputs/labor.
-  const buildingFraction = Math.min(1, building.capacityRemaining);
+  // Building capacity is in recipe-instances per day. capacityRemaining=50
+  // means up to 50 instances of this recipe today (subject to labor and
+  // inputs). Each instance consumes its share of capacity, labor, and
+  // inputs proportionally. The previous min(1, ...) clamp was wrong: it
+  // limited every building to a single instance/day no matter the catalog
+  // cap, which is why the burn-in's grain stockpile fell linearly even
+  // though farms were configured at cap=50 (one farm produced ~80 modii
+  // /day instead of the expected ~4000).
+  const buildingFraction = building.capacityRemaining;
 
   // The actual run fraction is the minimum constraint, scaled by the
   // seasonal multiplier (which is also a fractional cap in [0, 1] — a
