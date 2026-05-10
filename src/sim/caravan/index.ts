@@ -34,3 +34,20 @@ export {
 
 export type { CaravanTickEvent, CaravanTickInputs, CaravanTickResult } from './movement.js';
 export { tickCaravanMovement } from './movement.js';
+
+export type {
+  CityExportSource,
+  CityImportTarget,
+  EdgeHubConfig,
+  EdgeHubResult,
+  EdgeHubReturnEvent,
+  EdgeHubTickInputs,
+  ImportPaletteEntry,
+} from './edgeHub.js';
+export {
+  DEFAULT_GLOBAL_PRICES,
+  DEFAULT_IMPORT_PALETTE,
+  estimateExportMargin,
+  TRANSPORT_COST_COIN_PER_KG_PER_HEX,
+  tickEdgeHubs,
+} from './edgeHub.js';
