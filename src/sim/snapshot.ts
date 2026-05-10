@@ -569,6 +569,9 @@ export const deserializeWorld = (snap: WorldSnapshot): WorldState => {
     factions,
     characters,
     caravans,
+    patrols: new Map(),
+    banditCamps: new Map(),
+    newsCarriers: new Map(),
     reputation: deserializeReputation(w.reputation),
     bySite: w.bySite.map(deserializeSite),
   };

@@ -178,6 +178,19 @@ the v1 approach.
     building stock, stockpiles, and **ownership** (patrician
     families per city, which villages they own, which slaves they
     own). Per [11 — Politics & Ownership](11-politics-and-ownership.md).
+11. **Place starter production buildings (locked)**: every
+    settlement gets at least a `pasture` (animal protein + wool)
+    and a `farm` (grain) so the production phase has work from
+    day 1. Towns and cities additionally get `mill` + `bakery`
+    (grain → flour → bread, the urban food chain) and a `granary`
+    for storage; cities also get a `smithy` and a `weaver_workshop`
+    so basic manufactured goods circulate. Building counts scale
+    with population. Hex placement: production buildings sit in
+    catchment hexes (farms in plains/fertile, pasture in
+    grass/hills); workshops sit in urban hexes. Each building has
+    an owner — typically the city corporation for civic buildings,
+    a patrician family for an estate's farm, or the village/hamlet
+    actor for rural settlement buildings.
 
 Generation is seeded so a given seed → same world.
 

@@ -41,7 +41,7 @@ const makeCarrier = (spawn: Hex, dest: Hex, speed?: number): NewsCarrier => {
     id: 'news-1',
     perpetrator: aPerpetrator(),
     victim: aVictim(),
-    magnitude: 'major',
+    magnitude: 'severe',
     isCriminalAct: true,
     occurredAtHex: spawn,
     occurredOnDay: 0 as Day,

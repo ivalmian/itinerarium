@@ -19,7 +19,13 @@
  */
 
 import { createRng, type Rng } from '../sim/rng.js';
-import { tierOfPopulation, createSettlement, type Settlement } from '../sim/world/settlement.js';
+import {
+  addBuilding,
+  tierOfPopulation,
+  createSettlement,
+  type Settlement,
+  type SettlementTier,
+} from '../sim/world/settlement.js';
 import {
   CHARACTER_CLASSES,
   AGE_BANDS,
@@ -40,14 +46,19 @@ import {
   type NamedCharacter,
 } from '../sim/politics/index.js';
 import { createReputationTable, type ReputationTable } from '../sim/reputation/table.js';
+import type { NewsCarrier } from '../sim/reputation/news.js';
 import type { Caravan } from '../sim/caravan/caravan.js';
+import type { Patrol } from '../sim/conflict/patrol.js';
+import type { BanditCamp } from '../sim/bandit/camp.js';
 import {
   actorId,
+  buildingId,
   characterId,
   factionId,
   resourceId,
   settlementId,
   type ActorId,
+  type BanditCampId,
   type CaravanId,
   type CharacterId,
   type Day,
@@ -68,11 +79,21 @@ export interface WorldState {
   readonly factions: Map<FactionId, Faction>;
   readonly characters: Map<CharacterId, NamedCharacter>;
   readonly caravans: Map<CaravanId, Caravan>;
+  /**
+   * Politics-phase entities. Optional on the type so tests with minimal
+   * stubs don't need to populate them; the canonical seedWorld() always
+   * initializes them as empty Maps. Consumers should treat undefined as
+   * empty-Map equivalent.
+   */
+  readonly patrols?: Map<string, Patrol>;
+  readonly banditCamps?: Map<BanditCampId, BanditCamp>;
+  readonly newsCarriers?: Map<string, NewsCarrier>;
   readonly reputation: ReputationTable;
   /**
    * Diagnostic: the procgen sites that were used to seed this world, in the
    * same order seedSettlements() returned them. Useful for tests and tooling
    * that wants to walk back from a Settlement to its kind/estimatedPopulation.
+   * Required: tests that build WorldState manually pass `bySite: []`.
    */
   readonly bySite: readonly SettlementSite[];
 }
@@ -809,6 +830,16 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
     }
   }
 
+  // Phase 9: starter production buildings (per docs/07 §"Place starter
+  // production buildings"). Every settlement gets pasture + farm so day-1
+  // production has work; towns/cities additionally get mill + bakery +
+  // granary; cities also get smithy + weaver_workshop.
+  for (const site of opts.settlementSites) {
+    const settlement = siteToSettlement.get(site);
+    if (settlement === undefined) continue;
+    seedStarterBuildings(ctx, settlement);
+  }
+
   return {
     day: 0,
     grid: opts.grid,
@@ -817,6 +848,9 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
     factions: ctx.factions,
     characters: ctx.characters,
     caravans: new Map<CaravanId, Caravan>(),
+    patrols: new Map<string, Patrol>(),
+    banditCamps: new Map<BanditCampId, BanditCamp>(),
+    newsCarriers: new Map<string, NewsCarrier>(),
     reputation: createReputationTable(),
     bySite: opts.settlementSites,
   };
@@ -843,6 +877,105 @@ const orderSitesForCatchment = (sites: readonly SettlementSite[]): readonly Sett
 const claimVillageHexes = (grid: HexGrid, settlement: Settlement, owner: ActorId): void => {
   for (const u of settlement.urbanHexes) setOwner(grid, u, owner);
   for (const c of settlement.catchmentHexes) setOwner(grid, c, owner);
+};
+
+/**
+ * Pick the most appropriate stockpile owner for a building in this
+ * settlement. Preference: city_corporation > first stockpile owner >
+ * undefined.
+ */
+const pickBuildingOwner = (ctx: BuildContext, settlement: Settlement): ActorId | undefined => {
+  for (const a of ctx.actors.values()) {
+    if (a.kind === 'city_corporation' && a.homeSettlement === settlement.id) {
+      return a.id;
+    }
+  }
+  return settlement.stockpileOwners[0];
+};
+
+/**
+ * Add a building of `kind` at `hex` if `hex` is in the settlement and
+ * the building hasn't been added there already (idempotent). Capacity
+ * defaults are scaled with the settlement tier.
+ */
+const tryAddBuilding = (
+  settlement: Settlement,
+  kind: string,
+  hex: Hex,
+  ownerActor: ActorId,
+  capacity: number,
+): void => {
+  // Don't double-add at the same hex/type.
+  for (const b of settlement.buildings) {
+    if (String(b.buildingId) === kind && hexEquals(b.hex, hex)) return;
+  }
+  addBuilding(settlement, {
+    buildingId: buildingId(kind),
+    hex,
+    ownerActor,
+    capacity,
+    daysSinceMaintained: 0,
+  });
+};
+
+const TIER_CAPACITY: Record<SettlementTier, number> = {
+  hamlet: 2,
+  village: 4,
+  town: 8,
+  small_city: 16,
+  large_city: 32,
+};
+
+/**
+ * Phase 9 building seeding. Per docs/07 §"Place starter production
+ * buildings": every settlement gets a pasture + farm; towns/cities
+ * additionally get mill + bakery + granary; cities also get smithy +
+ * weaver_workshop. All sit in catchment hexes (production) or urban
+ * hexes (workshops/storage). Hex picks are deterministic from the
+ * settlement's existing hex order.
+ */
+const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void => {
+  const owner = pickBuildingOwner(ctx, settlement);
+  if (owner === undefined) return;
+  const cap = TIER_CAPACITY[settlement.tier];
+
+  // Production buildings sit in catchment hexes.
+  const catchment = settlement.catchmentHexes;
+  if (catchment.length === 0) return;
+
+  // Pasture in catchment[0]; farm in catchment[1] (or [0] if village has only one).
+  const pastureHex = catchment[0];
+  if (pastureHex !== undefined) {
+    tryAddBuilding(settlement, 'pasture', pastureHex, owner, cap);
+  }
+  const farmHex = catchment[1] ?? catchment[0];
+  if (farmHex !== undefined) {
+    tryAddBuilding(settlement, 'farm', farmHex, owner, cap);
+  }
+
+  // Towns + cities: refining chain (mill + bakery + granary).
+  if (
+    settlement.tier === 'town' ||
+    settlement.tier === 'small_city' ||
+    settlement.tier === 'large_city'
+  ) {
+    const urbanHex = settlement.urbanHexes[0];
+    if (urbanHex !== undefined) {
+      tryAddBuilding(settlement, 'mill', urbanHex, owner, cap);
+      tryAddBuilding(settlement, 'bakery', urbanHex, owner, cap);
+      tryAddBuilding(settlement, 'granary', urbanHex, owner, cap);
+    }
+  }
+
+  // Cities get manufactures.
+  if (settlement.tier === 'small_city' || settlement.tier === 'large_city') {
+    // Use a different urban hex if available, else reuse anchor.
+    const workshopHex = settlement.urbanHexes[1] ?? settlement.urbanHexes[0];
+    if (workshopHex !== undefined) {
+      tryAddBuilding(settlement, 'smithy', workshopHex, owner, cap);
+      tryAddBuilding(settlement, 'weaver_workshop', workshopHex, owner, cap);
+    }
+  }
 };
 
 const clampFamilies = (n: number): number => {

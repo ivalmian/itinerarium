@@ -300,7 +300,11 @@ export const runSmokeScenario = async (
     );
   }
 
-  seedBuildingsInWorld(world);
+  // seedWorld now adds starter pasture+farm to every settlement (per
+  // docs/07 §"Place starter production buildings"), so we no longer need
+  // to manually seed them here. Kept the function around in case the
+  // smoke scenario needs to layer extra buildings later.
+  void seedBuildingsInWorld; // suppress unused-var
   const camp = seedBanditCampInWorld(world, seed, capital.hex);
   seedCaravansInWorld(world, capital.hex);
 
