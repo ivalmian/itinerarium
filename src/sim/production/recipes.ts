@@ -62,8 +62,13 @@ const DEFS: readonly RecipeInput[] = [
     labor: { farmer: 1 },
     building: 'farm',
     outputs: { 'food.grain': 80 },
-    seasonalMultiplier: { spring: 0, summer: 0.5, autumn: 1, winter: 0 },
-    notes: 'Late summer through autumn. ~80 modii / farmer-day at peak.',
+    // v1 burn-in stability: spread harvest across the year with an autumn
+    // peak. Pure autumn-only harvest creates a winter starvation cliff
+    // because we don't yet model the realistic granary storage capacity
+    // that would otherwise smooth a single-harvest economy. v1.5 hardens
+    // this back to the realistic seasonal model.
+    seasonalMultiplier: { spring: 0.4, summer: 0.7, autumn: 1.0, winter: 0.3 },
+    notes: 'Annualized average ~50 modii/farmer-day; autumn peaks at 80.',
   },
   {
     id: 'tend_olive_grove',

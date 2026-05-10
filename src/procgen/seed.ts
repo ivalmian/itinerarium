@@ -367,7 +367,14 @@ const grainModiiForPopulation = (totalPop: number, days: number): number => {
 
 const grantStockpile = (actor: Actor, resource: string, qty: number): void => {
   if (qty <= 0) return;
-  actor.stockpile.set(resourceId(resource), qty);
+  // ADD to existing stockpile (not replace) so a patron family granted
+  // reserves by multiple of their client villages accumulates the total.
+  // The previous .set() silently dropped earlier grants, leaving multi-
+  // village patrons with only their last village's grant — the root
+  // cause of the burn-in famine cascade.
+  const id = resourceId(resource);
+  const existing = actor.stockpile.get(id) ?? 0;
+  actor.stockpile.set(id, existing + qty);
 };
 
 // --- Hex ownership ----------------------------------------------------------
@@ -514,12 +521,15 @@ const seedCityCorporation = (
   });
   addActor(ctx, actor);
   settlement.stockpileOwners.push(aId);
-  // Granary stockpile sized to ~30 days of grain for the population.
-  grantStockpile(
-    actor,
-    'food.grain',
-    grainModiiForPopulation(settlement.population.total(), GRAIN_DAYS_OF_RESERVE),
-  );
+  // City reserves: a year of grain + ample wood for bakeries/charcoal +
+  // amphorae for olive press / wine + tools so smiths can equip people
+  // even before the smithy produces fresh ones. v1 burn-in stability
+  // bootstrap; v1.5 will replace these with proper storage capacity.
+  const pop = settlement.population.total();
+  grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
+  grantStockpile(actor, 'material.wood', pop * 5);
+  grantStockpile(actor, 'material.amphora', Math.max(20, Math.floor(pop / 5)));
+  grantStockpile(actor, 'goods.tools', Math.max(50, pop * 2));
   return actor;
 };
 
@@ -560,10 +570,17 @@ const seedFreeVillage = (
   addCharacter(ctx, elder);
   settlement.factions.push(fId);
   settlement.stockpileOwners.push(aId);
-  // Modest grain + tools so the village isn't starting from zero.
+  // Year's grain reserve so the village survives until first autumn
+  // harvest under any procgen start day. See GRAIN_DAYS_OF_RESERVE rationale.
   const pop = settlement.population.total();
-  grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, 14));
-  grantStockpile(actor, 'goods.tools', Math.max(2, Math.floor(pop / 30)));
+  grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
+  // Tools: bumped to a year's worth at expected farm consumption (~3
+  // tools/day on a village farm). v1.5: replace with smithy production.
+  grantStockpile(actor, 'goods.tools', Math.max(50, pop * 2));
+  // Wood + amphora reserves so the food chain isn't immediately blocked
+  // (bake_bread needs wood; press_olives needs amphora).
+  grantStockpile(actor, 'material.wood', pop * 5);
+  grantStockpile(actor, 'material.amphora', Math.max(10, Math.floor(pop / 10)));
   return actor;
 };
 
@@ -592,10 +609,12 @@ const seedClientVillage = (ctx: BuildContext, settlement: Settlement, patron: Ac
   addCharacter(ctx, headman);
   settlement.factions.push(patronFaction.id);
   settlement.stockpileOwners.push(patron.id);
-  // The patron grants modest seed stocks held at the village (in their name).
+  // Year's grain reserve held by the patron — same survival window as other tiers.
   const pop = settlement.population.total();
-  grantStockpile(patron, 'food.grain', grainModiiForPopulation(pop, 14));
-  grantStockpile(patron, 'goods.tools', Math.max(2, Math.floor(pop / 30)));
+  grantStockpile(patron, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
+  grantStockpile(patron, 'goods.tools', Math.max(50, pop * 2));
+  grantStockpile(patron, 'material.wood', pop * 5);
+  grantStockpile(patron, 'material.amphora', Math.max(10, Math.floor(pop / 10)));
 };
 
 const seedHamlet = (ctx: BuildContext, settlement: Settlement, settlementName: string): Actor => {
@@ -632,8 +651,9 @@ const seedHamlet = (ctx: BuildContext, settlement: Settlement, settlementName: s
   settlement.factions.push(fId);
   settlement.stockpileOwners.push(aId);
   const pop = settlement.population.total();
-  grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, 30));
-  grantStockpile(actor, 'goods.tools', Math.max(1, Math.floor(pop / 20)));
+  grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
+  grantStockpile(actor, 'goods.tools', Math.max(50, pop * 2));
+  grantStockpile(actor, 'material.wood', pop * 5);
   return actor;
 };
 
@@ -922,12 +942,18 @@ const tryAddBuilding = (
   });
 };
 
+// Building capacity scales with tier. Each unit = one recipe-instance per
+// day. We size these so a settlement's per-day production roughly meets
+// its per-day subsistence — population × ~0.4 kg grain-equiv / day, with
+// each capacity unit producing ~30-50 kg of food. A hamlet of 100 needs
+// ~40 kg/day; cap=10 with mix of pasture+farm covers it. A city of 30k
+// needs ~12 t/day; cap=400 across multiple buildings is the start.
 const TIER_CAPACITY: Record<SettlementTier, number> = {
-  hamlet: 2,
-  village: 4,
-  town: 8,
-  small_city: 16,
-  large_city: 32,
+  hamlet: 10,
+  village: 30,
+  town: 80,
+  small_city: 200,
+  large_city: 400,
 };
 
 /**

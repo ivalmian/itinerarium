@@ -162,6 +162,47 @@ Recipes need **both the building AND a specialist worker** with the
 right job role (see [03 — Production](03-production.md)). A bakery
 without a baker bakes no bread.
 
+## Storage capacity (locked)
+
+Settlements have **finite storage capacity** for goods, just like
+caravans do. Capacity comes from two sources:
+
+- **Buildings**: dedicated storage structures hold specific resources.
+  Granaries hold grain (bulk). Warehouses hold mixed manufactured
+  goods. Cisterns hold water. Each building's capacity is set in its
+  catalog entry (see [02 — Resources](02-resources.md) for unit
+  weights and [03 — Production](03-production.md) for building
+  capacities).
+- **People**: every household has informal storage in the home
+  (~50 kg per adult, mixed). This is a small per-capita baseline so
+  settlements without dedicated buildings don't immediately reject
+  all goods.
+
+Effective per-resource capacity at a settlement:
+
+```
+capacity(resource) =
+    sum_over_buildings(b.storage_capacity_for(resource))
+  + population_adults * baseline_household_kg(resource)
+```
+
+Adding to a stockpile that would exceed capacity is **rejected**
+(the producer holds excess in their workshop until it spoils, or
+sells at any price to clear inventory). Caravans arriving with cargo
+the settlement can't store either pay storage fees to private
+warehouses, sell at depressed prices, or move on.
+
+This is the realistic constraint that makes warehouses + granaries
+matter as buildings — without them, a city's traders can't
+accumulate enough stockpile to weather a bad season.
+
+For initial v1 burn-in, capacity checks are **bypassed** during the
+seedWorld bootstrap (so settlements start with a generous reserve)
+and **enforced** during the tick loop (so steady-state capacity
+discipline applies). This is a v1.5 hardening target — full
+capacity discipline from day 1 requires a careful initial-build
+pass that's deferred.
+
 ## Market state per settlement
 
 For each tradable resource, the settlement tracks:

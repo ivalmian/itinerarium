@@ -209,6 +209,31 @@ retraining per month).
 A recipe also requires its building (see
 [03 — Production](03-production.md)). Both must be present.
 
+### Worker reallocation by demand (locked, v1.5 hardening)
+
+Workers are paid out of recipe-output profits. When a settlement has
+unmet demand for a resource (bread, oil, cloth) and no workers in
+the relevant role, the settlement's planner re-trains idle workers
++ pulls from oversupplied roles toward the shortage. Mechanically:
+
+1. **Per tick**, the planner observes per-resource market clearing
+   prices vs. the settlement's expected base price.
+2. **Roles producing oversupplied resources** (price below base)
+   lose workers at the slow retraining rate (~2%/month).
+3. **Roles producing undersupplied resources** (price above base)
+   gain workers from the idle pool first, then from oversupplied
+   roles.
+4. Retraining respects class restrictions per
+   [03 — Production](03-production.md): slaves can't become
+   officials, etc.
+
+Without this loop, burn-in over-relies on generous starter worker
+assignments and breaks under any structural shift in demand. v1
+currently distributes workers uniformly across all roles (each
+adult is "available for any role" up to recipe needs), which works
+for steady-state but doesn't reallocate on price signals. v1.5
+hardens.
+
 ## Player labor control (locked)
 
 **The player cannot direct labor in any settlement in v1.**

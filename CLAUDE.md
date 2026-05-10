@@ -78,7 +78,9 @@ reflects current intent.
 - [Player](docs/09-player.md) — what the player does, Vagrus-style
   daily MP / camp-to-end-turn, honest + bandit paths
 - [Scope & decisions](docs/10-scope-and-questions.md) — v1 cut
-  and the 24 locked decisions
+  and the locked decisions
+- [Debug strategies](docs/14-debug-strategies.md) — how to triage a
+  failing burn-in (instruments + failure patterns + checklist)
 
 ## Working norms in this repo
 

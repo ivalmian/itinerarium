@@ -52,7 +52,10 @@ for the full locked list.
 13. [09 — Player role](09-player.md) — what the player actually
     does, Vagrus-style daily MP / camp-to-end-turn UX, honest and
     bandit growth paths, fast-forward auto-pause events.
-14. [10 — V1 scope, decisions, risks, next steps](10-scope-and-questions.md)
+14. [14 — Debug strategies](14-debug-strategies.md) — how to figure out
+    *why* a burn-in is failing; instruments, failure patterns, triage
+    checklist.
+15. [10 — V1 scope, decisions, risks, next steps](10-scope-and-questions.md)
     — the locked v1 cut + the full table of design decisions +
     risks + ordered build plan.
 
