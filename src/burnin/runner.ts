@@ -32,6 +32,7 @@ import { join } from 'node:path';
 import { generateTerrain } from '../procgen/terrain.js';
 import { siteSettlements } from '../procgen/settlements.js';
 import { seedWorld, type WorldState } from '../procgen/seed.js';
+import { seedCaravans } from '../procgen/seedCaravans.js';
 import { tick, type TickEvent } from '../sim/tick.js';
 import { createRng } from '../sim/rng.js';
 import { serializeWorld, writeSnapshot } from '../sim/snapshot.js';
@@ -156,12 +157,16 @@ export const runBurnIn = async (opts: BurnInOpts): Promise<BurnInReport> => {
     hamletCount: opts.hamletCount,
   });
 
-  // 3. Seed the WorldState (governor, families, hamlets, hex ownership).
+  // 3. Seed the WorldState (governor, families, hamlets, hex ownership,
+  //    starter production buildings).
   let world = seedWorld({
     seed: `${opts.seed}|world`,
     grid,
     settlementSites: sites,
   });
+
+  // 3b. Seed initial NPC caravans so day-1 has commerce on the road.
+  seedCaravans({ seed: `${opts.seed}|caravans`, world });
 
   // 4. Plan the run length.
   const totalDays = opts.daysOverride ?? Math.max(0, Math.floor(opts.years * YEAR_DAYS));

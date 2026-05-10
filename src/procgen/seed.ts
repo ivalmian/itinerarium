@@ -354,7 +354,11 @@ const seedPopulation = (settlement: Settlement, total: number): void => {
 
 const GRAIN_KG_PER_DAY = 0.4; // docs/04 §"Consumption per adult per day"
 const KG_PER_MODIUS = 6.7; // see resources/catalog.ts food.grain
-const GRAIN_DAYS_OF_RESERVE = 30; // ~one month buffer per docs/11.5 §"Granary stocks"
+// 365-day reserve so the world survives from any procgen start day to the
+// first autumn harvest. Historically Roman granaries held a few months;
+// burn-in stability needs more headroom because we don't yet model
+// shipped-in tribute grain that smoothed real-world seasonality. Tunable.
+const GRAIN_DAYS_OF_RESERVE = 365;
 
 const grainModiiForPopulation = (totalPop: number, days: number): number => {
   const kg = totalPop * GRAIN_KG_PER_DAY * days;
