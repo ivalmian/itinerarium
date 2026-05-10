@@ -56,6 +56,7 @@ import {
   buildingId,
   characterId,
   factionId,
+  jobId,
   resourceId,
   settlementId,
   type ActorId,
@@ -64,8 +65,10 @@ import {
   type CharacterId,
   type Day,
   type FactionId,
+  type JobId,
   type SettlementId,
 } from '../sim/types.js';
+import { jobsForBuilding } from '../sim/jobs/buildingJobs.js';
 import type { HexGrid } from '../sim/world/grid.js';
 import { hexDistance, hexEquals, hexKey, hexesWithinRange, type Hex } from '../sim/world/hex.js';
 import { createCamp } from '../sim/bandit/camp.js';
@@ -873,6 +876,17 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
     seedStarterBuildings(ctx, settlement);
   }
 
+  // Phase 9b: assign each settlement's working-age adults to job roles
+  // proportional to seeded building capacity (docs/04 §"Worker reallocation
+  // by demand"). Without this, the production engine sees zero workers in
+  // any role and recipes block on labor; the monthly reallocation hook in
+  // tick.ts then nudges workers between roles based on observed shortages.
+  for (const site of opts.settlementSites) {
+    const settlement = siteToSettlement.get(site);
+    if (settlement === undefined) continue;
+    seedJobAllocations(settlement);
+  }
+
   // Phase 10: initial bandit camps in wilderness (per docs/12 §"Bandit
   // emergence in the tick loop"). Procgen places ~1 small camp per
   // settled cluster in a forest/hill hex within 3-8 hexes of a road.
@@ -1233,6 +1247,96 @@ const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void =
     tryAddBuilding(settlement, 'oil_press', uHex(2), owner, cap);
     tryAddBuilding(settlement, 'winery', uHex(2), owner, cap);
     tryAddBuilding(settlement, 'pottery', uHex(3), owner, cap); // amphorae for olive_oil/wine
+  }
+};
+
+/**
+ * Distribute working-age adults across job roles based on seeded building
+ * capacity. Per docs/04 §"Worker reallocation by demand": each adult is
+ * assigned to a single job; the production engine then treats them as
+ * available *only* for that role. The monthly reallocation hook in
+ * tick.ts shifts ~0.66% of workers per month between roles based on
+ * observed shortages.
+ *
+ * Algorithm (deterministic):
+ *   1. Sum the working-age adult count (15..59 inclusive) across cohorts.
+ *   2. For each building, compute its (capacity × labor weight) per job
+ *      role using jobsForBuilding(). Skip buildings whose primary job is
+ *      restricted by class — we don't enforce class restrictions at this
+ *      level; the recipe engine does.
+ *   3. Allocate adults to roles in proportion to those weights using
+ *      largest-remainder rounding so the total matches.
+ *   4. Any leftover adults (no buildings to staff, or rounding drift) go
+ *      to the 'idle' bucket.
+ */
+const seedJobAllocations = (settlement: Settlement): void => {
+  let adults = 0;
+  for (const [key, count] of settlement.population.cohorts()) {
+    const a = parseInt(key.age.split('-')[0] ?? '0', 10);
+    if (a >= 15 && a < 60) adults += count;
+  }
+  // Always reset; this is the procgen day-0 distribution.
+  settlement.jobAllocations.clear();
+  if (adults <= 0) return;
+
+  // Aggregate per-job weight from buildings × labor weights.
+  const weights = new Map<JobId, number>();
+  for (const b of settlement.buildings) {
+    const jobs = jobsForBuilding(b.buildingId);
+    if (jobs.size === 0) continue;
+    const cap = Math.max(0, b.capacity);
+    for (const [job, w] of jobs) {
+      weights.set(job, (weights.get(job) ?? 0) + cap * w);
+    }
+  }
+
+  if (weights.size === 0) {
+    // No staffable buildings; everyone is idle.
+    settlement.jobAllocations.set(jobId('idle'), adults);
+    return;
+  }
+
+  let totalWeight = 0;
+  for (const w of weights.values()) totalWeight += w;
+  if (totalWeight <= 0) {
+    settlement.jobAllocations.set(jobId('idle'), adults);
+    return;
+  }
+
+  // Largest-remainder rounding so the integer counts sum to adults.
+  // Sort jobs deterministically (lexicographic by id) so the assignment
+  // is reproducible across runs.
+  const ordered = [...weights.entries()].sort((a, b) =>
+    String(a[0]) < String(b[0]) ? -1 : String(a[0]) > String(b[0]) ? 1 : 0,
+  );
+  const exact = ordered.map(([j, w]) => ({ job: j, exact: (adults * w) / totalWeight }));
+  const floored = exact.map((e) => ({
+    job: e.job,
+    count: Math.floor(e.exact),
+    frac: e.exact - Math.floor(e.exact),
+  }));
+  let assigned = floored.reduce((acc, f) => acc + f.count, 0);
+  let remainder = adults - assigned;
+  // Distribute remainder to highest-fraction entries first; ties broken by
+  // job-id order (already sorted).
+  const indices = floored
+    .map((_, i) => i)
+    .sort((a, b) => {
+      const fa = floored[a]?.frac ?? 0;
+      const fb = floored[b]?.frac ?? 0;
+      if (fb !== fa) return fb - fa;
+      return a - b;
+    });
+  for (const idx of indices) {
+    if (remainder <= 0) break;
+    const f = floored[idx];
+    if (f === undefined) continue;
+    f.count += 1;
+    assigned += 1;
+    remainder -= 1;
+  }
+  for (const f of floored) {
+    if (f.count > 0) settlement.jobAllocations.set(f.job, f.count);
   }
 };
 

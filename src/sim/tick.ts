@@ -258,6 +258,11 @@ export const tick = (inputs: TickInputs): TickResult => {
   const today: Day = world.day;
   const season: Season = dayOfYearToSeason(today);
 
+  // Refresh the per-tick id→Settlement lookup used by subsystems (e.g. the
+  // worker-reallocation phase) to resolve a settlement reference from a
+  // recipe_blocked event without re-walking world.settlements.
+  settlementsById = world.settlements;
+
   // --- Phase 1: Production -------------------------------------------------
   productionPhase(world, season, events);
 
@@ -367,31 +372,33 @@ const productionPhase = (world: WorldState, season: Season, events: TickEvent[])
 };
 
 /**
- * Coarse labor estimate from the settlement's adult population. We treat
- * every adult as "available for any role" — the production engine then
- * scales the recipe down by min(available/required) across every required
- * role. This is intentionally generous; finer per-role assignment is a
- * tuning lever (docs/04 §"Worker → labor pool reconciliation": ~2%
- * retraining per month, not per day).
+ * Per-role labor estimate read from the settlement's `jobAllocations` (per
+ * docs/04 §"Worker reallocation by demand"). The production engine sees a
+ * separate worker count per role; idle adults aren't available for any
+ * skilled job. Reallocation between roles happens on a monthly hook (see
+ * `workerReallocationPhase`) — not in this hot path.
+ *
+ * Fallback: if a settlement has zero jobAllocations (legacy snapshot or a
+ * test stub built without procgen), fall back to the v1 behavior of
+ * treating every adult as universally available so existing tests don't
+ * break. The procgen seeder always populates jobAllocations.
  */
 const laborAvailableInSettlement = (settlement: Settlement): Map<JobId, number> => {
+  const out = new Map<JobId, number>();
+  if (settlement.jobAllocations.size > 0) {
+    for (const [job, n] of settlement.jobAllocations) {
+      if (n > 0) out.set(job, n);
+    }
+    return out;
+  }
+  // Fallback: legacy uniform availability. Used only when a settlement was
+  // constructed without procgen seeding job allocations (e.g. test stubs).
   let adults = 0;
   for (const [key, count] of settlement.population.cohorts()) {
-    // Working-age = 15-59 inclusive across all classes.
     const ageNum = parseInt(key.age.split('-')[0] ?? '0', 10);
     if (ageNum >= 15 && ageNum < 60) adults += count;
   }
-  // Distribute adults uniformly across jobs as a coarse v1 estimate.
-  // Productivity is per-recipe, not per-person, so we cap each role at the
-  // total adult count (recipes only need 1 worker-day per recipe).
-  const out = new Map<JobId, number>();
-  // We don't enumerate the full job catalog here to avoid a circular import
-  // with jobs; the recipe layer references roles by id and the engine does
-  // the lookup.
-  // Touch getJob so unused-import lint doesn't fire — see file top.
   void getJob;
-  // For each unique role mentioned in any recipe's labor map, set
-  // availability to the adult count. The engine will scale down per recipe.
   for (const recipe of allRecipes()) {
     for (const role of recipe.labor.keys()) {
       out.set(role, adults);
@@ -925,6 +932,169 @@ const politicsPhase = (
   // characters. Per docs/13: news doesn't teleport, every reputation
   // update is anchored to a specific carrier walking a specific route.
   newsArrivalPhase(world, today, events);
+  // Track per-settlement labor-blocked events for the rolling 30-day
+  // reallocation window (docs/04 §"Worker reallocation by demand"). We
+  // ingest the events accumulated by THIS tick so the counters stay in
+  // sync with the production phase that ran a few microseconds ago.
+  ingestLaborBlockedEvents(events);
+  // Monthly hook (every 30 days): nudge ~0.66% of workers from over-supplied
+  // to under-supplied roles. Picking 30 (not exactly month-length) so the
+  // cadence is independent of calendar bookkeeping.
+  if ((today + 1) % 30 === 0) {
+    workerReallocationPhase(world, today, events);
+  }
+};
+
+// --- Worker reallocation (docs/04 §"Worker reallocation by demand") --------
+
+/**
+ * Per-settlement rolling counter: how many `recipe_blocked` events with
+ * reason="labor" landed on each job role over the last ~30 days. We refresh
+ * the counter at every monthly reallocation; it accumulates between resets.
+ *
+ * Stored in a WeakMap keyed by Settlement reference (matching the famine
+ * pressure pattern above) so a fresh world built in a test starts clean
+ * regardless of id reuse.
+ */
+const recentLaborBlockedByJob: WeakMap<Settlement, Map<JobId, number>> = new WeakMap();
+
+/**
+ * Walk the events emitted this tick and increment per-(settlement, job)
+ * recipe_blocked-labor counters. Used by `workerReallocationPhase` below.
+ */
+const ingestLaborBlockedEvents = (events: readonly TickEvent[]): void => {
+  for (const e of events) {
+    if (e.type !== 'recipe_blocked') continue;
+    // The production engine emits 'no_labor' (see ShortfallReason in
+    // src/sim/production/engine.ts). docs/04 describes this generically as
+    // "labor"; we match the engine's enum here.
+    if (e.reason !== 'no_labor') continue;
+    const recipeDef = recipeIdToDef.get(e.recipe);
+    if (recipeDef === undefined) continue;
+    // Find the settlement object — we need the Settlement reference for the
+    // WeakMap key. Iterate world.settlements lazily via a callback set just
+    // before this is called by the politics phase. Simpler: we attach the
+    // Settlement directly via a one-time index keyed by SettlementId, set
+    // in the tick entry path. For now resolve via the cache below.
+    const settlement = settlementsById?.get(e.settlement);
+    if (settlement === undefined) continue;
+    let bucket = recentLaborBlockedByJob.get(settlement);
+    if (bucket === undefined) {
+      bucket = new Map<JobId, number>();
+      recentLaborBlockedByJob.set(settlement, bucket);
+    }
+    for (const role of recipeDef.labor.keys()) {
+      bucket.set(role, (bucket.get(role) ?? 0) + 1);
+    }
+  }
+};
+
+/**
+ * In-tick lookup table: SettlementId → Settlement. Refreshed by
+ * `tick()` at the top of every day so subsystem code (e.g.
+ * ingestLaborBlockedEvents) can resolve a settlement reference from
+ * an event without re-walking world.settlements.
+ */
+let settlementsById: Map<SettlementId, Settlement> | null = null;
+
+/**
+ * Recipe id → RecipeDef cache (built once at module load). Used to resolve
+ * the labor map for a recipe_blocked event without an O(N) scan.
+ */
+const recipeIdToDef: ReadonlyMap<RecipeId, ReturnType<typeof allRecipes>[number]> = (() => {
+  const m = new Map<RecipeId, ReturnType<typeof allRecipes>[number]>();
+  for (const r of allRecipes()) m.set(r.id, r);
+  return m;
+})();
+
+/** Per-month per-settlement reallocation rate (docs/04: ~0.66%/month). */
+const REALLOCATION_RATE = 0.0066;
+
+/**
+ * Move ~0.66% of workers per month from over-supplied roles to under-supplied
+ * roles. Algorithm:
+ *
+ *   1. The set of "demanded" roles = roles whose recipes were blocked by
+ *      labor over the last ~30 days (from `recentLaborBlockedByJob`).
+ *      Pick the role with the highest blocked count as the target.
+ *   2. The set of "over-supplied" roles = the role with the largest current
+ *      allocation that is NOT in the demanded set. (We always have an
+ *      'idle' bucket from procgen if there are no productive over-suppliers,
+ *      and idle is a perfect "give me your spare workers" source.)
+ *   3. Move floor(fromCount × REALLOCATION_RATE) workers, with a floor of 1
+ *      so something happens when fractions are tiny but workers exist.
+ *
+ * Emits a `workers_reallocated` TickEvent per move so burn-in telemetry can
+ * see the system at work.
+ */
+const workerReallocationPhase = (
+  world: WorldState,
+  _today: Day,
+  events: TickEvent[],
+): void => {
+  for (const settlement of world.settlements.values()) {
+    if (settlement.jobAllocations.size === 0) continue;
+
+    const demanded = recentLaborBlockedByJob.get(settlement);
+    if (demanded === undefined || demanded.size === 0) {
+      // Nothing demanded this month; reset and continue.
+      recentLaborBlockedByJob.delete(settlement);
+      continue;
+    }
+
+    // Pick the most-demanded job (deterministic tie-break by job-id).
+    const orderedDemand = [...demanded.entries()].sort((a, b) => {
+      if (b[1] !== a[1]) return b[1] - a[1];
+      return String(a[0]) < String(b[0]) ? -1 : String(a[0]) > String(b[0]) ? 1 : 0;
+    });
+    const targetJob = orderedDemand[0]?.[0];
+    if (targetJob === undefined) {
+      recentLaborBlockedByJob.delete(settlement);
+      continue;
+    }
+
+    // Pick the donor: the largest non-target allocation.
+    let donorJob: JobId | null = null;
+    let donorCount = 0;
+    const allocOrdered = [...settlement.jobAllocations.entries()].sort((a, b) => {
+      if (b[1] !== a[1]) return b[1] - a[1];
+      return String(a[0]) < String(b[0]) ? -1 : String(a[0]) > String(b[0]) ? 1 : 0;
+    });
+    for (const [j, n] of allocOrdered) {
+      if (j === targetJob) continue;
+      if (n <= 0) continue;
+      donorJob = j;
+      donorCount = n;
+      break;
+    }
+    if (donorJob === null || donorCount <= 0) {
+      recentLaborBlockedByJob.delete(settlement);
+      continue;
+    }
+
+    // Move at least 1 worker, at most floor(donorCount × rate) — but never
+    // more than the donor's whole bucket.
+    const moveExact = donorCount * REALLOCATION_RATE;
+    const move = Math.max(1, Math.floor(moveExact));
+    const actualMove = Math.min(move, donorCount);
+
+    settlement.jobAllocations.set(donorJob, donorCount - actualMove);
+    settlement.jobAllocations.set(
+      targetJob,
+      (settlement.jobAllocations.get(targetJob) ?? 0) + actualMove,
+    );
+
+    events.push({
+      type: 'workers_reallocated',
+      settlement: settlement.id,
+      fromJob: donorJob,
+      toJob: targetJob,
+      count: actualMove,
+    });
+
+    // Reset the rolling counter for next month's window.
+    recentLaborBlockedByJob.delete(settlement);
+  }
 };
 
 const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day): void => {

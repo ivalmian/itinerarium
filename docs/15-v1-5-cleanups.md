@@ -165,52 +165,6 @@ realistic recipe ratios (C2) AND the reduced bootstrap.
 `src/procgen/seed.ts` `seedCityCorporation`,
 `docs/14-debug-strategies.md`.
 
-## C6 — Worker reallocation by demand
-
-**v1 hack:** `laborAvailableInSettlement` (in `tick.ts`) treats
-every adult as available for every job role at full count. There
-are no actual job assignments; production scales down only when
-multiple recipes demand the same role-day in the same tick.
-
-**Why it was a hack:** workers / jobs / population pools are
-modeled separately and the reconciliation pass between them
-needed all three to land first.
-
-**Realistic:** per docs/04 §"Worker reallocation by demand",
-~2% of workers shift roles per month based on:
-- Where wages are higher (recipes producing high-priced outputs
-  with thin labor supply)
-- Where recipes are blocked by labor shortage (visible in the
-  `recipe_blocked` events with reason="labor")
-- Inertia (most workers stay in their role; only the marginal 2%
-  reallocates)
-
-**v1.5 implementation:**
-1. Add `Settlement.jobAllocations: Map<JobId, number>` (workers
-   currently assigned to each role).
-2. At procgen, distribute working-age adults across jobs based on
-   the seeded buildings (a farm + smithy settlement gets farmers
-   + smiths in proportion to building capacity).
-3. In `annualPhase` (or monthly hook): for each settlement, look
-   at the last 30 days of recipe_blocked events with reason="labor"
-   and the last 30 days of market prices. Reallocate ~0.66% of
-   workers per month (× 12 months/yr = ~8%/yr) toward the most
-   valuable / starved roles.
-4. Update `laborAvailableInSettlement` to read from
-   `Settlement.jobAllocations` instead of treating all adults as
-   universal labor.
-
-**Acceptance:** in the 10-year burn-in, settlements that have a
-local mine but no smelters (because procgen didn't seed smelters)
-self-correct: smelter wages rise, workers reallocate, eventually
-some adults become smelters and a bloomery gets built (depends on
-C4). Until C4 lands, this just affects which recipes get
-labor-prioritized.
-
-**Cross-refs:** `docs/04-population.md` §"Worker reallocation",
-`src/sim/tick.ts` `laborAvailableInSettlement`,
-`src/sim/production/engine.ts`.
-
 ## C7 — Removing bootstrap-only safeguards
 
 These are tiny code branches whose presence makes the early world
@@ -234,9 +188,8 @@ C5 (bootstrap stockpiles) depends on C2: realistic ratios need to
 be in place before reducing bootstrap, or the world starves
 before production catches up.
 
-C4 (dynamic investment) and C6 (worker reallocation) are larger
-and most realistic together: the investment loop creates new
-buildings, the reallocation loop staffs them. Either one in
-isolation is half-blind.
+C4 (dynamic investment) is larger and most realistic alongside C6
+(worker reallocation, already landed): the investment loop creates
+new buildings, the reallocation loop staffs them.
 
 C7 is documentation cleanup, after each prior task lands.
