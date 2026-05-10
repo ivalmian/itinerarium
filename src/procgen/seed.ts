@@ -69,6 +69,9 @@ import {
 import type { HexGrid } from '../sim/world/grid.js';
 import { hexDistance, hexEquals, hexKey, hexesWithinRange, type Hex } from '../sim/world/hex.js';
 import { createCamp } from '../sim/bandit/camp.js';
+import { campaignerUnit } from '../sim/conflict/battle.js';
+import { createPatrol, type Patrol as PatrolType } from '../sim/conflict/patrol.js';
+import { routeForGarrisonPatrol, routeForCityWatch } from '../sim/conflict/patrolRoutes.js';
 import type { SettlementSite } from './settlements.js';
 
 // --- Public types -----------------------------------------------------------
@@ -874,6 +877,14 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
   const banditCamps = new Map<BanditCampId, BanditCamp>();
   seedInitialBanditCamps(ctx, opts.grid, opts.settlementSites, banditCamps);
 
+  // Phase 11: initial patrols (per docs/12 §"Patrols (Roman-era)"). Each
+  // city gets a provincial garrison (governor's stationarii) that walks the
+  // road network up to ~30 hexes out, plus a city watch that loops the
+  // urban core. Without these, no enforcement vs. bandit camps ever
+  // happens — the docs/12 escalation chain has no first link.
+  const patrols = new Map<string, Patrol>();
+  seedInitialPatrols(ctx, opts.grid, opts.settlementSites, siteToSettlement, patrols);
+
   return {
     day: 0,
     grid: opts.grid,
@@ -882,7 +893,7 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
     factions: ctx.factions,
     characters: ctx.characters,
     caravans: new Map<CaravanId, Caravan>(),
-    patrols: new Map<string, Patrol>(),
+    patrols,
     banditCamps,
     newsCarriers: new Map<string, NewsCarrier>(),
     reputation: createReputationTable(),
@@ -977,6 +988,100 @@ const seedInitialBanditCamps = (
     });
     banditCamps.set(campId, camp);
   }
+};
+
+/**
+ * Phase 11 — seed garrison + city-watch patrols around each city. Per
+ * docs/12: the governor's office bases its provincial garrison at the
+ * capital (and any other major city); each city watch is funded by the
+ * city corporation. Patrol units are small but trained — enough to
+ * deter or kill a small bandit camp on the road.
+ */
+const seedInitialPatrols = (
+  ctx: BuildContext,
+  grid: HexGrid,
+  sites: readonly SettlementSite[],
+  siteToSettlement: Map<SettlementSite, Settlement>,
+  patrols: Map<string, PatrolType>,
+): void => {
+  const rng = ctx.rng.derive('initial-patrols');
+  let counter = 0;
+  for (const site of sites) {
+    if (site.kind !== 'city' && site.kind !== 'capital') continue;
+    const settlement = siteToSettlement.get(site);
+    if (settlement === undefined) continue;
+
+    // Find the actors anchored to this settlement.
+    let governorActor: Actor | undefined;
+    let cityCorpActor: Actor | undefined;
+    for (const a of ctx.actors.values()) {
+      if (a.kind === 'governor_office' && a.homeSettlement === settlement.id) {
+        governorActor = a;
+      }
+      if (a.kind === 'city_corporation' && a.homeSettlement === settlement.id) {
+        cityCorpActor = a;
+      }
+    }
+
+    // 1 garrison patrol per major city (governor's stationarii).
+    if (governorActor !== undefined) {
+      const garrisonRoute = routeForGarrisonPatrol(settlement, grid);
+      if (garrisonRoute.length > 0) {
+        const id = `patrol-garrison-${counter++}`;
+        const unit = campaignerUnit({
+          id: `patrol:${id}`,
+          posture: 'attacking',
+          count: 24, // ~one century / contubernia detachment
+          training: 0.85,
+          weapons: 0.8,
+          armor: 0.65,
+          health: 0.95,
+          terrainBonus: 0,
+        });
+        patrols.set(
+          id,
+          createPatrol({
+            id,
+            kind: 'provincial_garrison',
+            ownerActor: governorActor.id,
+            basedAt: settlement.id,
+            route: garrisonRoute,
+            unit,
+          }),
+        );
+      }
+    }
+
+    // 1 city watch per city (city corporation funds).
+    if (cityCorpActor !== undefined) {
+      const watchRoute = routeForCityWatch(settlement, grid);
+      if (watchRoute.length > 0) {
+        const id = `patrol-watch-${counter++}`;
+        const unit = campaignerUnit({
+          id: `patrol:${id}`,
+          posture: 'attacking',
+          count: 12, // a small watch
+          training: 0.55,
+          weapons: 0.5,
+          armor: 0.3,
+          health: 0.9,
+          terrainBonus: 0,
+        });
+        patrols.set(
+          id,
+          createPatrol({
+            id,
+            kind: 'city_watch',
+            ownerActor: cityCorpActor.id,
+            basedAt: settlement.id,
+            route: watchRoute,
+            unit,
+          }),
+        );
+      }
+    }
+  }
+  void rng;
 };
 
 // --- helpers ----------------------------------------------------------------

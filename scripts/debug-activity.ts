@@ -42,17 +42,43 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log('year,recipe_ran,caravan_moved,caravan_arrived,market_cleared,cohort_deaths,epidemic_started,caravan_robbed');
+  // Two CSVs side by side: economy + news/conflict. Easier to scan than one
+  // wide row.
+  console.log('=== Economy ===');
+  console.log('year,recipe_ran,recipe_blocked,caravan_moved,caravan_arrived,market_cleared');
   for (let y = 1; y <= 10; y++) {
     const b = yearBuckets[y] ?? {};
     console.log(
-      `${y},${b.recipe_ran ?? 0},${b.caravan_moved ?? 0},${b.caravan_arrived ?? 0},${b.market_cleared ?? 0},${b.cohort_deaths ?? 0},${b.epidemic_started ?? 0},${b.caravan_robbed ?? 0}`,
+      `${y},${b.recipe_ran ?? 0},${b.recipe_blocked ?? 0},${b.caravan_moved ?? 0},${b.caravan_arrived ?? 0},${b.market_cleared ?? 0}`,
+    );
+  }
+  console.log('\n=== Population & disease ===');
+  console.log('year,cohort_deaths,epidemic_started');
+  for (let y = 1; y <= 10; y++) {
+    const b = yearBuckets[y] ?? {};
+    console.log(`${y},${b.cohort_deaths ?? 0},${b.epidemic_started ?? 0}`);
+  }
+  console.log('\n=== Conflict & politics ===');
+  console.log(
+    'year,caravan_robbed,settlement_raided,patrol_dispatched,patrol_engaged,bandit_recruited,fence_traded,news_carrier_spawned,news_carrier_arrived,reputation_updated',
+  );
+  for (let y = 1; y <= 10; y++) {
+    const b = yearBuckets[y] ?? {};
+    console.log(
+      `${y},${b.caravan_robbed ?? 0},${b.settlement_raided ?? 0},${b.patrol_dispatched ?? 0},${b.patrol_engaged ?? 0},${b.bandit_recruited ?? 0},${b.fence_traded ?? 0},${b.news_carrier_spawned ?? 0},${b.news_carrier_arrived ?? 0},${b.reputation_updated ?? 0}`,
     );
   }
   console.log('\nFinal world state:');
   console.log(`  caravans alive: ${world.caravans.size}`);
   console.log(`  bandit camps in world.banditCamps: ${world.banditCamps?.size ?? 0}`);
   console.log(`  patrols in world.patrols: ${world.patrols?.size ?? 0}`);
-  console.log(`  news carriers: ${world.newsCarriers?.size ?? 0}`);
+  console.log(`  news carriers (in flight): ${world.newsCarriers?.size ?? 0}`);
+  // Bandit-population summary: total bandit headcount across all camps.
+  let totalBandits = 0;
+  if (world.banditCamps !== undefined) {
+    for (const c of world.banditCamps.values()) totalBandits += c.banditCount;
+  }
+  console.log(`  total bandits across camps: ${totalBandits}`);
+  console.log(`  reputation entries stored: ${world.reputation.size()}`);
 }
 main();

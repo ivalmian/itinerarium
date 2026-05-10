@@ -35,9 +35,31 @@
 import { allBuildings } from './buildings/catalog.js';
 import { tickCaravanMovement } from './caravan/movement.js';
 import { planCaravanRoute } from './caravan/ai.js';
-import { decideCampAction, recruit, type BanditCamp } from './bandit/camp.js';
-import { resolveAmbush } from './conflict/ambush.js';
+import {
+  createCamp,
+  decideCampAction,
+  recruit,
+  type BanditCamp,
+} from './bandit/camp.js';
+import { createActor } from './politics/actor.js';
+import { createCharacter, generateFullName } from './politics/character.js';
+import { createFaction } from './politics/faction.js';
+import {
+  actorId,
+  banditCampId as makeBanditCampId,
+  characterId,
+  factionId,
+} from './types.js';
+import { resolveAmbush, type AmbushResult } from './conflict/ambush.js';
+import { resolveBattle } from './conflict/battle.js';
+import { tickPatrol, type Patrol } from './conflict/patrol.js';
+import { resolveRaid, type WallLevel } from './conflict/raid.js';
 import type { Caravan } from './caravan/caravan.js';
+import { createNewsItem, createNewsCarrier } from './reputation/news.js';
+import { tickCarrierWithGrid } from './reputation/newsMovement.js';
+import { processNewsArrival } from './reputation/newsArrival.js';
+import type { NamedCharacter } from './politics/character.js';
+import type { ReputationMagnitude } from './reputation/table.js';
 import {
   aggregateDemand,
   comfortDemand,
@@ -76,6 +98,7 @@ import {
   type BuildingId,
   type CaravanId,
   type Day,
+  type FactionId,
   type JobId,
   type Quantity,
   type RecipeId,
@@ -144,6 +167,52 @@ export type TickEvent =
       readonly holder: ReputationKey;
       readonly subject: ReputationKey;
       readonly delta: number;
+    }
+  | {
+      readonly type: 'news_carrier_spawned';
+      readonly id: string;
+      readonly perpetrator: ReputationKey;
+      readonly victim: ReputationKey | null;
+      readonly destination: Hex;
+      readonly magnitude: ReputationMagnitude;
+    }
+  | {
+      readonly type: 'news_carrier_arrived';
+      readonly id: string;
+      readonly settlement: SettlementId;
+      readonly receiverCount: number;
+      readonly deltasApplied: number;
+    }
+  | {
+      readonly type: 'patrol_dispatched';
+      readonly patrolId: string;
+      readonly from: SettlementId;
+      readonly target: Hex;
+    }
+  | {
+      readonly type: 'patrol_engaged';
+      readonly patrolId: string;
+      readonly camp: BanditCampId;
+      readonly outcome: 'patrol_won' | 'bandits_won' | 'mutual_rout';
+    }
+  | {
+      readonly type: 'settlement_raided';
+      readonly settlement: SettlementId;
+      readonly by: BanditCampId;
+      readonly cargoLost: number;
+      readonly defendersKilled: number;
+    }
+  | {
+      readonly type: 'fence_traded';
+      readonly camp: BanditCampId;
+      readonly through: SettlementId;
+      readonly coinPaid: number;
+    }
+  | {
+      readonly type: 'bandit_recruited';
+      readonly camp: BanditCampId;
+      readonly fromSettlement: SettlementId;
+      readonly count: number;
     };
 
 export interface TickResult {
@@ -618,10 +687,16 @@ const movementPhase = (
       });
     }
   }
-  // News carriers — the world doesn't currently track a Map for them; T18
-  // owns its own collection. The tick frame is here so the wiring lands
-  // without restructuring later.
-  void hexEquals; // referenced for future news-arrival comparisons
+  // News carriers walk per docs/13. Their arrival → reputation update is
+  // handled in the politics phase below.
+  if (world.newsCarriers !== undefined) {
+    for (const [id, carrier] of world.newsCarriers) {
+      if (carrier.arrived) continue;
+      const next = tickCarrierWithGrid({ carrier, grid: world.grid, season, today });
+      world.newsCarriers.set(id, next);
+    }
+  }
+  void hexEquals;
 };
 
 // --- Phase 4: Trade ---------------------------------------------------------
@@ -825,6 +900,14 @@ const politicsPhase = (
   // the seeded bandit camps are inert decorations — see docs/12
   // §"Bandit emergence in the tick loop".
   banditPhase(world, rng.derive('bandit'), today, events);
+  // Patrols walk routes and engage bandit camps they encounter. The
+  // garrison + city-watch units seeded by procgen do this — without it,
+  // bandits face no enforcement and grow unchecked.
+  patrolPhase(world, rng.derive('patrol'), today, events);
+  // Process arrived news carriers → apply reputation deltas to local
+  // characters. Per docs/13: news doesn't teleport, every reputation
+  // update is anchored to a specific carrier walking a specific route.
+  newsArrivalPhase(world, today, events);
 };
 
 const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day): void => {
@@ -910,6 +993,13 @@ const recruitDriveMultiplier: Map<BanditCampId, number> = new Map();
 const RECRUIT_RANGE_HEXES = 50;
 const BASE_RECRUIT_FRAC_PER_DAY = 0.0005;
 const POOR_VILLAGE_RECRUIT_BOOST = 4;
+/**
+ * Per-camp soft cap. Beyond this size a camp is no longer recruiting (it's
+ * conspicuous, food logistics break down, and historically warlord bands
+ * fragmented at this scale). Recruits go to the next-nearest camp under
+ * the cap, or the recruitment skips for that day.
+ */
+const CAMP_RECRUIT_CAP = 500;
 
 const banditPhase = (
   world: WorldState,
@@ -917,7 +1007,10 @@ const banditPhase = (
   today: Day,
   events: TickEvent[],
 ): void => {
-  if (world.banditCamps === undefined || world.banditCamps.size === 0) return;
+  // Don't early-exit when banditCamps is empty: recruitFromIdle below is
+  // the only path by which the world's bandit population can recover from
+  // zero (after patrols wipe out the seeded camps).
+  if (world.banditCamps === undefined) return;
 
   // Step 1: bandit decisions + raid resolution.
   for (const [campId, camp] of [...world.banditCamps]) {
@@ -952,11 +1045,54 @@ const banditPhase = (
     const lastDay = lastSuccessfulRaidDay.get(campId) ?? -1000;
     const daysSinceLastSuccessfulRaid = today - lastDay;
 
+    // Patrols visible to the camp: any patrol whose current position is
+    // within 8 hexes (matches our PATROL_DETECTION_HEXES symmetry).
+    const knownNearbyPatrols: { hex: Hex; size: number }[] = [];
+    if (world.patrols !== undefined) {
+      for (const p of world.patrols.values()) {
+        if (hexDistance(p.position, camp.hex) <= 8) {
+          knownNearbyPatrols.push({ hex: p.position, size: p.unit.count });
+        }
+      }
+    }
+
+    // "Friendly" settlements: bandits know nearby small unfortified villages
+    // (raid targets) AND nearby large cities with a corrupt fence (looting
+    // outlets). v1 shorthand: any settlement within 30 hexes whose tier is
+    // hamlet/village/town qualifies as a raid target; cities qualify as
+    // fence outlets if the bandit's reputation with them is non-negative.
+    const knownFriendlySettlements: { id: SettlementId; hex: Hex }[] = [];
+    for (const s of world.settlements.values()) {
+      if (hexDistance(s.anchor, camp.hex) > 30) continue;
+      if (s.tier === 'hamlet' || s.tier === 'village' || s.tier === 'town') {
+        knownFriendlySettlements.push({ id: s.id, hex: s.anchor });
+      } else {
+        // City: include only if the city's authority isn't actively hostile
+        // to the camp. Authority = governor_office or city_corporation
+        // anchored at the settlement.
+        let hostile = false;
+        for (const oId of s.stockpileOwners) {
+          const a = world.actors.get(oId);
+          if (
+            a !== undefined &&
+            (a.kind === 'governor_office' || a.kind === 'city_corporation')
+          ) {
+            const rep = world.reputation.get(camp.ownerActor, a.id);
+            if (rep < -0.3) {
+              hostile = true;
+              break;
+            }
+          }
+        }
+        if (!hostile) knownFriendlySettlements.push({ id: s.id, hex: s.anchor });
+      }
+    }
+
     const action = decideCampAction({
       camp,
       knownNearbyCaravans,
-      knownNearbyPatrols: [], // v1: no patrols yet
-      knownFriendlySettlements: [], // v1: no fence relationships yet
+      knownNearbyPatrols,
+      knownFriendlySettlements,
       daysSinceLastSuccessfulRaid,
       rng: subRng.derive('decide'),
     });
@@ -965,7 +1101,7 @@ const banditPhase = (
   }
 
   // Step 2: recruitment from settlements with idle pop / hardship.
-  recruitFromIdle(world, rng.derive('recruit'), today);
+  recruitFromIdle(world, rng.derive('recruit'), today, events);
 
   // Step 3: starvation desertion (camps with empty loot lose bandits).
   applyBanditStarvation(world, rng.derive('starve'), today);
@@ -1080,19 +1216,343 @@ const applyCampAction = (
           cargoLost,
         });
       }
+
+      // Emit news carriers for fled_escaped survivors on the caravan side.
+      // They walk to the nearest settlement at refugee speed (~20 hex/day)
+      // and on arrival apply reputation deltas via processNewsArrival.
+      // docs/13 §"Battle survivor system": survivors are the ONLY route by
+      // which battle outcomes propagate to the world's reputation slates.
+      spawnNewsFromAmbush(world, today, target, campId, camp, result, cargoLost, events);
       return;
     }
-    case 'raid_settlement':
-      // Implemented in a follow-up — needs T38 raid + defender garrison.
+    case 'raid_settlement': {
+      const target = world.settlements.get(action.targetSettlement);
+      if (target === undefined) return;
+      executeSettlementRaid(world, today, campId, camp, target, rng.derive('raid'), events);
       return;
-    case 'fence_loot':
-    case 'bribe_settlement':
-      // No-op in v1 — fence/bribe machinery comes online when settlement
-      // sub-faction relationships are wired (docs/12 §"Bandit-aligned
-      // sub-factions in cities"). Skipping is safe; the action is still
-      // recorded in the rng stream so determinism is preserved.
+    }
+    case 'fence_loot': {
+      const through = world.settlements.get(action.throughSettlement);
+      if (through === undefined) return;
+      executeFenceTransaction(world, today, campId, camp, through, events);
       return;
+    }
+    case 'bribe_settlement': {
+      const target = world.settlements.get(action.settlement);
+      if (target === undefined) return;
+      // Find a stockpile-owning actor to receive the bribe.
+      let receiver: Actor | undefined;
+      for (const oId of target.stockpileOwners) {
+        const a = world.actors.get(oId);
+        if (a !== undefined && (a.kind === 'city_corporation' || a.kind === 'governor_office')) {
+          receiver = a;
+          break;
+        }
+      }
+      const amount = Math.min(camp.treasury, action.amount);
+      if (amount <= 0) return;
+      camp.treasury -= amount;
+      if (receiver !== undefined) receiver.treasury += amount;
+      // Reputation: receiver becomes friendlier to bandit camp owner.
+      if (receiver !== undefined) {
+        world.reputation.apply(camp.ownerActor, receiver.id, 0.05);
+        world.reputation.apply(receiver.id, camp.ownerActor, 0.1);
+      }
+      return;
+    }
   }
+};
+
+// --- Settlement raid execution ---------------------------------------------
+
+const tierToWallLevel = (tier: Settlement['tier']): WallLevel => {
+  switch (tier) {
+    case 'hamlet':
+      return 0;
+    case 'village':
+      return 0;
+    case 'town':
+      return 1;
+    case 'small_city':
+      return 2;
+    case 'large_city':
+      return 3;
+  }
+};
+
+const aggregateSettlementStockpile = (
+  world: WorldState,
+  settlement: Settlement,
+): Map<ResourceId, Quantity> => {
+  const out = new Map<ResourceId, Quantity>();
+  for (const oId of settlement.stockpileOwners) {
+    const a = world.actors.get(oId);
+    if (a === undefined) continue;
+    for (const [res, qty] of a.stockpile) {
+      out.set(res, (out.get(res) ?? 0) + qty);
+    }
+  }
+  return out;
+};
+
+const drainSettlementStockpile = (
+  world: WorldState,
+  settlement: Settlement,
+  loot: ReadonlyMap<ResourceId, Quantity>,
+): void => {
+  // Drain each resource proportionally across stockpile owners.
+  for (const [res, qty] of loot) {
+    let remaining = qty;
+    for (const oId of settlement.stockpileOwners) {
+      if (remaining <= 1e-9) break;
+      const a = world.actors.get(oId);
+      if (a === undefined) continue;
+      const have = a.stockpile.get(res) ?? 0;
+      if (have <= 0) continue;
+      const take = Math.min(have, remaining);
+      const newQty = have - take;
+      if (newQty > 1e-9) a.stockpile.set(res, newQty);
+      else a.stockpile.delete(res);
+      remaining -= take;
+    }
+  }
+};
+
+const executeSettlementRaid = (
+  world: WorldState,
+  today: Day,
+  campId: BanditCampId,
+  camp: BanditCamp,
+  target: Settlement,
+  rng: Rng,
+  events: TickEvent[],
+): void => {
+  if (world.banditCamps === undefined) return;
+
+  // Gather defenders: any patrol based at this settlement.
+  const defendingPatrols: Patrol[] = [];
+  if (world.patrols !== undefined) {
+    for (const p of world.patrols.values()) {
+      if (p.basedAt === target.id && p.unit.count > 0) defendingPatrols.push(p);
+    }
+  }
+
+  // Coarse militia estimate: 5% of working-age adults rally.
+  const militiaCount = Math.floor(adultPopulation(target) * 0.05);
+
+  const stockpile = aggregateSettlementStockpile(world, target);
+  const wallLevel = tierToWallLevel(target.tier);
+
+  const result = resolveRaid({
+    attacker: camp,
+    target,
+    defendingPatrols,
+    militiaCount,
+    wallLevel,
+    settlementStockpile: stockpile,
+    rng: rng.derive('raid'),
+  });
+
+  // Apply loot drain.
+  drainSettlementStockpile(world, target, result.lootTaken);
+  // Add loot to camp.
+  for (const [res, qty] of result.lootTaken) {
+    camp.loot.set(res, (camp.loot.get(res) ?? 0) + qty);
+  }
+
+  // Apply civilian deaths.
+  if (result.settlementCasualties.civilianDeaths > 0) {
+    const killed = applyCivilianDeaths(target, result.settlementCasualties.civilianDeaths);
+    if (killed > 0) {
+      events.push({
+        type: 'cohort_deaths',
+        settlement: target.id,
+        deaths: killed,
+        cause: 'war',
+      });
+    }
+  }
+  // Apply patrol casualties (one defender unit aggregates them all; we
+  // distribute proportionally across patrols by their size).
+  const totalPatrolCount = defendingPatrols.reduce((acc, p) => acc + p.unit.count, 0);
+  if (totalPatrolCount > 0 && result.settlementCasualties.defenderDeaths > 0) {
+    let remaining = result.settlementCasualties.defenderDeaths;
+    for (const p of defendingPatrols) {
+      if (remaining <= 0) break;
+      const share = Math.round((p.unit.count / totalPatrolCount) * result.settlementCasualties.defenderDeaths);
+      const take = Math.min(share, p.unit.count, remaining);
+      if (take <= 0) continue;
+      p.unit = { ...p.unit, count: p.unit.count - take };
+      remaining -= take;
+      if (p.unit.count <= 0 && world.patrols !== undefined) world.patrols.delete(p.id);
+    }
+  }
+  // Apply bandit casualties.
+  const banditDeaths = result.banditCasualties.deaths;
+  const survivingCamp = Math.max(0, camp.banditCount - banditDeaths);
+  if (survivingCamp <= 0) world.banditCamps.delete(campId);
+  else world.banditCamps.set(campId, { ...camp, banditCount: survivingCamp });
+
+  // Total cargo lost (count) for telemetry.
+  let cargoLost = 0;
+  for (const qty of result.lootTaken.values()) cargoLost += qty;
+  events.push({
+    type: 'settlement_raided',
+    settlement: target.id,
+    by: campId,
+    cargoLost,
+    defendersKilled: result.settlementCasualties.defenderDeaths,
+  });
+
+  // News from survivors. Settlement raids are visible — every village
+  // family that lost livestock has a witness. Spawn a carrier to the
+  // nearest large settlement (likely the city the village reports to)
+  // OR back to the village itself (if it has named characters present).
+  // Magnitude scales with civilian deaths + cargo lost.
+  let mag: ReputationMagnitude = 'moderate';
+  if (result.settlementCasualties.civilianDeaths > 20 || cargoLost > 200) mag = 'severe';
+  if (result.settlementCasualties.civilianDeaths > 100 || cargoLost > 1000) mag = 'atrocious';
+  // Always emit news of the attack — the village itself is the spawn point.
+  const dest = nearestSettlementWithinRange(world, target.anchor, NEWS_CARRIER_MAX_DESTINATION_HEXES);
+  if (dest !== null && world.newsCarriers !== undefined) {
+    const id = `news-${today}-raid-${String(campId)}-${String(target.id)}`;
+    if (!world.newsCarriers.has(id)) {
+      const news = createNewsItem({
+        id,
+        perpetrator: camp.ownerActor as ReputationKey,
+        victim: null,
+        magnitude: mag,
+        isCriminalAct: true,
+        occurredAtHex: target.anchor,
+        occurredOnDay: today,
+      });
+      const carrier = createNewsCarrier({
+        id,
+        news,
+        spawnHex: target.anchor,
+        destination: dest.anchor,
+        spawnDay: today,
+        speed: NEWS_CARRIER_SPEED,
+      });
+      world.newsCarriers.set(id, carrier);
+      events.push({
+        type: 'news_carrier_spawned',
+        id,
+        perpetrator: news.perpetrator,
+        victim: null,
+        destination: dest.anchor,
+        magnitude: mag,
+      });
+    }
+  }
+  if (banditDeaths > 0 || result.lootTaken.size > 0) {
+    lastSuccessfulRaidDay.set(campId, today);
+  }
+};
+
+const applyCivilianDeaths = (settlement: Settlement, count: number): number => {
+  // Use the same priority-by-vulnerability as famine deaths.
+  let remaining = count;
+  let killed = 0;
+  const order: readonly string[] = ['0-4', '80+', '5-9', '75-79', '70-74'];
+  const fallback: readonly string[] = ['10-14', '15-19', '20-24', '25-29', '30-34', '35-39'];
+  const all: readonly string[] = [...order, ...fallback];
+  for (const ageStr of all) {
+    if (remaining <= 0) break;
+    const age = ageStr as unknown as Parameters<Settlement['population']['totalByAgeBand']>[0];
+    const inBand = settlement.population.totalByAgeBand(age);
+    if (inBand <= 0) continue;
+    const take = Math.min(remaining, inBand);
+    let drained = 0;
+    const snap: Array<[Parameters<Settlement['population']['set']>[0], number]> = [];
+    for (const [key, c] of settlement.population.cohorts()) {
+      if (key.age === age && c > 0) snap.push([key, c]);
+    }
+    for (const [key, c] of snap) {
+      if (drained >= take) break;
+      const share = Math.max(1, Math.round((c / inBand) * take));
+      const drop = Math.min(share, c, take - drained);
+      if (drop <= 0) continue;
+      settlement.population.set(key, c - drop);
+      drained += drop;
+      killed += drop;
+    }
+    remaining -= drained;
+  }
+  return killed;
+};
+
+const FENCE_PRICE_FRACTION = 0.6;
+
+const executeFenceTransaction = (
+  world: WorldState,
+  _today: Day,
+  campId: BanditCampId,
+  camp: BanditCamp,
+  through: Settlement,
+  events: TickEvent[],
+): void => {
+  // Pick a fence-eligible actor at the target settlement: prefer city
+  // corporation; fall back to first stockpile owner with positive treasury.
+  let fence: Actor | undefined;
+  for (const oId of through.stockpileOwners) {
+    const a = world.actors.get(oId);
+    if (a === undefined) continue;
+    if (a.kind === 'city_corporation' && a.treasury > 0) {
+      fence = a;
+      break;
+    }
+  }
+  if (fence === undefined) {
+    for (const oId of through.stockpileOwners) {
+      const a = world.actors.get(oId);
+      if (a !== undefined && a.treasury > 0) {
+        fence = a;
+        break;
+      }
+    }
+  }
+  if (fence === undefined) return;
+
+  // Compute total coin value of camp loot using local clearing prices
+  // (fall back to 1 coin/unit when no price observed).
+  let totalCoin = 0;
+  const transferable: { res: ResourceId; qty: number; price: number }[] = [];
+  for (const [res, qty] of camp.loot) {
+    if (qty <= 0) continue;
+    const lastPrice = through.market.lastClearingPrice.get(res) ?? 1;
+    const fencePrice = lastPrice * FENCE_PRICE_FRACTION;
+    const value = qty * fencePrice;
+    if (value <= 0) continue;
+    transferable.push({ res, qty, price: fencePrice });
+    totalCoin += value;
+  }
+  if (totalCoin <= 0) return;
+  // Cap at fence's treasury.
+  const coinPaid = Math.min(totalCoin, fence.treasury);
+  if (coinPaid <= 0) return;
+  const fraction = coinPaid / totalCoin;
+
+  for (const t of transferable) {
+    const moveQty = t.qty * fraction;
+    if (moveQty <= 1e-9) continue;
+    const have = camp.loot.get(t.res) ?? 0;
+    const newCampQty = have - moveQty;
+    if (newCampQty > 1e-9) camp.loot.set(t.res, newCampQty);
+    else camp.loot.delete(t.res);
+    fence.stockpile.set(t.res, (fence.stockpile.get(t.res) ?? 0) + moveQty);
+  }
+  fence.treasury -= coinPaid;
+  camp.treasury += coinPaid;
+  // Reputation: fence becomes friendlier to camp; camp likewise.
+  world.reputation.apply(fence.id, camp.ownerActor, 0.05);
+  world.reputation.apply(camp.ownerActor, fence.id, 0.05);
+  events.push({
+    type: 'fence_traded',
+    camp: campId,
+    through: through.id,
+    coinPaid,
+  });
 };
 
 const findCaravanAtHex = (world: WorldState, hex: Hex): Caravan | null => {
@@ -1102,8 +1562,17 @@ const findCaravanAtHex = (world: WorldState, hex: Hex): Caravan | null => {
   return null;
 };
 
-const recruitFromIdle = (world: WorldState, rng: Rng, _today: Day): void => {
-  if (world.banditCamps === undefined || world.banditCamps.size === 0) return;
+const recruitFromIdle = (
+  world: WorldState,
+  rng: Rng,
+  _today: Day,
+  events: TickEvent[],
+): void => {
+  // Note: we don't early-exit on banditCamps.size === 0. When patrols wipe
+  // all camps, the founding branch below is the ONLY way the world's
+  // bandit population can recover — exiting here would freeze the world
+  // in a no-bandits state forever.
+  if (world.banditCamps === undefined) return;
   for (const settlement of world.settlements.values()) {
     if (settlement.population.total() === 0) continue;
     const adults = adultPopulation(settlement);
@@ -1115,12 +1584,32 @@ const recruitFromIdle = (world: WorldState, rng: Rng, _today: Day): void => {
     const pressurePool = adults * pressureFraction;
     if (pressurePool <= 0) continue;
 
-    // Find the nearest camp within RECRUIT_RANGE_HEXES.
+    // Find the nearest camp within RECRUIT_RANGE_HEXES that is still under
+    // the soft size cap. Above-cap camps don't accept recruits.
     let nearest: { id: BanditCampId; dist: number } | null = null;
     for (const [campId, camp] of world.banditCamps) {
+      if (camp.banditCount >= CAMP_RECRUIT_CAP) continue;
       const d = hexDistance(camp.hex, settlement.anchor);
       if (d > RECRUIT_RANGE_HEXES) continue;
       if (nearest === null || d < nearest.dist) nearest = { id: campId, dist: d };
+    }
+
+    // Found a new camp if no nearby host exists. Probability is tiny per
+    // settlement-day; this gives the bandit population a slow recovery
+    // path after patrols wipe out existing camps. Per docs/12 §"Joining
+    // vs founding". Without this, once the seeded camps are eliminated
+    // the bandit count stays at zero forever (unrealistic).
+    if (nearest === null && pressurePool >= 5) {
+      const foundProb = isPoor ? 0.005 : 0.001; // poor villages found camps faster
+      const noise2 = rng.derive(`found-${String(settlement.id)}-roll`).next();
+      if (noise2 < foundProb) {
+        const founded = foundNewCamp(
+          world,
+          settlement,
+          rng.derive(`found-${String(settlement.id)}`),
+        );
+        if (founded !== null) nearest = { id: founded, dist: 0 };
+      }
     }
     if (nearest === null) continue;
 
@@ -1141,7 +1630,108 @@ const recruitFromIdle = (world: WorldState, rng: Rng, _today: Day): void => {
     const camp = world.banditCamps.get(nearest.id);
     if (camp === undefined) continue;
     world.banditCamps.set(nearest.id, recruit(camp, actuallyTake));
+    events.push({
+      type: 'bandit_recruited',
+      camp: nearest.id,
+      fromSettlement: settlement.id,
+      count: actuallyTake,
+    });
   }
+};
+
+/**
+ * Found a fresh bandit camp in wilderness 5-10 hexes from `near`. Returns
+ * the new camp's id, or null if no acceptable hex was found. Wires up
+ * the necessary actor + faction + leader so reputation propagation works
+ * the same as procgen-seeded camps.
+ */
+const foundNewCamp = (
+  world: WorldState,
+  near: Settlement,
+  rng: Rng,
+): BanditCampId | null => {
+  if (world.banditCamps === undefined) return null;
+  // Search outward from settlement anchor for an acceptable wilderness hex.
+  const acceptable: Hex[] = [];
+  for (let radius = 5; radius <= 12 && acceptable.length === 0; radius++) {
+    for (let dq = -radius; dq <= radius; dq++) {
+      for (let dr = -radius; dr <= radius; dr++) {
+        const cand = { q: near.anchor.q + dq, r: near.anchor.r + dr };
+        if (hexDistance(cand, near.anchor) !== radius) continue;
+        const tile = world.grid.get(cand);
+        if (tile === undefined) continue;
+        // Bandits prefer cover but desperate bands settle anywhere. Reject
+        // only "obviously impossible" terrain (water + urban). Forest /
+        // hills get scored higher implicitly because the spiral search
+        // returns them first.
+        if (
+          tile.terrain === 'lake' ||
+          tile.terrain === 'river' ||
+          tile.terrain === 'urban'
+        ) {
+          continue;
+        }
+        // Don't found ON top of an existing camp.
+        let occupied = false;
+        for (const c of world.banditCamps.values()) {
+          if (hexEquals(c.hex, cand)) {
+            occupied = true;
+            break;
+          }
+        }
+        if (occupied) continue;
+        acceptable.push(cand);
+      }
+    }
+  }
+  if (acceptable.length === 0) return null;
+  const hex = rng.pick(acceptable);
+
+  // Spawn actor + faction + named leader, mirroring procgen seeding.
+  const aId = actorId(`actor-emergent-${String(near.id)}-${world.day}-${rng.next().toFixed(6)}`);
+  const fId = factionId(`faction-${String(aId)}`);
+  const leaderId = characterId(`char-${String(aId)}`);
+  const newId = makeBanditCampId(`camp-${String(aId)}`);
+  const leaderName = generateFullName(rng.derive('leader'), 'male');
+  const actor = createActor({
+    id: aId,
+    kind: 'bandit_camp',
+    name: `${leaderName}'s band`,
+    treasury: rng.int(0, 30),
+  });
+  world.actors.set(aId, actor);
+  const leader = createCharacter({
+    id: leaderId,
+    name: leaderName,
+    age: rng.int(22, 50),
+    sex: 'male',
+    class: 'plebeian',
+    faction: fId,
+    role: 'bandit_leader',
+    location: hex,
+  });
+  world.characters.set(leaderId, leader);
+  const faction = createFaction({
+    id: fId,
+    actor: aId,
+    name: `${leaderName}'s band`,
+    members: [leaderId],
+  });
+  world.factions.set(fId, faction);
+  const camp = createCamp({
+    id: newId,
+    name: `${leaderName}'s band`,
+    hex,
+    ownerActor: aId,
+    banditCount: 5,
+    hangersOnCount: 1,
+    weaponsPerBandit: 0.3,
+    armorPerBandit: 0.05,
+    averageHealth: 0.8,
+    treasury: actor.treasury,
+  });
+  world.banditCamps.set(newId, camp);
+  return newId;
 };
 
 const drainAdultsFromSettlement = (settlement: Settlement, count: number): void => {
@@ -1226,6 +1816,413 @@ const applyBanditStarvation = (world: WorldState, rng: Rng, _today: Day): void =
         if (remaining < 3) world.banditCamps.delete(campId);
         else world.banditCamps.set(campId, { ...camp, banditCount: remaining });
       }
+    }
+  }
+};
+
+// --- News-carrier spawn from ambush + arrival processing -------------------
+
+const NEWS_CARRIER_SPEED = 20;
+const NEWS_CARRIER_MAX_DESTINATION_HEXES = 60;
+
+const ambushMagnitude = (
+  cargoLost: number,
+  crewDeaths: number,
+  coinLost: number,
+): ReputationMagnitude => {
+  if (cargoLost > 200 || crewDeaths > 10 || coinLost > 500) return 'atrocious';
+  if (cargoLost > 50 || crewDeaths > 3 || coinLost > 100) return 'severe';
+  if (cargoLost > 10 || crewDeaths > 0 || coinLost > 20) return 'moderate';
+  return 'petty';
+};
+
+const nearestSettlementWithinRange = (
+  world: WorldState,
+  from: Hex,
+  maxDist: number,
+): Settlement | null => {
+  let best: { s: Settlement; d: number } | null = null;
+  for (const s of world.settlements.values()) {
+    const d = hexDistance(s.anchor, from);
+    if (d > maxDist) continue;
+    if (best === null || d < best.d) best = { s, d };
+  }
+  return best?.s ?? null;
+};
+
+const spawnNewsFromAmbush = (
+  world: WorldState,
+  today: Day,
+  caravan: Caravan,
+  campId: BanditCampId,
+  camp: BanditCamp,
+  result: AmbushResult,
+  cargoLost: number,
+  events: TickEvent[],
+): void => {
+  if (world.newsCarriers === undefined) return;
+
+  // Aggregate fled_escaped count across all caravan-side survivor entries.
+  let fledEscaped = 0;
+  for (const s of result.survivors) {
+    if (s.unitId === 'caravan' && s.fate === 'fled_escaped') fledEscaped += s.count;
+  }
+
+  // Floor: per docs/12 §"Battles aren't total annihilation", even a clean
+  // attacker_won leaves rumor traces. If no eyewitnesses escaped but the
+  // attack was material, still emit a "rumor" carrier — the missing
+  // caravan eventually triggers an investigation upstream.
+  const incidentMaterial =
+    cargoLost > 0 || result.caravanCasualties.crewDeaths > 0 || result.coinTaken > 0;
+  if (fledEscaped <= 0 && !incidentMaterial) return;
+
+  const dest = nearestSettlementWithinRange(world, caravan.position, NEWS_CARRIER_MAX_DESTINATION_HEXES);
+  if (dest === null) return;
+
+  const fullMagnitude = ambushMagnitude(
+    cargoLost,
+    result.caravanCasualties.crewDeaths,
+    result.coinTaken,
+  );
+  // Rumor-only events drop to petty regardless of incident size — without a
+  // first-hand witness the news loses specificity.
+  const magnitude: ReputationMagnitude = fledEscaped > 0 ? fullMagnitude : 'petty';
+
+  // One carrier per ambush — multiple survivors converge on the same news.
+  // Per docs/12: even one survivor is enough to update reputation; numbers
+  // matter more for credibility than for delta magnitude.
+  const id = `news-${today}-${String(campId)}-${String(caravan.id)}`;
+  if (world.newsCarriers.has(id)) return; // dedupe within the same tick
+
+  const news = createNewsItem({
+    id,
+    perpetrator: camp.ownerActor as ReputationKey,
+    victim: caravan.ownerActor as ReputationKey,
+    magnitude,
+    isCriminalAct: true,
+    occurredAtHex: caravan.position,
+    occurredOnDay: today,
+    battleSurvivors: fledEscaped,
+  });
+  const carrier = createNewsCarrier({
+    id,
+    news,
+    spawnHex: caravan.position,
+    destination: dest.anchor,
+    spawnDay: today,
+    speed: NEWS_CARRIER_SPEED,
+  });
+  world.newsCarriers.set(id, carrier);
+  events.push({
+    type: 'news_carrier_spawned',
+    id,
+    perpetrator: news.perpetrator,
+    victim: news.victim,
+    destination: dest.anchor,
+    magnitude,
+  });
+};
+
+const newsArrivalPhase = (world: WorldState, _today: Day, events: TickEvent[]): void => {
+  if (world.newsCarriers === undefined || world.newsCarriers.size === 0) return;
+
+  // Index settlements by anchor hex once per call.
+  const settlementByAnchor = new Map<string, Settlement>();
+  for (const s of world.settlements.values()) {
+    settlementByAnchor.set(`${s.anchor.q},${s.anchor.r}`, s);
+  }
+
+  // Build per-settlement character list. NamedCharacter.location is the hex
+  // they're currently at; we group by anchor hex match. Cached so multiple
+  // arrivals at the same settlement reuse the list.
+  const charsBySettlementAnchor = new Map<string, NamedCharacter[]>();
+  const factionByActor = buildActorToFactionIndex(world);
+  for (const c of world.characters.values()) {
+    const key = `${c.location.q},${c.location.r}`;
+    const list = charsBySettlementAnchor.get(key);
+    if (list === undefined) charsBySettlementAnchor.set(key, [c]);
+    else list.push(c);
+  }
+
+  for (const [id, carrier] of [...world.newsCarriers]) {
+    if (!carrier.arrived) continue;
+    const destKey = `${carrier.destination.q},${carrier.destination.r}`;
+    const settlement = settlementByAnchor.get(destKey);
+    if (settlement === undefined) {
+      // Carrier arrived somewhere with no settlement (shouldn't happen
+      // since we picked anchors as destinations) — drop it.
+      world.newsCarriers.delete(id);
+      continue;
+    }
+    const characters = charsBySettlementAnchor.get(destKey) ?? [];
+
+    const victimFaction =
+      carrier.carrying.victim !== null
+        ? factionByActor.get(String(carrier.carrying.victim))
+        : undefined;
+    const perpetratorFaction = factionByActor.get(String(carrier.carrying.perpetrator));
+
+    const inputs = {
+      carrier,
+      destinationSettlement: settlement,
+      charactersAtSettlement: characters,
+      reputation: world.reputation,
+      ...(victimFaction !== undefined ? { victimFaction } : {}),
+      ...(perpetratorFaction !== undefined
+        ? { banditAlignedFactions: [perpetratorFaction] as readonly FactionId[] }
+        : {}),
+    };
+    const result = processNewsArrival(inputs);
+    events.push({
+      type: 'news_carrier_arrived',
+      id,
+      settlement: settlement.id,
+      receiverCount: result.charactersUpdated,
+      deltasApplied: result.reputationDeltasApplied.length,
+    });
+    for (const d of result.reputationDeltasApplied) {
+      events.push({
+        type: 'reputation_updated',
+        holder: d.holder,
+        subject: d.subject,
+        delta: d.delta,
+      });
+    }
+    world.newsCarriers.delete(id);
+  }
+};
+
+const buildActorToFactionIndex = (world: WorldState): Map<string, FactionId> => {
+  const out = new Map<string, FactionId>();
+  for (const f of world.factions.values()) {
+    out.set(String(f.actor), f.id);
+  }
+  return out;
+};
+
+// --- Patrol phase ----------------------------------------------------------
+
+/**
+ * Per-day patrol tick. For each patrol:
+ *   1. Build the known-bandit-camps-on-route list (camps whose hex is on or
+ *      near the patrol's route — v1 uses "any camp within 2 hexes of the
+ *      patrol's current position").
+ *   2. tickPatrol → advances the patrol, may emit pendingBattles.
+ *   3. For each pending battle, run resolveBattle, apply casualties to
+ *      both sides, emit news carriers from camp-side fled_escaped.
+ */
+const patrolPhase = (
+  world: WorldState,
+  rng: Rng,
+  today: Day,
+  events: TickEvent[],
+): void => {
+  if (world.patrols === undefined || world.patrols.size === 0) return;
+  // Patrols still walk their routes even if camps are momentarily zero —
+  // they're salaried; not exiting here also avoids missing newly-founded
+  // camps that emerged within this tick.
+  if (world.banditCamps === undefined) return;
+
+  // Build a quick hex → camps index for proximity lookup.
+  const campsByHex = new Map<string, BanditCamp[]>();
+  for (const camp of world.banditCamps.values()) {
+    const k = `${camp.hex.q},${camp.hex.r}`;
+    const list = campsByHex.get(k);
+    if (list === undefined) campsByHex.set(k, [camp]);
+    else list.push(camp);
+  }
+
+  for (const [patrolId, patrol] of [...world.patrols]) {
+    if (patrol.unit.count <= 0) {
+      world.patrols.delete(patrolId);
+      continue;
+    }
+    const subRng = rng.derive(`patrol-${patrolId}`);
+
+    // Detection: a patrol "knows" any camp within DETECTION hexes of EITHER
+    // its current position OR the next hex on its route. Real Roman patrols
+    // had local informants tipping them off, so the strict same-hex check
+    // in tickPatrol's contract is too narrow. We shim each detected camp's
+    // hex to the patrol's next route hex so the engagement resolves there
+    // (representing the patrol diverting from its loop briefly).
+    const nextIndex = (patrol.routeIndex + 1) % patrol.route.length;
+    const nextHex = patrol.route[nextIndex];
+    if (nextHex === undefined) continue;
+    const PATROL_DETECTION_HEXES = 15;
+    const known: { camp: BanditCamp; hex: Hex }[] = [];
+    for (const camp of world.banditCamps.values()) {
+      const dCurrent = hexDistance(camp.hex, patrol.position);
+      const dNext = hexDistance(camp.hex, nextHex);
+      if (Math.min(dCurrent, dNext) <= PATROL_DETECTION_HEXES) {
+        known.push({ camp, hex: nextHex });
+      }
+    }
+    // Caravan inspection list — patrol checks for suspicious caravans on hex.
+    const knownCaravans: { caravanId: CaravanId; ownerActor: ActorId; hex: Hex; suspicious: boolean }[] = [];
+    for (const c of world.caravans.values()) {
+      if (hexDistance(c.position, nextHex) <= 1) {
+        knownCaravans.push({
+          caravanId: c.id,
+          ownerActor: c.ownerActor,
+          hex: c.position,
+          suspicious: false, // v1: no caravan-suspicion signal yet
+        });
+      }
+    }
+
+    const result = tickPatrol({
+      patrol,
+      rng: subRng.derive('tick'),
+      knownBanditCampsOnRoute: known,
+      knownCaravansOnRoute: knownCaravans,
+      reputation: world.reputation,
+      today,
+    });
+
+    // Persist patrol mutations.
+    world.patrols.set(patrolId, result.patrol);
+
+    // Emit dispatch event when the patrol steps into a hex containing a
+    // known camp — proxy for "patrol detected & moved on it". Helps the
+    // burn-in observability layer.
+    for (const e of result.events) {
+      if (e.type === 'tactical_retreat' || e.type === 'turned_blind_eye') {
+        events.push({
+          type: 'patrol_dispatched',
+          patrolId,
+          from: result.patrol.basedAt,
+          target: e.detail.hex,
+        });
+      }
+    }
+
+    // Resolve any pending battles.
+    for (const pb of result.pendingBattles) {
+      if (pb.with.kind !== 'bandit_camp') continue;
+      const camp = world.banditCamps.get(pb.with.campId);
+      if (camp === undefined) continue; // already destroyed earlier this tick
+
+      const battle = resolveBattle(result.patrol.unit, pb.defenderUnit, {
+        ambush: false,
+        rng: subRng.derive(`battle-${pb.with.campId}`),
+      });
+
+      // Determine outcome category.
+      let outcome: 'patrol_won' | 'bandits_won' | 'mutual_rout';
+      if (battle.winnerId === result.patrol.unit.id) outcome = 'patrol_won';
+      else if (battle.winnerId === pb.defenderUnit.id) outcome = 'bandits_won';
+      else outcome = 'mutual_rout';
+
+      events.push({
+        type: 'patrol_engaged',
+        patrolId,
+        camp: pb.with.campId,
+        outcome,
+      });
+      events.push({
+        type: 'patrol_dispatched',
+        patrolId,
+        from: result.patrol.basedAt,
+        target: camp.hex,
+      });
+
+      // Apply casualties. Patrol unit count is mutated inside Patrol.
+      const patrolCas = battle.casualties.find((c) => c.unitId === result.patrol.unit.id);
+      const campCas = battle.casualties.find((c) => c.unitId === pb.defenderUnit.id);
+      const patrolDeaths = patrolCas?.deaths ?? 0;
+      const campDeaths = campCas?.deaths ?? 0;
+
+      // Update patrol unit (in place since `result.patrol` is the live one).
+      const survivingPatrol = Math.max(0, result.patrol.unit.count - patrolDeaths);
+      result.patrol.unit = { ...result.patrol.unit, count: survivingPatrol };
+      if (survivingPatrol <= 0) {
+        world.patrols.delete(patrolId);
+      } else {
+        world.patrols.set(patrolId, result.patrol);
+      }
+
+      // Update camp.
+      const survivingCamp = Math.max(0, camp.banditCount - campDeaths);
+      if (survivingCamp <= 0) {
+        world.banditCamps.delete(pb.with.campId);
+      } else {
+        world.banditCamps.set(pb.with.campId, { ...camp, banditCount: survivingCamp });
+      }
+
+      // Emit news carriers — for patrol vs camp, the WITNESSES who carry
+      // news are the survivors who flee back to civilization.
+      // - patrol-side fled_escaped → tell the patrol's settlement
+      // - camp-side fled_escaped → tell other bandits / sympathetic
+      //   villages (we approximate by routing to nearest settlement)
+      const patrolSettlement = world.settlements.get(result.patrol.basedAt);
+      if (patrolSettlement !== undefined) {
+        spawnNewsFromPatrolBattle(
+          world,
+          today,
+          patrolId,
+          camp,
+          battle.survivors,
+          patrolSettlement,
+          outcome,
+          events,
+        );
+      }
+    }
+  }
+};
+
+const spawnNewsFromPatrolBattle = (
+  world: WorldState,
+  today: Day,
+  patrolId: string,
+  camp: BanditCamp,
+  survivors: ReturnType<typeof resolveBattle>['survivors'],
+  patrolHome: Settlement,
+  outcome: 'patrol_won' | 'bandits_won' | 'mutual_rout',
+  events: TickEvent[],
+): void => {
+  if (world.newsCarriers === undefined) return;
+
+  // Patrol-side fled_escaped → news of the engagement reaches patrolHome.
+  let patrolFled = 0;
+  for (const s of survivors) {
+    if (s.unitId.startsWith('patrol:') && s.fate === 'fled_escaped') patrolFled += s.count;
+  }
+  // If patrol won and is alive, count is implicitly > 0; we still want news
+  // home. So spawn one carrier from the patrol position to home if outcome
+  // is patrol_won OR there are explicit fled_escaped.
+  const wantPatrolNews = outcome === 'patrol_won' || patrolFled > 0;
+  if (wantPatrolNews) {
+    const id = `news-${today}-patrol-${patrolId}-${String(camp.id)}`;
+    if (!world.newsCarriers.has(id)) {
+      const magnitude: ReputationMagnitude =
+        outcome === 'patrol_won' ? 'severe' : 'moderate';
+      const news = createNewsItem({
+        id,
+        perpetrator: camp.ownerActor as ReputationKey,
+        victim: null,
+        magnitude,
+        isCriminalAct: true,
+        occurredAtHex: camp.hex,
+        occurredOnDay: today,
+      });
+      const carrier = createNewsCarrier({
+        id,
+        news,
+        spawnHex: camp.hex,
+        destination: patrolHome.anchor,
+        spawnDay: today,
+        speed: NEWS_CARRIER_SPEED,
+      });
+      world.newsCarriers.set(id, carrier);
+      events.push({
+        type: 'news_carrier_spawned',
+        id,
+        perpetrator: news.perpetrator,
+        victim: null,
+        destination: patrolHome.anchor,
+        magnitude,
+      });
     }
   }
 };
