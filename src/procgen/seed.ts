@@ -753,6 +753,10 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
       anchor: site.anchor,
       urbanHexes: site.urbanHexes,
       catchmentHexes: catchment,
+      // docs/05 §"Dynamic catchment recompute": baseline = day-0 population.
+      // Subsequent ±25% pop swings + 365d cooldown trigger a recompute.
+      catchmentBaselinePop: site.estimatedPopulation,
+      catchmentDayLastChanged: 0,
     });
     seedPopulation(settlement, site.estimatedPopulation);
     addSettlement(ctx, settlement);

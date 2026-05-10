@@ -90,48 +90,6 @@ heavy industry chain (smithy/bloomery/forge_tools).
 **Cross-refs:** `docs/03-production.md`, `src/sim/production/recipes.ts`,
 `src/sim/production/recipes.test.ts`.
 
-## C3 — Dynamic catchment recompute
-
-**v1 hack:** `Settlement.urbanHexes` and `Settlement.catchmentHexes`
-are set at procgen time and never change. A settlement that grows
-from 500 → 5,000 keeps the same productive land — its catchment
-becomes wildly under-sized for its population. A settlement that
-shrinks 5,000 → 500 keeps over-sized catchment that no one farms.
-
-**Why it was a hack:** procgen was the natural place to set the
-land use, and dynamic recomputation has subtle interactions with
-hex ownership (per docs/11 hex-level ownership) and the catchment
-non-overlap rule.
-
-**Realistic:** when population crosses a ±25% threshold from the
-last recorded baseline, the settlement claims or releases catchment
-hexes to match. Released hexes go back to the wilderness pool;
-claimed hexes have to be unclaimed by neighbors.
-
-**v1.5 implementation:**
-1. Add `Settlement.catchmentBaselinePop: number` (last pop at which
-   catchment was sized).
-2. Add `Settlement.catchmentDayLastChanged: Day` (cooldown to
-   prevent thrashing).
-3. In `annualPhase`, for each settlement: if `|currentPop -
-   baselinePop| / baselinePop > 0.25` AND
-   `today - dayLastChanged > 365`: recompute catchment from
-   current pop using the same algorithm as procgen
-   (`catchmentRadiusFor` × scaling factor). Update baseline +
-   day.
-4. When releasing hexes: clear ownership (`setOwner(grid, hex, null)`).
-5. When claiming hexes: check no neighbor has them claimed; if
-   contested, defer (the neighbor wins for now).
-
-**Acceptance:** in the 10-year burn-in, settlements that doubled
-their population also expanded their catchment; settlements that
-halved theirs shrank. The viewer's settlement glyph reflects this.
-
-**Cross-refs:** `docs/05-settlements.md` §"Catchment",
-`docs/11-politics-and-ownership.md` §"Hex ownership",
-`src/sim/world/settlement.ts`, `src/procgen/seed.ts`
-`computeCatchment`.
-
 ## C4 — Dynamic settlement investment (Stage 2 specialization)
 
 **v1 hack:** all production buildings are seeded once at procgen
@@ -275,9 +233,6 @@ and can land in either order. They're the smallest changes.
 C5 (bootstrap stockpiles) depends on C2: realistic ratios need to
 be in place before reducing bootstrap, or the world starves
 before production catches up.
-
-C3 (catchment) is independent. The viewer (docs/16) will look
-better with it.
 
 C4 (dynamic investment) and C6 (worker reallocation) are larger
 and most realistic together: the investment loop creates new

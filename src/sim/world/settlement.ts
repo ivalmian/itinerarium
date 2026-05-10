@@ -17,8 +17,17 @@
  */
 
 import { emptyPool, type PopulationPool } from '../population/index.js';
-import type { ActorId, BuildingId, FactionId, ResourceId, SettlementId } from '../types.js';
-import { hex as makeHex, hexEquals, hexKey, type Hex } from './hex.js';
+import type {
+  ActorId,
+  BuildingId,
+  Day,
+  FactionId,
+  JobId,
+  ResourceId,
+  SettlementId,
+} from '../types.js';
+import { hex as makeHex, hexEquals, hexesWithinRange, hexKey, type Hex } from './hex.js';
+import type { HexGrid } from './grid.js';
 
 export type SettlementTier = 'hamlet' | 'village' | 'town' | 'small_city' | 'large_city';
 
@@ -57,12 +66,39 @@ export interface Settlement {
   readonly name: string;
   readonly anchor: Hex;
   readonly urbanHexes: readonly Hex[];
-  readonly catchmentHexes: readonly Hex[];
+  /**
+   * Mutable catchment list. Per docs/05 §"Dynamic catchment recompute" the
+   * settlement claims/releases catchment hexes when its population crosses a
+   * ±25% threshold from `catchmentBaselinePop`. Production layer reads this
+   * each tick — so we replace the array contents in-place via splice() rather
+   * than re-assigning the field.
+   */
+  catchmentHexes: Hex[];
   readonly population: PopulationPool;
   readonly buildings: SettlementBuilding[];
   readonly factions: FactionId[];
   readonly stockpileOwners: ActorId[];
   readonly market: MarketSnapshot;
+  /**
+   * Population at the most recent catchment recompute. Initialized at procgen
+   * to the day-0 population. The annual phase compares current pop to this
+   * baseline to decide whether to resize the catchment.
+   */
+  catchmentBaselinePop: number;
+  /**
+   * Day on which the catchment was last resized. Initialized to 0 at procgen.
+   * A 365-day cooldown prevents thrashing across rapid pop swings (e.g. a
+   * plague year + bounce-back).
+   */
+  catchmentDayLastChanged: Day;
+  /**
+   * Per-job worker assignments (docs/04 §"Worker reallocation by demand").
+   * The production engine treats each adult as available only for the job
+   * they are currently assigned to (rather than the v1 "all adults available
+   * for all roles" generosity). Allocations shift slowly each month based on
+   * recipe_blocked-labor events and clearing prices.
+   */
+  readonly jobAllocations: Map<JobId, number>;
 }
 
 export interface CreateSettlementInput {
@@ -74,6 +110,17 @@ export interface CreateSettlementInput {
   readonly catchmentHexes: readonly Hex[];
   readonly factions?: readonly FactionId[];
   readonly stockpileOwners?: readonly ActorId[];
+  /**
+   * Initial baseline pop for catchment recompute. Defaults to 0 so newly
+   * created (test-stub) settlements behave the same as before; procgen
+   * overwrites with the seeded total population so the first ±25% trigger
+   * fires sensibly.
+   */
+  readonly catchmentBaselinePop?: number;
+  /**
+   * Initial day for catchment cooldown. Defaults to 0.
+   */
+  readonly catchmentDayLastChanged?: Day;
 }
 
 const cloneHex = (h: Hex): Hex => makeHex(h.q, h.r);
@@ -122,6 +169,9 @@ export const createSettlement = (input: CreateSettlementInput): Settlement => {
       recentOutflows: new Map(),
       lastClearingPrice: new Map(),
     },
+    catchmentBaselinePop: input.catchmentBaselinePop ?? 0,
+    catchmentDayLastChanged: input.catchmentDayLastChanged ?? 0,
+    jobAllocations: new Map(),
   };
 };
 
@@ -163,6 +213,52 @@ export const expectedCatchmentRadius = (tier: SettlementTier): number => {
     case 'large_city':
       return 5;
   }
+};
+
+/**
+ * The "typical" population for a tier — the midpoint of each tier's docs/05
+ * range used as a normalizer when scaling the catchment radius. Used by the
+ * dynamic-catchment recompute (docs/05 §"Dynamic catchment recompute").
+ *
+ *   r' = expectedCatchmentRadius(tier) × sqrt(currentPop / typicalPop)
+ *
+ * Radius scales with sqrt(pop) because catchment AREA scales linearly with
+ * the people working it.
+ */
+export const typicalPopForTier = (tier: SettlementTier): number => {
+  switch (tier) {
+    case 'hamlet':
+      return 100;
+    case 'village':
+      return 500;
+    case 'town':
+      return 2000;
+    case 'small_city':
+      return 10000;
+    case 'large_city':
+      return 30000;
+  }
+};
+
+/** Min/max catchment radius clamps used by the dynamic recompute. */
+export const MIN_CATCHMENT_RADIUS = 1;
+export const MAX_CATCHMENT_RADIUS = 15;
+
+/**
+ * Compute the *target* catchment radius for a settlement at `currentPop` in
+ * tier `tier`. Per docs/05 §"Dynamic catchment recompute":
+ *   r' = expectedCatchmentRadius(tier) × sqrt(currentPop / typicalPop)
+ * clamped to [MIN_CATCHMENT_RADIUS, MAX_CATCHMENT_RADIUS]. A settlement that
+ * collapses to 0 still gets MIN_CATCHMENT_RADIUS so it has somewhere for any
+ * remaining buildings to sit.
+ */
+export const targetCatchmentRadius = (tier: SettlementTier, currentPop: number): number => {
+  const base = expectedCatchmentRadius(tier);
+  const typical = typicalPopForTier(tier);
+  const safePop = Number.isFinite(currentPop) && currentPop > 0 ? currentPop : 0;
+  const scaled = base * Math.sqrt(safePop / typical);
+  const rounded = Math.max(MIN_CATCHMENT_RADIUS, Math.round(scaled));
+  return Math.min(MAX_CATCHMENT_RADIUS, rounded);
 };
 
 /** Urban hex count band per docs/05 §"Physical extent". */
@@ -232,4 +328,174 @@ export const recordClearingPrice = (s: Settlement, resource: ResourceId, price: 
     throw new Error(`recordClearingPrice: price must be non-negative, got ${price}`);
   }
   s.market.lastClearingPrice.set(resource, price);
+};
+
+// --- Dynamic catchment recompute (docs/05 §"Dynamic catchment recompute") ---
+
+/**
+ * Set or clear the `ownerActor` on a hex tile in the grid. A no-op if the hex
+ * doesn't exist (defensive). This mirrors the private `setOwner` in
+ * src/procgen/seed.ts but lives here so the tick layer can invoke it during
+ * dynamic recompute without taking a procgen dependency.
+ */
+export const setHexOwner = (grid: HexGrid, hex: Hex, owner: ActorId | null): void => {
+  const tile = grid.get(hex);
+  if (tile === undefined) return;
+  tile.ownerActor = owner;
+};
+
+export interface CatchmentRecomputeResult {
+  readonly resized: boolean;
+  readonly oldRadius: number;
+  readonly newRadius: number;
+  readonly claimed: readonly Hex[];
+  readonly released: readonly Hex[];
+}
+
+const POP_TRIGGER_FRACTION = 0.25;
+const COOLDOWN_DAYS = 365;
+
+/**
+ * Decide whether `settlement` should resize its catchment now. Returns true
+ * iff:
+ *   - the population has moved by more than ±25% from `catchmentBaselinePop`
+ *   - and at least 365 days have passed since the last recompute.
+ *
+ * Settlements with a baseline of 0 (e.g. just-seeded test stubs that weren't
+ * given a baseline by procgen) are not eligible — without a baseline the
+ * relative threshold is undefined.
+ */
+export const shouldRecomputeCatchment = (
+  settlement: Settlement,
+  currentPop: number,
+  today: Day,
+): boolean => {
+  if (settlement.catchmentBaselinePop <= 0) return false;
+  if (today - settlement.catchmentDayLastChanged < COOLDOWN_DAYS) return false;
+  const delta = Math.abs(currentPop - settlement.catchmentBaselinePop);
+  return delta / settlement.catchmentBaselinePop > POP_TRIGGER_FRACTION;
+};
+
+/**
+ * Recompute `settlement`'s catchment to match `currentPop`. Per docs/05
+ * §"Dynamic catchment recompute":
+ *
+ *   1. Compute `r' = expectedCatchmentRadius(tier) × sqrt(pop / typicalPop)`,
+ *      clamped to [MIN_CATCHMENT_RADIUS, MAX_CATCHMENT_RADIUS].
+ *   2. Released hexes (in old catchment, not in new): clear ownership via
+ *      setHexOwner(grid, hex, null). Buildings on those hexes stay (their
+ *      owner still has them on their books) but no longer count toward this
+ *      settlement's productive land.
+ *   3. Claimed hexes (in new catchment, not in old): only those not currently
+ *      owned by ANY other settlement (urban OR catchment). Contested hexes
+ *      are deferred (the existing claimant keeps them).
+ *
+ * Mutates `settlement.catchmentHexes`, `settlement.catchmentBaselinePop`, and
+ * `settlement.catchmentDayLastChanged`. Updates the grid's hex ownership.
+ *
+ * @param ownerActorForClaimed The actor that should own newly-claimed hexes.
+ *   Caller is responsible for picking a sensible owner — typically the same
+ *   actor that owned the settlement's catchment to begin with (e.g. the city
+ *   corporation, the free village, or the patron family).
+ * @param otherSettlements All other settlements in the world; used to detect
+ *   which hexes are already claimed by a neighbor so we don't steal them.
+ */
+export const recomputeCatchment = (input: {
+  readonly settlement: Settlement;
+  readonly currentPop: number;
+  readonly today: Day;
+  readonly grid: HexGrid;
+  readonly ownerActorForClaimed: ActorId | null;
+  readonly otherSettlements: Iterable<Settlement>;
+}): CatchmentRecomputeResult => {
+  const { settlement, currentPop, today, grid, ownerActorForClaimed, otherSettlements } = input;
+
+  const oldRadius = computeCurrentRadius(settlement);
+  const newRadius = targetCatchmentRadius(settlement.tier, currentPop);
+
+  // Build the candidate set for the new catchment: every hex within newRadius
+  // of any urban hex, minus the urban hexes themselves, that exists in grid.
+  const urbanKeys = new Set(settlement.urbanHexes.map(hexKey));
+  const desired = new Map<string, Hex>();
+  for (const u of settlement.urbanHexes) {
+    for (const h of hexesWithinRange(u, newRadius)) {
+      const k = hexKey(h);
+      if (urbanKeys.has(k)) continue;
+      if (!grid.has(h)) continue;
+      if (!desired.has(k)) desired.set(k, h);
+    }
+  }
+
+  // Collect every hex (urban + catchment) owned by any other settlement so we
+  // can defer contested claims.
+  const claimedByOthers = new Set<string>();
+  for (const other of otherSettlements) {
+    if (other.id === settlement.id) continue;
+    for (const u of other.urbanHexes) claimedByOthers.add(hexKey(u));
+    for (const c of other.catchmentHexes) claimedByOthers.add(hexKey(c));
+  }
+
+  const oldKeys = new Set(settlement.catchmentHexes.map(hexKey));
+
+  // Released = in old, not in desired.
+  const released: Hex[] = [];
+  for (const h of settlement.catchmentHexes) {
+    if (!desired.has(hexKey(h))) released.push(h);
+  }
+
+  // Claimed = in desired, not in old, not contested.
+  const claimed: Hex[] = [];
+  for (const [k, h] of desired) {
+    if (oldKeys.has(k)) continue;
+    if (claimedByOthers.has(k)) continue;
+    claimed.push(h);
+  }
+
+  // Apply: rebuild catchmentHexes = (old - released) + claimed.
+  const releasedKeys = new Set(released.map(hexKey));
+  const newCatchment: Hex[] = [];
+  for (const h of settlement.catchmentHexes) {
+    if (!releasedKeys.has(hexKey(h))) newCatchment.push(h);
+  }
+  for (const h of claimed) newCatchment.push(cloneHex(h));
+
+  // Mutate the catchmentHexes list in place so any stable reference holders
+  // still see the new contents.
+  settlement.catchmentHexes.splice(0, settlement.catchmentHexes.length, ...newCatchment);
+
+  // Apply hex-ownership changes.
+  for (const h of released) setHexOwner(grid, h, null);
+  for (const h of claimed) setHexOwner(grid, h, ownerActorForClaimed);
+
+  settlement.catchmentBaselinePop = currentPop;
+  settlement.catchmentDayLastChanged = today;
+
+  return {
+    resized: claimed.length > 0 || released.length > 0,
+    oldRadius,
+    newRadius,
+    claimed,
+    released,
+  };
+};
+
+/**
+ * Best-effort estimate of the settlement's *current* catchment radius — the
+ * max hex-distance from any urban hex to any catchment hex. Used for
+ * diagnostic/tick-event reporting only; the recompute itself uses the
+ * tier+pop-derived target radius.
+ */
+const computeCurrentRadius = (settlement: Settlement): number => {
+  if (settlement.catchmentHexes.length === 0) return 0;
+  let maxDist = 0;
+  for (const c of settlement.catchmentHexes) {
+    let bestForC = Infinity;
+    for (const u of settlement.urbanHexes) {
+      const d = Math.abs(u.q - c.q) + Math.abs(u.r - c.r) + Math.abs(u.q + u.r - c.q - c.r);
+      const dist = d / 2;
+      if (dist < bestForC) bestForC = dist;
+    }
+    if (bestForC > maxDist) maxDist = bestForC;
+  }
+  return maxDist;
 };

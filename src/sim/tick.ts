@@ -84,9 +84,11 @@ import { allRecipes } from './production/recipes.js';
 // subsystem until that storage lands.
 import type { Rng } from './rng.js';
 import {
+  recomputeCatchment,
   recordClearingPrice,
   recordInflow,
   recordOutflow,
+  shouldRecomputeCatchment,
   type Settlement,
 } from './world/settlement.js';
 import { dayOfYearToSeason, type Season } from './world/terrain.js';
@@ -213,6 +215,21 @@ export type TickEvent =
       readonly camp: BanditCampId;
       readonly fromSettlement: SettlementId;
       readonly count: number;
+    }
+  | {
+      readonly type: 'catchment_resized';
+      readonly settlement: SettlementId;
+      readonly oldRadius: number;
+      readonly newRadius: number;
+      readonly claimed: number;
+      readonly released: number;
+    }
+  | {
+      readonly type: 'workers_reallocated';
+      readonly settlement: SettlementId;
+      readonly fromJob: JobId;
+      readonly toJob: JobId;
+      readonly count: number;
     };
 
 export interface TickResult {
@@ -264,7 +281,7 @@ export const tick = (inputs: TickInputs): TickResult => {
   // that just ended completed a full year. We hook in here so the new year
   // begins on the freshly aged pyramid.
   if ((today + 1) % YEAR_DAYS === 0) {
-    annualPhase(world, rng.derive(`annual-${today + 1}`));
+    annualPhase(world, rng.derive(`annual-${today + 1}`), today, events);
   }
 
   // Advance the calendar last so all phases above saw the day-of-year that
@@ -2229,7 +2246,7 @@ const spawnNewsFromPatrolBattle = (
 
 // --- Annual hook ------------------------------------------------------------
 
-const annualPhase = (world: WorldState, rng: Rng): void => {
+const annualPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[]): void => {
   for (const settlement of world.settlements.values()) {
     if (settlement.population.total() === 0) continue;
     tickYearly(settlement.population, rng.derive(`settle-${String(settlement.id)}`));
@@ -2237,4 +2254,53 @@ const annualPhase = (world: WorldState, rng: Rng): void => {
     // permanently haunt the settlement.
     faminePressure.set(settlement, { consecutiveShortageDays: 0, lastShortageDay: -1 });
   }
+  // docs/05 §"Dynamic catchment recompute": when pop has moved >25% from the
+  // last baseline AND >365 days have passed, claim or release catchment hexes
+  // to match the new tier+pop.
+  for (const settlement of world.settlements.values()) {
+    const pop = settlement.population.total();
+    if (!shouldRecomputeCatchment(settlement, pop, today + 1)) continue;
+    const owner = pickCatchmentOwnerForSettlement(world, settlement);
+    const result = recomputeCatchment({
+      settlement,
+      currentPop: pop,
+      today: today + 1,
+      grid: world.grid,
+      ownerActorForClaimed: owner,
+      otherSettlements: world.settlements.values(),
+    });
+    if (result.resized) {
+      events.push({
+        type: 'catchment_resized',
+        settlement: settlement.id,
+        oldRadius: result.oldRadius,
+        newRadius: result.newRadius,
+        claimed: result.claimed.length,
+        released: result.released.length,
+      });
+    }
+  }
+};
+
+/**
+ * Pick the actor that should own newly-claimed catchment hexes for `settlement`.
+ *
+ * Mirrors the procgen ownership rules (see seed.ts Phase 7): for cities/towns
+ * we prefer the city corporation, falling back to the first stockpile owner;
+ * for villages/hamlets we use the first stockpile owner. Returns null only if
+ * the settlement has no actors at all (defensive).
+ */
+const pickCatchmentOwnerForSettlement = (
+  world: WorldState,
+  settlement: Settlement,
+): ActorId | null => {
+  for (const a of world.actors.values()) {
+    if (a.kind === 'city_corporation' && a.homeSettlement === settlement.id) {
+      return a.id;
+    }
+  }
+  if (settlement.stockpileOwners.length > 0) {
+    return settlement.stockpileOwners[0] ?? null;
+  }
+  return null;
 };

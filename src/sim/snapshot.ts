@@ -46,6 +46,7 @@ import {
   caravanId,
   characterId,
   factionId,
+  jobId,
   resourceId,
   settlementId,
   type ActorId,
@@ -113,6 +114,10 @@ interface SerializedSettlement {
   readonly factions: readonly string[];
   readonly stockpileOwners: readonly string[];
   readonly market: SerializedMarketSnapshot;
+  /** Optional for back-compat with snapshots from before C3/C6 landed. */
+  readonly catchmentBaselinePop?: number;
+  readonly catchmentDayLastChanged?: number;
+  readonly jobAllocations?: ReadonlyArray<readonly [string, number]>;
 }
 
 interface SerializedActor {
@@ -290,6 +295,9 @@ const serializeSettlement = (s: Settlement): SerializedSettlement => {
       recentOutflows: stringMapToArray(s.market.recentOutflows),
       lastClearingPrice: stringMapToArray(s.market.lastClearingPrice),
     },
+    catchmentBaselinePop: s.catchmentBaselinePop,
+    catchmentDayLastChanged: s.catchmentDayLastChanged,
+    jobAllocations: stringMapToArray(s.jobAllocations),
   };
 };
 
@@ -303,7 +311,18 @@ const deserializeSettlement = (s: SerializedSettlement): Settlement => {
     catchmentHexes: s.catchmentHexes.map(deserHex),
     factions: s.factions.map(factionId),
     stockpileOwners: s.stockpileOwners.map(actorId),
+    ...(s.catchmentBaselinePop !== undefined
+      ? { catchmentBaselinePop: s.catchmentBaselinePop }
+      : {}),
+    ...(s.catchmentDayLastChanged !== undefined
+      ? { catchmentDayLastChanged: s.catchmentDayLastChanged }
+      : {}),
   });
+  if (s.jobAllocations !== undefined) {
+    for (const [j, n] of s.jobAllocations) {
+      settlement.jobAllocations.set(jobId(j), n);
+    }
+  }
   // Restore population.
   const popMap = new Map<string, number>(s.population.map(([k, n]) => [k, n] as const));
   const restoredPool = poolFromMap(popMap);
