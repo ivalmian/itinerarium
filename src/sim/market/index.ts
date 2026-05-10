@@ -29,3 +29,9 @@ export {
   type ClearingResult,
   type ClearingTrade,
 } from './clear.js';
+
+export {
+  buildSettlementSchedules,
+  type BuildScheduleInputs,
+  type SettlementSchedules,
+} from './scheduleBuilder.js';
