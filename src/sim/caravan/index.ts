@@ -31,3 +31,6 @@ export {
   totalCarryKg,
   totalCrewCount,
 } from './caravan.js';
+
+export type { CaravanTickEvent, CaravanTickInputs, CaravanTickResult } from './movement.js';
+export { tickCaravanMovement } from './movement.js';
