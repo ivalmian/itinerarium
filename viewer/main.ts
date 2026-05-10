@@ -22,7 +22,9 @@ const showError = (err: unknown): void => {
 
 const start = async (): Promise<void> => {
   try {
-    await bootViewer();
+    const v = await bootViewer();
+    // Dev-only: expose for browser-console debugging / smoke tests.
+    (window as unknown as { __viewer?: unknown }).__viewer = v;
   } catch (e) {
     showError(e);
   }

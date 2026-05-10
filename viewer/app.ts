@@ -27,7 +27,10 @@ import { createRng } from '../src/sim/rng.js';
 import type { ResourceId } from '../src/sim/types.js';
 
 import { createHexMap, type HexMap } from './map/hexMap.js';
+import { createRiverLayer } from './map/rivers.js';
 import { createRoadLayer } from './map/roads.js';
+import { createCatchmentLayer, type CatchmentLayer } from './map/catchment.js';
+import { createBuildingsLayer, type BuildingsLayer } from './map/buildings.js';
 import { createSettlementsLayer, type SettlementsLayer } from './map/settlements.js';
 import { createCaravansLayer, type CaravansLayer } from './map/caravans.js';
 import { createBanditCampsLayer, type BanditCampsLayer } from './map/banditCamps.js';
@@ -43,6 +46,10 @@ export interface ViewerApp {
   step(): { events: readonly TickEvent[] };
   readonly world: WorldState;
   readonly state: ViewerState;
+  /** PIXI app — exposed for browser-console debugging / smoke tests. */
+  readonly app: Application;
+  /** The world's pan/zoom container — exposed for debug controls. */
+  readonly worldRoot: Container;
 }
 
 export interface BootOpts {
@@ -76,6 +83,8 @@ const DEFAULTS: Required<Omit<BootOpts, 'seed' | 'mapHostId' | 'sidebarHostId'>>
 interface BuildResult {
   world: WorldState;
   hexMap: HexMap;
+  catchmentLayer: CatchmentLayer;
+  buildingsLayer: BuildingsLayer;
   settlementsLayer: SettlementsLayer;
   caravansLayer: CaravansLayer;
   banditCampsLayer: BanditCampsLayer;
@@ -123,10 +132,29 @@ const buildLayers = (
   const hexMap = createHexMap(world.grid, hexSize);
   worldRoot.addChild(hexMap.container);
 
-  // Roads sit between terrain and entities — visible over the hex fill,
+  // Catchment shading sits just above terrain, below all line-art (rivers,
+  // roads, biome edges via the hexMap's own children) so it reads as a
+  // background tint for "this land belongs to settlement X." Per task spec
+  // §"Tech notes": terrain → catchment → biome edges → roads → rivers →
+  // buildings → settlements → caravans → bandit camps. The biome edges live
+  // inside hexMap.container; we nest catchment between hexMap and the rest.
+  const catchmentLayer = createCatchmentLayer();
+  worldRoot.addChild(catchmentLayer.container);
+
+  // Rivers draw above terrain + biome-edges, but BELOW roads so a future
+  // bridge tile can sit on top of the river crossing (docs/16-viewer).
+  const riverLayer = createRiverLayer(world.grid, hexSize);
+  worldRoot.addChild(riverLayer.container);
+
+  // Roads sit between rivers and entities — visible over the hex fill,
   // but caravans / settlements / camps draw on top.
   const roadLayer = createRoadLayer(world.grid, hexSize);
   worldRoot.addChild(roadLayer.container);
+
+  // Sub-hex building markers — between roads and settlement glyphs so the
+  // settlement's own "house cluster" silhouette visually anchors them.
+  const buildingsLayer = createBuildingsLayer();
+  worldRoot.addChild(buildingsLayer.container);
 
   const settlementsLayer = createSettlementsLayer((id) => {
     setSelection(state, { kind: 'settlement', id });
@@ -144,6 +172,8 @@ const buildLayers = (
   worldRoot.addChild(banditCampsLayer.container);
 
   // Initial sync.
+  catchmentLayer.rebuild(world, hexSize);
+  buildingsLayer.rebuild(world, hexSize);
   settlementsLayer.sync(world, hexSize);
   caravansLayer.syncTick(world);
   caravansLayer.setInterpolationT(world, 1, hexSize);
@@ -154,7 +184,16 @@ const buildLayers = (
   const cy = (hexMap.bounds.minY + hexMap.bounds.maxY) / 2;
   worldRoot.position.set(app.renderer.width / 2 - cx, app.renderer.height / 2 - cy);
 
-  return { world, hexMap, settlementsLayer, caravansLayer, banditCampsLayer, worldRoot };
+  return {
+    world,
+    hexMap,
+    catchmentLayer,
+    buildingsLayer,
+    settlementsLayer,
+    caravansLayer,
+    banditCampsLayer,
+    worldRoot,
+  };
 };
 
 const wirePanZoom = (app: Application, worldRoot: Container, onBackgroundClick: () => void): void => {
@@ -345,6 +384,21 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     sidebar.update(world, result.events);
     layers.settlementsLayer.sync(world, hexSize);
     layers.banditCampsLayer.sync(world, hexSize);
+
+    // Rebuild building markers if a tick produced a building_completed event;
+    // rebuild catchment shading on catchment_resized. v1 simple approach
+    // (task spec §3): wipe + redraw the affected layer entirely on the tick
+    // an event lands. For 100s of settlements this is well under a frame.
+    let needsBuildingsRebuild = false;
+    let needsCatchmentRebuild = false;
+    for (const ev of result.events) {
+      if (ev.type === 'building_completed') needsBuildingsRebuild = true;
+      else if (ev.type === 'catchment_resized') needsCatchmentRebuild = true;
+      if (needsBuildingsRebuild && needsCatchmentRebuild) break;
+    }
+    if (needsBuildingsRebuild) layers.buildingsLayer.rebuild(world, hexSize);
+    if (needsCatchmentRebuild) layers.catchmentLayer.rebuild(world, hexSize);
+
     if (state.overlay !== 'none') {
       applyOverlay(world, layers.hexMap, state.overlay);
     }
@@ -417,5 +471,9 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     step: () => ({ events: advanceOneTick() }),
     world,
     state,
+    app,
+    get worldRoot(): Container {
+      return layers.worldRoot;
+    },
   };
 };
