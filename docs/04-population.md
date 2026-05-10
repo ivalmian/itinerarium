@@ -209,30 +209,36 @@ retraining per month).
 A recipe also requires its building (see
 [03 — Production](03-production.md)). Both must be present.
 
-### Worker reallocation by demand (locked, v1.5 hardening)
+### Worker reallocation by demand (locked, v1.5 implemented)
 
 Workers are paid out of recipe-output profits. When a settlement has
 unmet demand for a resource (bread, oil, cloth) and no workers in
 the relevant role, the settlement's planner re-trains idle workers
 + pulls from oversupplied roles toward the shortage. Mechanically:
 
-1. **Per tick**, the planner observes per-resource market clearing
-   prices vs. the settlement's expected base price.
-2. **Roles producing oversupplied resources** (price below base)
-   lose workers at the slow retraining rate (~2%/month).
-3. **Roles producing undersupplied resources** (price above base)
-   gain workers from the idle pool first, then from oversupplied
-   roles.
-4. Retraining respects class restrictions per
-   [03 — Production](03-production.md): slaves can't become
-   officials, etc.
+1. **At procgen**, every settlement's working-age adults are
+   distributed across job roles in proportion to the seeded
+   building capacity × per-recipe labor weights. A farm + smithy
+   settlement starts with a roughly farm-vs-smithy split; an
+   un-staffable settlement parks everyone on `idle`.
+2. **Each tick**, the production engine reads
+   `Settlement.jobAllocations` directly — a recipe needing
+   `miller` only sees the workers actually assigned as millers,
+   not the whole adult pool.
+3. **Every 30 days**, in `politicsPhase`, a monthly reallocation
+   hook walks each settlement: it looks at the last 30 days of
+   `recipe_blocked` events with `reason="no_labor"`, picks the
+   most-blocked job role as the recipient, and pulls ~0.66% of
+   workers from the largest non-target allocation (often `idle`).
+   Each move emits a `workers_reallocated` TickEvent for
+   telemetry. Across a year that compounds to ~8% reallocated.
+4. Class restrictions per [03 — Production](03-production.md) are
+   enforced at the recipe-engine boundary, not at the allocation
+   step.
 
-Without this loop, burn-in over-relies on generous starter worker
-assignments and breaks under any structural shift in demand. v1
-currently distributes workers uniformly across all roles (each
-adult is "available for any role" up to recipe needs), which works
-for steady-state but doesn't reallocate on price signals. v1.5
-hardens.
+The fallback path (settlements without `jobAllocations`, e.g.
+hand-built test fixtures) retains the v1 "every adult is available
+for every role" behavior so existing tests continue to work.
 
 ## Player labor control (locked)
 
