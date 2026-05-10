@@ -384,6 +384,86 @@ describe('tick (per-day loop)', () => {
     });
   });
 
+  describe('caravan replan / price observation (same-hex)', () => {
+    // docs/05 §"Same-hex coexistence": multiple settlements may share a hex.
+    // The caravan's price book must observe ALL same-hex settlements at
+    // arrival, not just the last one inserted into the world map.
+    it('averages prices across same-hex settlements when recording into priceBook', () => {
+      const w = buildEmptyWorld();
+      const anchor = hex(0, 0);
+      // Plains around the anchor + path east.
+      for (let q = -2; q <= 12; q++) {
+        for (let r = -2; r <= 2; r++) w.grid.set(hex(q, r), makeTile('plains'));
+      }
+      const grain = resourceId('food.grain');
+      // Two stacked settlements on the same hex: a pagus + dependent hamlet.
+      const sA = createSettlement({
+        id: settlementId('pagus-A'),
+        tier: 'village',
+        name: 'Pagus',
+        anchor,
+        urbanHexes: [anchor],
+        catchmentHexes: [],
+      });
+      sA.market.lastClearingPrice.set(grain, 2);
+      const sB = createSettlement({
+        id: settlementId('hamlet-B'),
+        tier: 'hamlet',
+        name: 'Hamlet',
+        anchor,
+        urbanHexes: [anchor],
+        catchmentHexes: [],
+      });
+      sB.market.lastClearingPrice.set(grain, 4);
+      w.settlements.set(sA.id, sA);
+      w.settlements.set(sB.id, sB);
+      // Need a second settlement somewhere else for caravanReplanPhase to
+      // have any work (the candidate list needs >= 2 entries).
+      const east = hex(10, 0);
+      const sC = createSettlement({
+        id: settlementId('east'),
+        tier: 'village',
+        name: 'East',
+        anchor: east,
+        urbanHexes: [east],
+        catchmentHexes: [],
+      });
+      sC.market.lastClearingPrice.set(grain, 1);
+      w.settlements.set(sC.id, sC);
+
+      // Caravan parked at anchor, with destination == position so it's
+      // "arrived" and the price-book observation step fires.
+      const cId = caravanId('cara-obs');
+      const owner = actorId('caravan-owner');
+      const c = createCaravan({
+        id: cId,
+        ownerActor: owner,
+        position: { q: 0, r: 0 },
+        destination: { q: 0, r: 0 },
+        crew: [{ kind: 'merchant', count: 1, weapons: 0, armor: 0 }],
+        animals: { mule: 2 },
+        vehicles: {},
+      });
+      w.caravans.set(cId, c);
+      const ownerActor = createActor({
+        id: owner,
+        kind: 'caravan_owner',
+        name: 'Owner',
+        homeSettlement: sA.id,
+        treasury: 100,
+      });
+      w.actors.set(owner, ownerActor);
+
+      tick({ world: w, rng: createRng('caravan-samehex') });
+      const book = c.priceBook.get(grain);
+      expect(book).toBeDefined();
+      const obs = book?.get('0,0');
+      expect(obs).toBeDefined();
+      // Average of 2 and 4 = 3 (NOT just the last one inserted).
+      expect(obs!.price).toBeCloseTo(3, 6);
+    });
+  });
+
   describe('demographics phase', () => {
     it('runs population dynamics each day (births / deaths drift over many ticks)', () => {
       const w = buildOneSettlementWorld({
