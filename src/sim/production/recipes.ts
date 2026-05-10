@@ -58,15 +58,16 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'harvest_grain',
-    inputs: { 'goods.tools': 0.1 },
+    // Tools wear out over years, not days. 0.001/recipe means 1000
+    // recipe-instances per tool unit — roughly 1 sickle per acre-year
+    // of cultivation, which matches the historical Roman record.
+    // Pre-v1.5: this stops smithy production from being load-bearing
+    // for burn-in stability. v1.5: restore higher rate once smithies
+    // produce sustainably.
+    inputs: { 'goods.tools': 0.001 },
     labor: { farmer: 1 },
     building: 'farm',
     outputs: { 'food.grain': 80 },
-    // v1 burn-in stability: spread harvest across the year with an autumn
-    // peak. Pure autumn-only harvest creates a winter starvation cliff
-    // because we don't yet model the realistic granary storage capacity
-    // that would otherwise smooth a single-harvest economy. v1.5 hardens
-    // this back to the realistic seasonal model.
     seasonalMultiplier: { spring: 0.4, summer: 0.7, autumn: 1.0, winter: 0.3 },
     notes: 'Annualized average ~50 modii/farmer-day; autumn peaks at 80.',
   },

@@ -529,7 +529,7 @@ const seedCityCorporation = (
   grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
   grantStockpile(actor, 'material.wood', pop * 5);
   grantStockpile(actor, 'material.amphora', Math.max(20, Math.floor(pop / 5)));
-  grantStockpile(actor, 'goods.tools', Math.max(50, pop * 2));
+  grantStockpile(actor, 'goods.tools', Math.max(500, pop * 20));
   return actor;
 };
 
@@ -576,7 +576,7 @@ const seedFreeVillage = (
   grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
   // Tools: bumped to a year's worth at expected farm consumption (~3
   // tools/day on a village farm). v1.5: replace with smithy production.
-  grantStockpile(actor, 'goods.tools', Math.max(50, pop * 2));
+  grantStockpile(actor, 'goods.tools', Math.max(500, pop * 20));
   // Wood + amphora reserves so the food chain isn't immediately blocked
   // (bake_bread needs wood; press_olives needs amphora).
   grantStockpile(actor, 'material.wood', pop * 5);
@@ -612,7 +612,7 @@ const seedClientVillage = (ctx: BuildContext, settlement: Settlement, patron: Ac
   // Year's grain reserve held by the patron — same survival window as other tiers.
   const pop = settlement.population.total();
   grantStockpile(patron, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
-  grantStockpile(patron, 'goods.tools', Math.max(50, pop * 2));
+  grantStockpile(patron, 'goods.tools', Math.max(500, pop * 20));
   grantStockpile(patron, 'material.wood', pop * 5);
   grantStockpile(patron, 'material.amphora', Math.max(10, Math.floor(pop / 10)));
 };
@@ -652,7 +652,7 @@ const seedHamlet = (ctx: BuildContext, settlement: Settlement, settlementName: s
   settlement.stockpileOwners.push(aId);
   const pop = settlement.population.total();
   grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
-  grantStockpile(actor, 'goods.tools', Math.max(50, pop * 2));
+  grantStockpile(actor, 'goods.tools', Math.max(500, pop * 20));
   grantStockpile(actor, 'material.wood', pop * 5);
   return actor;
 };

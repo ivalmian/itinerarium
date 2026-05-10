@@ -53,7 +53,11 @@ const DEFS: readonly BuildingInput[] = [
     id: 'farm',
     category: 'production',
     name: 'Farm',
-    capacityUnits: 4,
+    // 50 = enough farmer-days to feed a small village. A village of 500
+    // needs ~25 modii/day; harvest_grain at autumn 80 modii/instance →
+    // 5 instances cover a village; full 50-cap supports a small city.
+    // Larger settlements need multiple farms (seedWorld Phase 9 scales).
+    capacityUnits: 50,
     constructionCost: { 'material.lumber': 2, 'material.brick_tile': 4, 'goods.tools': 2 },
     maintenancePerDay: { 'goods.tools': 0.02 },
     decayDaysIfUnmaintained: 365,
@@ -63,7 +67,10 @@ const DEFS: readonly BuildingInput[] = [
     id: 'pasture',
     category: 'production',
     name: 'Pasture',
-    capacityUnits: 4,
+    // 50 herd-units' worth of recipe-instances per day; a single pasture
+    // supports significant pastoral output (wool, milk, salted meat
+    // year-round — a critical winter food source per consumption priority).
+    capacityUnits: 50,
     constructionCost: { 'material.lumber': 1, 'goods.tools': 1 },
     maintenancePerDay: {},
     decayDaysIfUnmaintained: 730,
@@ -145,7 +152,8 @@ const DEFS: readonly BuildingInput[] = [
     id: 'mill',
     category: 'production',
     name: 'Mill',
-    capacityUnits: 2,
+    // 50 = enough miller-days to convert all of one farm's grain output.
+    capacityUnits: 50,
     constructionCost: { 'material.cut_stone': 8, 'material.lumber': 6, 'goods.tools': 2 },
     maintenancePerDay: { 'material.lumber': 0.05 },
     decayDaysIfUnmaintained: 180,
@@ -155,7 +163,8 @@ const DEFS: readonly BuildingInput[] = [
     id: 'bakery',
     category: 'production',
     name: 'Bakery',
-    capacityUnits: 2,
+    // 50 = enough oven-days to bake the flour of one mill.
+    capacityUnits: 50,
     constructionCost: { 'material.brick_tile': 8, 'material.cut_stone': 2, 'material.lumber': 2 },
     maintenancePerDay: { 'material.brick_tile': 0.02 },
     decayDaysIfUnmaintained: 180,
