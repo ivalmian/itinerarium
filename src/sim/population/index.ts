@@ -40,3 +40,22 @@ export {
   tickInfection,
   transmitFromCaravan,
 } from './disease.js';
+
+export type {
+  CohortCounts,
+  DecideEmigrationInputs,
+  CreateMigrationColumnInput,
+  KnownDestination,
+  MigrationColumn,
+  MigrationDecision,
+  MigrationReason,
+  MigrationTickInputs,
+  MigrationTickResult,
+} from './migration.js';
+export {
+  ARRIVAL_RATIONS_REMAINDER_KG_PER_PERSON,
+  createCohortCounts,
+  createMigrationColumn,
+  decideEmigration,
+  tickMigration,
+} from './migration.js';
