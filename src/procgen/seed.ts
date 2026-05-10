@@ -1191,7 +1191,9 @@ const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void =
 
   // Village+: add charcoal_kiln so smithies have fuel; mine + bloomery so
   // iron production isn't gated on a procgen ore deposit landing in the
-  // catchment (deposits are rare).
+  // catchment (deposits are rare). Plus dairy (the steady-state analyzer
+  // flagged dairy as not seeded — without it the cheese chain runs from
+  // milk_dairy → no building → no output).
   if (
     settlement.tier === 'village' ||
     settlement.tier === 'town' ||
@@ -1202,9 +1204,17 @@ const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void =
     tryAddBuilding(settlement, 'mine', cHex(5), owner, cap);
     tryAddBuilding(settlement, 'bloomery', uHex(0), owner, cap);
     tryAddBuilding(settlement, 'smithy', uHex(0), owner, cap);
+    tryAddBuilding(settlement, 'dairy', uHex(0), owner, cap);
+    tryAddBuilding(settlement, 'quarry', cHex(8), owner, cap);
   }
 
   // Town+: refining chain (mill + bakery + granary) and weaver_workshop.
+  // Plus comfort-food production (olive grove + vineyard + winery + oil
+  // press) so wine and olive oil exist on the market — they're a real
+  // share of per-capita demand in any Mediterranean province per
+  // docs/02 §"Demand stratification". The steady-state analyzer
+  // (scripts/analyze-steady-state.ts) flagged these as unseeded for
+  // ~700k pop.
   if (
     settlement.tier === 'town' ||
     settlement.tier === 'small_city' ||
@@ -1214,6 +1224,11 @@ const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void =
     tryAddBuilding(settlement, 'bakery', uHex(0), owner, cap);
     tryAddBuilding(settlement, 'granary', uHex(0), owner, cap);
     tryAddBuilding(settlement, 'weaver_workshop', uHex(1), owner, cap);
+    tryAddBuilding(settlement, 'olive_grove', cHex(6), owner, cap);
+    tryAddBuilding(settlement, 'vineyard', cHex(7), owner, cap);
+    tryAddBuilding(settlement, 'oil_press', uHex(2), owner, cap);
+    tryAddBuilding(settlement, 'winery', uHex(2), owner, cap);
+    tryAddBuilding(settlement, 'pottery', uHex(3), owner, cap); // amphorae for olive_oil/wine
   }
 };
 

@@ -270,4 +270,117 @@ if (mint !== undefined) {
   }
 }
 
+// --- 10. Surplus/deficit at current world building capacity --------------
+
+/**
+ * Estimate the world's total recipe capacity, assuming procgen seeds one
+ * of each starter building per settlement (per seed.ts §"seedStarterBuildings"
+ * + the tier-scaled capacities). For pop=700k with our default world layout
+ * (3 cities + 8 towns + 60 villages + 30 hamlets), the total is:
+ *   - hamlets: 30 settlements × {pasture, farm, forester_camp, sawmill} × 10 cap
+ *   - villages: 60 × {as above + charcoal_kiln, mine, bloomery, smithy} × 30 cap
+ *   - towns: 8 × {village set + mill, bakery, granary, weaver, olive_grove,
+ *                 vineyard, oil_press, winery, pottery} × 80 cap
+ *   - small_city: 3 × {town set} × 200 cap
+ *
+ * (Rough; the procgen also assigns capacity per building based on tier.)
+ * This estimate is a sanity check — actual seeded counts depend on the
+ * settlement layout, which procgen randomizes per seed.
+ */
+const estimateWorldCapacity = (): Map<BuildingId, number> => {
+  const counts: Record<string, number> = {
+    hamlet: 30,
+    village: 60,
+    town: 8,
+    small_city: 3,
+  };
+  const tierCap: Record<string, number> = {
+    hamlet: 10,
+    village: 30,
+    town: 80,
+    small_city: 200,
+    large_city: 400,
+  };
+  const buildingsByTier: Record<string, string[]> = {
+    hamlet: ['pasture', 'farm', 'forester_camp', 'sawmill'],
+    village: [
+      'pasture',
+      'farm',
+      'forester_camp',
+      'sawmill',
+      'charcoal_kiln',
+      'mine',
+      'bloomery',
+      'smithy',
+      'dairy',
+      'quarry',
+    ],
+    town: [
+      'pasture',
+      'farm',
+      'forester_camp',
+      'sawmill',
+      'charcoal_kiln',
+      'mine',
+      'bloomery',
+      'smithy',
+      'dairy',
+      'quarry',
+      'mill',
+      'bakery',
+      'granary',
+      'weaver_workshop',
+      'olive_grove',
+      'vineyard',
+      'oil_press',
+      'winery',
+      'pottery',
+    ],
+    small_city: [], // same as town
+  };
+  buildingsByTier.small_city = buildingsByTier.town as string[];
+
+  const out = new Map<BuildingId, number>();
+  for (const [tier, n] of Object.entries(counts)) {
+    const cap = tierCap[tier] ?? 1;
+    const blds = buildingsByTier[tier] ?? [];
+    for (const b of blds) {
+      const k = b as BuildingId;
+      out.set(k, (out.get(k) ?? 0) + n * cap);
+    }
+  }
+  return out;
+};
+
+const seededCapacity = estimateWorldCapacity();
+
+console.log('\n## Surplus/deficit table (positive = slack, negative = bottleneck)');
+console.log('building,required_world_total,seeded_world_capacity,surplus_or_deficit');
+for (const [bId, req] of [...requiredCapacityByBuilding.entries()].sort(
+  (a, b) => b[1] - a[1],
+)) {
+  const seeded = seededCapacity.get(bId) ?? 0;
+  const delta = seeded - req;
+  const marker = delta < 0 ? ' ⚠ BOTTLENECK' : delta < req * 0.2 ? ' (tight)' : '';
+  console.log(`${String(bId)},${req.toFixed(0)},${seeded},${delta.toFixed(0)}${marker}`);
+}
+
+console.log('\n## Notes on tuning');
+console.log(`
+Steady state: required_world_total ≈ seeded × ε for each building (small surplus).
+At ε = +20% surplus the world has slack to absorb famine years, lost trade,
+disease shocks, etc. At ε = -10% the world chronically under-produces and
+slowly starves (cohort_deaths increase over time). Slight surplus is the
+target — see docs/03 §"Reconciliation rule" + docs/14 §"Famine triage".
+
+Money supply: each unit of mint_coin produces 100 coin from 0.4 silver.
+1 cupel_silver instance produces 0.6 silver. So for a stable money supply
+under pop_growth = 0.5%/yr, the world needs ~3 cupel_silver instances/day
++ ~1 mint_coin instance/day. With even one bloomery-class mine producing
+silver_ore (mine_silver: 0.6 ore/instance), a single mine + bloomery +
+mint can run an entire province's monetary base. Off-map exports of
+high-value goods (luxury_textiles, weapons, surplus oil/wine) are the
+primary REAL income — minting alone debases the currency.
+`);
+
 console.log('\nDone. Compare required intensities vs. world burn-in to spot bottlenecks.');
