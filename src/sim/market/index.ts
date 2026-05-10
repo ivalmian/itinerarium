@@ -22,3 +22,10 @@ export {
   type SupplySchedule,
   type SupplySource,
 } from './supply.js';
+
+export {
+  clearMarket,
+  type ClearMarketOpts,
+  type ClearingResult,
+  type ClearingTrade,
+} from './clear.js';
