@@ -1,11 +1,15 @@
 {
-  "name": "ecogame",
+  "name": "itinerarium",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Roman-era trading & caravan game with a fully simulated economy",
+  "description": "Itinerarium — Roman-era trading & caravan game with a fully simulated economy",
   "author": "Ilya Valmianski",
   "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/ivalmian/itinerarium.git"
+  },
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
