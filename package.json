@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "description": "Roman-era trading & caravan game with a fully simulated economy",
+  "author": "Ilya Valmianski",
+  "license": "SEE LICENSE IN LICENSE",
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
