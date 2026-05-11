@@ -39,6 +39,5 @@
       <circle cx="58" cy="118" r="0.8"/>
       <circle cx="110" cy="64" r="0.8"/>
     </g>
-    <ellipse cx="44" cy="44" rx="46" ry="22" fill="#dccc94" opacity="0.18"/>
   </g>
   </svg>

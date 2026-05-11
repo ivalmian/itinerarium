@@ -27,7 +27,5 @@
       <line x1="40" y1="108" x2="40" y2="102"/>
       <line x1="78" y1="118" x2="79" y2="112"/>
     </g>
-    <!-- subtle warm highlight from NW -->
-    <ellipse cx="44" cy="40" rx="44" ry="22" fill="#d8c97c" opacity="0.18"/>
   </g>
   </svg>

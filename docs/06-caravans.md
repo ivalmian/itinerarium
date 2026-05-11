@@ -46,6 +46,9 @@ Crew:
 - **Guard**: armed escort; needs weapons + ideally armor.
 - **Merchant**: makes trade decisions; 1 per caravan suffices.
 - Crew rations: ~0.4 kg grain-equivalent / crew / day.
+- NPC caravans try to depart with a 21-day ration reserve. That is
+  enough for ordinary cross-province detours at 1 km/day fidelity
+  without making every caravan a pure food hauler.
 
 ### Crew demographics
 
@@ -205,10 +208,26 @@ counter (integer, 0 at procgen for un-roaded hexes). Every day:
    its roads) is tracked in docs/15 §C11.
 5. **Dirt roads can downgrade.** A `dirt` hex whose roadWear
    falls below 20 (sustained low traffic) reverts to
-   `road = 'none'`. Dirt roads decay faster than unbuilt trail
-   memory (-3/day), so an unused dirt road seeded at 100 disappears
-   in about four weeks, while a popular dirt road still stays alive
-   under steady traffic.
+   `road = 'none'`. The dirt-road decay rate scales **exponentially
+   with the number of road neighbors** (any grade — dirt or roman):
+
+   - 0 neighbors: 0.25 × `DIRT_ROAD_DECAY_PER_DAY` (very slow)
+   - 1 neighbor:  0.5  × (half rate — slower than current rate)
+   - 2 neighbors: 1.0  × (current rate)
+   - 3 neighbors: 2.0  × (double)
+   - 4 neighbors: 4.0  × (quadruple)
+   - 5 neighbors: 8.0  ×
+   - 6 neighbors: 16.0 ×
+
+   Formula: `decay = DIRT_ROAD_DECAY_PER_DAY × 2^(n − 2)` where `n`
+   is the count of axial neighbors whose `tile.road !== 'none'`.
+
+   Rationale: an isolated stub of dirt road (0–1 neighbors) is a
+   well-defined local path and persists with minimal traffic; a
+   dense crossroads (3+ neighbors) competes with parallel routes
+   and dirt-grade sections at a busy junction tend to be
+   superseded by alternate paths or by an upgrade to Roman pavement,
+   so each dirt hex in a dense network is more fragile.
 
 ### Why this is good
 
@@ -323,13 +342,18 @@ Per-day, for every NPC caravan in `world.caravans`:
 
 1. **Movement phase**: if caravan has a destination, advance via A*
    (already implemented). Emit `caravan_moved`/`caravan_arrived`.
-2. **Trade-on-arrival** (trade phase): if a caravan is at its
-   destination AND has a settlement on that hex, run the local market:
-   sell cargo at clearing prices into local stockpiles; buy whatever
-   the price book / NPC heuristic deems most profitable to load for
-   the next leg. Crew rations replenish from local stockpile (paid in
-   coin from caravan treasury).
-3. **Re-plan** (politics phase, after trade): after the trade, call
+2. **Trade-on-arrival** (politics phase, after settlement markets
+   clear): if a caravan is at its destination AND has a settlement on
+   that hex, use the latest local clearing prices to sell cargo into
+   local stockpiles; then buy the cheapest available local food up to
+   the one-week ration reserve; then buy whatever the price book / NPC
+   heuristic deems most profitable to load for the next leg. The
+   caravan keeps that reserve, so it does not sell the food needed for
+   the next week of travel.
+3. **Off-map export completion**: if an export caravan reaches an
+   edge hex with globally priced cargo, the cargo leaves the map and
+   the owning actor receives the global-market coin.
+4. **Re-plan** (same politics phase): after the trade, call
    `planCaravanRoute` (T37) with the caravan's updated price book +
    knownBetterDestinations. The plan returns `RoutePlan | null`. If
    plan, set `caravan.destination` to its hex; if null, caravan stays
