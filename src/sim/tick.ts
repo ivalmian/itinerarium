@@ -54,6 +54,7 @@ import {
   isHarvestTributeDay,
   isMonthlyAssessmentDay,
   type SettlementTaxView,
+  type TaxAssessment,
   type TaxRatesPercent,
 } from './politics/taxShipment.js';
 import { caravanId as makeCaravanIdLocal } from './types.js';
@@ -2013,6 +2014,28 @@ const DEFAULT_TAX_RATES: TaxRatesPercent = {
   coinTaxPctOfWealth: 1, // 1% monthly coin assessment
 };
 
+const MAX_TAX_SHIPMENTS_DISPATCHED_PER_DAY = 8;
+const pendingTaxAssessmentsByWorld: WeakMap<WorldState, TaxAssessment[]> = new WeakMap();
+
+const compareTaxAssessments = (a: TaxAssessment, b: TaxAssessment): number => {
+  const settlement = String(a.fromSettlement).localeCompare(String(b.fromSettlement));
+  if (settlement !== 0) return settlement;
+  const owner = String(a.fromOwnerActor).localeCompare(String(b.fromOwnerActor));
+  if (owner !== 0) return owner;
+  const resource = String(a.resource).localeCompare(String(b.resource));
+  if (resource !== 0) return resource;
+  return a.quantityOwed - b.quantityOwed;
+};
+
+const pendingTaxQueueForWorld = (world: WorldState): TaxAssessment[] => {
+  let queue = pendingTaxAssessmentsByWorld.get(world);
+  if (queue === undefined) {
+    queue = [];
+    pendingTaxAssessmentsByWorld.set(world, queue);
+  }
+  return queue;
+};
+
 const taxShipmentPhase = (world: WorldState, today: Day, rng: Rng, events: TickEvent[]): void => {
   // Find the governor (one per province; per docs/11 there's one
   // governor_office actor anchored at the capital).
@@ -2073,10 +2096,18 @@ const taxShipmentPhase = (world: WorldState, today: Day, rng: Rng, events: TickE
     settlements: settlementViews,
     today,
   });
+  const pending = pendingTaxQueueForWorld(world);
+  if (assessments.length > 0) {
+    pending.push(...assessments.slice().sort(compareTaxAssessments));
+  }
 
-  // Spawn tax-shipment caravans + drain the owed resources from the
-  // owner's stockpile so the goods physically leave with the caravan.
-  for (const a of assessments) {
+  // Spawn a bounded number of tax-shipment caravans per day and keep the
+  // rest queued. Harvest assessments can touch hundreds of settlements; a
+  // province dispatches wagons over weeks, not as a single discontinuous
+  // caravan burst.
+  let dispatched = 0;
+  while (pending.length > 0 && dispatched < MAX_TAX_SHIPMENTS_DISPATCHED_PER_DAY) {
+    const a = pending.shift() as TaxAssessment;
     const fromS = world.settlements.get(a.fromSettlement);
     if (fromS === undefined) continue;
     const owner = world.actors.get(a.fromOwnerActor);
@@ -2089,7 +2120,7 @@ const taxShipmentPhase = (world: WorldState, today: Day, rng: Rng, events: TickE
     else owner.stockpile.delete(a.resource);
 
     const cId = makeCaravanIdLocal(
-      `tax-${today}-${String(a.fromSettlement)}-${String(a.resource)}`,
+      `tax-${today}-${String(a.fromSettlement)}-${String(a.fromOwnerActor)}-${String(a.resource)}`,
     );
     if (world.caravans.has(cId)) continue; // dedupe within a tick
     const caravan = createTaxShipmentCaravan({
@@ -2101,6 +2132,7 @@ const taxShipmentPhase = (world: WorldState, today: Day, rng: Rng, events: TickE
       rng: rng.derive(String(cId)),
     });
     world.caravans.set(cId, caravan);
+    dispatched += 1;
     events.push({
       type: 'tax_shipment_dispatched',
       fromSettlement: a.fromSettlement,
@@ -2129,7 +2161,7 @@ const edgeHubPhase = (
   rng: Rng,
   events: TickEvent[],
 ): void => {
-  const edgeHexes = computeEdgeHexes(world.grid);
+  const edgeHexes = selectEdgeHubGates(computeEdgeHexes(world.grid));
   if (edgeHexes.length === 0) return;
 
   // City + capital settlements as import targets / export sources.
@@ -2171,14 +2203,14 @@ const edgeHubPhase = (
     config: {
       edgeHexes,
       globalPrices: DEFAULT_GLOBAL_PRICES,
-      // Daily spawn probabilities tuned conservatively. With ~80 edge
-      // hexes × 0.005 = ~0.4 import caravans per tick across the
-      // whole edge; with 3 cities × 0.01 = ~0.03 export caravans/tick.
-      // Per-year: ~150 imports, ~10-20 exports. The export rate is
-      // small because most cities don't have a high-margin good ready
-      // every day.
-      baseImportSpawnProbPerDay: 0.005,
-      baseExportSpawnProbPerDay: 0.01,
+      // Off-map trade enters through a small number of abstract border
+      // gates, not every passable perimeter hex. This keeps imports/exports
+      // as a paced long-haul flow instead of random-looking perimeter bursts.
+      baseImportSpawnProbPerDay: 0.05,
+      baseExportSpawnProbPerDay: 0.03,
+      maxImportSpawnsPerDay: 2,
+      maxExportSpawnsPerDay: 1,
+      maxTotalSpawnsPerDay: 3,
       importPalette: DEFAULT_IMPORT_PALETTE,
     },
     today,
@@ -2228,6 +2260,7 @@ const ensureCaravanOwnerActor = (world: WorldState, caravan: Caravan): void => {
 };
 
 const edgeHexCache: WeakMap<WorldState['grid'], readonly Hex[]> = new WeakMap();
+const EDGE_HUB_GATE_COUNT = 8;
 
 const computeEdgeHexes = (grid: WorldState['grid']): readonly Hex[] => {
   const cached = edgeHexCache.get(grid);
@@ -2252,6 +2285,25 @@ const computeEdgeHexes = (grid: WorldState['grid']): readonly Hex[] => {
     }
   }
   edgeHexCache.set(grid, out);
+  return out;
+};
+
+const selectEdgeHubGates = (edgeHexes: readonly Hex[]): readonly Hex[] => {
+  if (edgeHexes.length <= EDGE_HUB_GATE_COUNT) return edgeHexes;
+  const sorted = edgeHexes.slice().sort((a, b) => {
+    if (a.q !== b.q) return a.q - b.q;
+    return a.r - b.r;
+  });
+  const out: Hex[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < EDGE_HUB_GATE_COUNT; i++) {
+    const idx = Math.round((i * (sorted.length - 1)) / (EDGE_HUB_GATE_COUNT - 1));
+    const h = sorted[Math.min(sorted.length - 1, Math.max(0, idx))] as Hex;
+    const key = hexKey(h);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ q: h.q, r: h.r });
+  }
   return out;
 };
 
@@ -3096,7 +3148,11 @@ const politicsPhase = (world: WorldState, rng: Rng, today: Day, events: TickEven
   // assessments. Each non-zero owed becomes a real Caravan walking
   // toward the capital — bandits can ambush it, the road network
   // matters, etc.
-  if (isHarvestTributeDay(today) || isMonthlyAssessmentDay(today)) {
+  if (
+    isHarvestTributeDay(today) ||
+    isMonthlyAssessmentDay(today) ||
+    (pendingTaxAssessmentsByWorld.get(world)?.length ?? 0) > 0
+  ) {
     taxShipmentPhase(world, today, rng.derive('tax'), events);
   }
 };
@@ -3270,11 +3326,25 @@ const caravanRationCargoKg = (c: Caravan): number => {
   return total;
 };
 
+const caravanRationReserveKg = (c: Caravan): number =>
+  dailyCrewRationKg(c) * CARAVAN_RATION_RESERVE_DAYS;
+
+const caravanMissingRationReserveKg = (c: Caravan): number =>
+  Math.max(0, caravanRationReserveKg(c) - caravanRationCargoKg(c));
+
+const caravanRationDays = (c: Caravan): number => {
+  const dailyKg = dailyCrewRationKg(c);
+  if (dailyKg <= 0) return Number.POSITIVE_INFINITY;
+  return caravanRationCargoKg(c) / dailyKg;
+};
+
+const caravanTradeCargoCapacityRemainingKg = (c: Caravan): number =>
+  Math.max(0, totalCarryKg(c) - totalCargoWeightKg(c) - caravanMissingRationReserveKg(c));
+
 const caravanSellableQuantity = (c: Caravan, resource: ResourceId, qty: number): number => {
   if (qty <= 0) return 0;
   if (!CARAVAN_RATION_RESOURCES.has(String(resource))) return qty;
-  const reserveKg = dailyCrewRationKg(c) * CARAVAN_RATION_RESERVE_DAYS;
-  const surplusKg = caravanRationCargoKg(c) - reserveKg;
+  const surplusKg = caravanRationCargoKg(c) - caravanRationReserveKg(c);
   if (surplusKg <= 0) return 0;
   const weightKg = getResource(resource).weightKgPerUnit;
   if (weightKg <= 0) return qty;
@@ -3301,6 +3371,52 @@ interface LocalSellerQuote {
   readonly stock: number;
 }
 
+const localSellerQuotes = (
+  world: WorldState,
+  settlements: readonly Settlement[],
+  resource: ResourceId,
+): LocalSellerQuote[] => {
+  const quotes: LocalSellerQuote[] = [];
+  for (const settlement of settlements) {
+    const price = settlement.market.lastClearingPrice.get(resource);
+    if (price === undefined || !Number.isFinite(price) || price <= 0) continue;
+    for (const ownerId of settlement.stockpileOwners) {
+      const actor = world.actors.get(ownerId);
+      if (actor === undefined) continue;
+      const stock = actor.stockpile.get(resource) ?? 0;
+      if (stock <= 0) continue;
+      quotes.push({ settlement, actor, price, stock });
+    }
+  }
+  quotes.sort((a, b) => {
+    if (a.price !== b.price) return a.price - b.price;
+    if (b.stock !== a.stock) return b.stock - a.stock;
+    return String(a.actor.id).localeCompare(String(b.actor.id));
+  });
+  return quotes;
+};
+
+const localSupplyAvailabilityByResource = (
+  world: WorldState,
+  settlements: readonly Settlement[],
+): Map<ResourceId, Quantity> => {
+  const out = new Map<ResourceId, Quantity>();
+  for (const settlement of settlements) {
+    for (const resource of settlement.market.lastClearingPrice.keys()) {
+      const price = settlement.market.lastClearingPrice.get(resource);
+      if (price === undefined || !Number.isFinite(price) || price <= 0) continue;
+      let total = 0;
+      for (const ownerId of settlement.stockpileOwners) {
+        const actor = world.actors.get(ownerId);
+        if (actor === undefined) continue;
+        total += Math.max(0, actor.stockpile.get(resource) ?? 0);
+      }
+      if (total > 0) out.set(resource, (out.get(resource) ?? 0) + total);
+    }
+  }
+  return out;
+};
+
 const bestLocalBuyer = (
   world: WorldState,
   settlements: readonly Settlement[],
@@ -3321,28 +3437,6 @@ const bestLocalBuyer = (
         (price === best.price && actor.treasury > best.actor.treasury)
       ) {
         best = { settlement, actor, price };
-      }
-    }
-  }
-  return best;
-};
-
-const bestLocalSeller = (
-  world: WorldState,
-  settlements: readonly Settlement[],
-  resource: ResourceId,
-): LocalSellerQuote | null => {
-  let best: LocalSellerQuote | null = null;
-  for (const settlement of settlements) {
-    const price = settlement.market.lastClearingPrice.get(resource);
-    if (price === undefined || !Number.isFinite(price) || price <= 0) continue;
-    for (const ownerId of settlement.stockpileOwners) {
-      const actor = world.actors.get(ownerId);
-      if (actor === undefined) continue;
-      const stock = actor.stockpile.get(resource) ?? 0;
-      if (stock <= 0) continue;
-      if (best === null || price < best.price || (price === best.price && stock > best.stock)) {
-        best = { settlement, actor, price, stock };
       }
     }
   }
@@ -3393,33 +3487,38 @@ const buyPlannedCargoAtLocalMarkets = (
   let boughtUnits = 0;
   for (const [resource, targetQty] of cargoPlan) {
     if (targetQty <= 0) continue;
-    const seller = bestLocalSeller(world, settlements, resource);
-    if (seller === null) continue;
     const weightKg = getResource(resource).weightKgPerUnit;
-    const capacityRemainingKg = Math.max(0, totalCarryKg(caravan) - totalCargoWeightKg(caravan));
-    const maxByCapacity = weightKg > 0 ? capacityRemainingKg / weightKg : targetQty;
-    const sameOwner = seller.actor.id === caravan.ownerActor;
-    const maxByTreasury = sameOwner ? targetQty : caravan.treasury / seller.price;
-    const qty = Math.min(targetQty, seller.stock, maxByCapacity, maxByTreasury);
-    if (qty <= 1e-9) continue;
-    const coin = sameOwner ? 0 : qty * seller.price;
-    decreaseStockpile(seller.actor, resource, qty);
-    increaseCaravanCargo(caravan, resource, qty);
-    if (!sameOwner) {
-      caravan.treasury -= coin;
-      seller.actor.treasury += coin;
+    const quotes = localSellerQuotes(world, settlements, resource);
+    let remainingTarget = targetQty;
+    for (const seller of quotes) {
+      if (remainingTarget <= 1e-9) break;
+      const capacityRemainingKg = caravanTradeCargoCapacityRemainingKg(caravan);
+      if (capacityRemainingKg <= 1e-9) break;
+      const maxByCapacity = weightKg > 0 ? capacityRemainingKg / weightKg : remainingTarget;
+      const sameOwner = seller.actor.id === caravan.ownerActor;
+      const maxByTreasury = sameOwner ? remainingTarget : caravan.treasury / seller.price;
+      const qty = Math.min(remainingTarget, seller.stock, maxByCapacity, maxByTreasury);
+      if (qty <= 1e-9) continue;
+      const coin = sameOwner ? 0 : qty * seller.price;
+      decreaseStockpile(seller.actor, resource, qty);
+      increaseCaravanCargo(caravan, resource, qty);
+      if (!sameOwner) {
+        caravan.treasury -= coin;
+        seller.actor.treasury += coin;
+      }
+      recordOutflow(seller.settlement, resource, qty);
+      remainingTarget -= qty;
+      boughtUnits += qty;
+      events.push({
+        type: 'caravan_traded',
+        caravan: caravan.id,
+        settlement: seller.settlement.id,
+        side: 'bought',
+        resource,
+        quantity: qty,
+        coin,
+      });
     }
-    recordOutflow(seller.settlement, resource, qty);
-    boughtUnits += qty;
-    events.push({
-      type: 'caravan_traded',
-      caravan: caravan.id,
-      settlement: seller.settlement.id,
-      side: 'bought',
-      resource,
-      quantity: qty,
-      coin,
-    });
   }
   return boughtUnits;
 };
@@ -3442,16 +3541,16 @@ const buyCaravanRationsAtLocalMarkets = (
   }> = [];
   for (const resourceKey of CARAVAN_RATION_RESOURCES) {
     const resource = resourceId(resourceKey);
-    const seller = bestLocalSeller(world, settlements, resource);
-    if (seller === null) continue;
     const weightKgPerUnit = getResource(resource).weightKgPerUnit;
     if (weightKgPerUnit <= 0) continue;
-    quotes.push({
-      resource,
-      seller,
-      weightKgPerUnit,
-      pricePerKg: seller.price / weightKgPerUnit,
-    });
+    for (const seller of localSellerQuotes(world, settlements, resource)) {
+      quotes.push({
+        resource,
+        seller,
+        weightKgPerUnit,
+        pricePerKg: seller.price / weightKgPerUnit,
+      });
+    }
   }
   quotes.sort((a, b) => {
     if (a.pricePerKg !== b.pricePerKg) return a.pricePerKg - b.pricePerKg;
@@ -3533,10 +3632,44 @@ const completeOffMapExportIfArrived = (
   return false;
 };
 
+const knownBanditDensityForCaravans = (world: WorldState): Map<string, number> => {
+  const out = new Map<string, number>();
+  if (world.banditCamps === undefined) return out;
+  for (const camp of world.banditCamps.values()) {
+    if (camp.banditCount <= 0) continue;
+    const perHexRisk = Math.min(0.08, camp.banditCount / 5_000);
+    if (perHexRisk <= 0) continue;
+    for (const h of hexesWithinRange(camp.hex, 6)) {
+      const key = hexKey(h);
+      out.set(key, Math.max(out.get(key) ?? 0, perHexRisk));
+    }
+  }
+  return out;
+};
+
 const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[]): void => {
   const settlementIndex = settlementAnchorIndexForWorld(world);
   const candidates = settlementIndex.candidates;
   const edgeHexKeys = new Set(computeEdgeHexes(world.grid).map(hexKey));
+  const knownBanditDensity = knownBanditDensityForCaravans(world);
+
+  const nearestDifferentCandidate = (from: Hex): (typeof candidates)[number] | undefined => {
+    let best: (typeof candidates)[number] | undefined;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const candidate of candidates) {
+      if (hexEquals(candidate.hex, from)) continue;
+      const distance = hexDistance(from, candidate.hex);
+      if (
+        distance < bestDistance ||
+        (distance === bestDistance &&
+          (best === undefined || String(candidate.id).localeCompare(String(best.id)) < 0))
+      ) {
+        best = candidate;
+        bestDistance = distance;
+      }
+    }
+    return best;
+  };
 
   // Build a city-anchor lookup once per phase for goal-completion checks.
   const settlementAnchorByCity = new Map<SettlementId, Hex>();
@@ -3608,13 +3741,28 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
 
     if (candidates.length < 2) continue;
 
+    const originAvailability =
+      localBucket === undefined ? undefined : localSupplyAvailabilityByResource(world, localBucket);
+    const missingRationKg = caravanMissingRationReserveKg(c);
+
     // 2. Plan next route.
     const plan = planCaravanRoute({
       caravan: c,
       candidateSettlements: candidates,
       knownPrices: c.priceBook,
-      knownBanditDensity: new Map(), // v1: no bandit-density signal yet
+      knownBanditDensity,
       knownToll: () => 0, // v1: no toll signal yet
+      cargoConstraints: {
+        reserveCapacityKg: missingRationKg,
+        // Keep enough cash to buy the missing survival reserve later. This
+        // uses the same 1 coin/kg ration-cost approximation as the planner's
+        // travel-cost model, so cargo demand is cash-feasible instead of
+        // spending the caravan into starvation.
+        maxSpendCoin: Math.max(0, c.treasury - missingRationKg),
+        ...(originAvailability !== undefined
+          ? { originAvailableQuantity: originAvailability }
+          : {}),
+      },
       includeReason: false,
       rng: rng.derive(String(cId)),
     });
@@ -3624,14 +3772,26 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
         localBucket === undefined
           ? 0
           : buyPlannedCargoAtLocalMarkets(world, c, localBucket, plan.cargoToCarry, events);
+      const rationDays = caravanRationDays(c);
       if (boughtUnits <= 1e-9 && !caravanHasMarketCargo(c)) {
         const rngHere = rng.derive(`${String(cId)}-fallback`);
-        const filtered = candidates.filter((s) => !hexEquals(s.hex, c.position));
-        if (filtered.length > 0) {
+        const nearest = rationDays < 7 ? nearestDifferentCandidate(c.position) : undefined;
+        if (nearest !== undefined) {
+          c.destination = { q: nearest.hex.q, r: nearest.hex.r };
+        } else {
+          const filtered = candidates.filter((s) => !hexEquals(s.hex, c.position));
+          if (filtered.length <= 0) continue;
           const pick = rngHere.pick(filtered);
           c.destination = { q: pick.hex.q, r: pick.hex.r };
         }
         continue;
+      }
+      if (rationDays + 1e-9 < plan.estimatedDays) {
+        const nearest = nearestDifferentCandidate(c.position);
+        if (nearest !== undefined) {
+          c.destination = { q: nearest.hex.q, r: nearest.hex.r };
+          continue;
+        }
       }
       // Set new destination. Cargo isn't restocked here (that's a market
       // operation handled above); the planner's expected profit reflects
@@ -3644,9 +3804,14 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
       // caravan keeps moving and accumulates price observations. This is
       // what unspecialized merchants did historically: travel to gossip
       // and find out where prices are good.
-      const rngHere = rng.derive(`${String(cId)}-fallback`);
-      const filtered = candidates.filter((s) => !hexEquals(s.hex, c.position));
-      if (filtered.length > 0) {
+      const rationDays = caravanRationDays(c);
+      const nearest = rationDays < 7 ? nearestDifferentCandidate(c.position) : undefined;
+      if (nearest !== undefined) {
+        c.destination = { q: nearest.hex.q, r: nearest.hex.r };
+      } else {
+        const rngHere = rng.derive(`${String(cId)}-fallback`);
+        const filtered = candidates.filter((s) => !hexEquals(s.hex, c.position));
+        if (filtered.length <= 0) continue;
         const pick = rngHere.pick(filtered);
         c.destination = { q: pick.hex.q, r: pick.hex.r };
       }
@@ -3671,7 +3836,14 @@ const lastSuccessfulRaidDay: Map<BanditCampId, Day> = new Map();
 const recruitDriveMultiplier: Map<BanditCampId, number> = new Map();
 
 const RECRUIT_RANGE_HEXES = 50;
-const BASE_RECRUIT_FRAC_PER_DAY = 0.0005;
+// Recruitment rates: tuned ~5× the v1 starting numbers because the original
+// constants left typical villages contributing < 0.01 recruits/day each
+// (i.e. one new bandit every ~100+ village-days), which kept camps tiny and
+// the bandit population invisible in the viewer over months of real
+// playtime. The new rates give a normal 200-adult village ~1 recruit every
+// 30–50 days; a famine-stricken (`isPoor`) village contributes one every
+// 3–5 days. Still slow at the per-day scale but visible over a season.
+const BASE_RECRUIT_FRAC_PER_DAY = 0.0025;
 const POOR_VILLAGE_RECRUIT_BOOST = 4;
 /**
  * Per-camp soft cap. Beyond this size a camp is no longer recruiting (it's
@@ -4259,10 +4431,12 @@ const recruitFromIdle = (world: WorldState, rng: Rng, _today: Day, events: TickE
     if (settlement.population.total() === 0) continue;
     const adults = adultPopulation(settlement);
     if (adults <= 0) continue;
-    // Pressure pool ≈ adults × jobless fraction. v1 proxy: 5% of adults
-    // are "idle-ish" by default; 20% in settlements with food shortfall.
+    // Pressure pool ≈ adults × jobless fraction. Default 8% of adults are
+    // "idle-ish" enough to be recruited; 25% in food-shortfall villages.
+    // Bumped from 5%/20% in tandem with BASE_RECRUIT_FRAC_PER_DAY so the
+    // bandit population is observable in the viewer.
     const isPoor = (faminePressure.get(settlement)?.consecutiveShortageDays ?? 0) >= 1;
-    const pressureFraction = isPoor ? 0.2 : 0.05;
+    const pressureFraction = isPoor ? 0.25 : 0.08;
     const pressurePool = adults * pressureFraction;
     if (pressurePool <= 0) continue;
 

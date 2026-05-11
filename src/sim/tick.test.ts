@@ -1548,4 +1548,83 @@ describe('tick (per-day loop)', () => {
       expect(moves.length).toBe(0);
     });
   });
+
+  describe('tax shipments', () => {
+    it('paces harvest shipment dispatch instead of spawning every owed caravan at once', () => {
+      const w = buildEmptyWorld();
+      const governorId = actorId('governor-office');
+      const capitalId = settlementId('capital');
+      const capitalHex = hex(0, 0);
+      for (let q = -5; q <= 25; q++) {
+        for (let r = -2; r <= 2; r++) {
+          w.grid.set(hex(q, r), makeTile('plains'));
+        }
+      }
+      const capital = createSettlement({
+        id: capitalId,
+        tier: 'large_city',
+        name: 'Capital',
+        anchor: capitalHex,
+        urbanHexes: [capitalHex],
+        catchmentHexes: [],
+      });
+      capital.stockpileOwners.push(governorId);
+      const governor = createActor({
+        id: governorId,
+        kind: 'governor_office',
+        name: 'Governor',
+        homeSettlement: capitalId,
+        treasury: 100_000,
+      });
+      w.settlements.set(capitalId, capital);
+      w.actors.set(governorId, governor);
+
+      for (let i = 0; i < 20; i++) {
+        const sId = settlementId(`tax-village-${i}`);
+        const ownerId = actorId(`tax-owner-${i}`);
+        const anchor = hex(i + 1, 0);
+        const s = createSettlement({
+          id: sId,
+          tier: 'village',
+          name: `Tax Village ${i}`,
+          anchor,
+          urbanHexes: [anchor],
+          catchmentHexes: [],
+        });
+        s.population.set({ age: '20-24', sex: 'male', class: 'plebeian' }, 100);
+        s.stockpileOwners.push(ownerId);
+        s.market.recentInflows.set(resourceId('food.grain'), 1_000);
+        const owner = createActor({
+          id: ownerId,
+          kind: 'patrician_family',
+          name: `Tax Owner ${i}`,
+          homeSettlement: sId,
+          treasury: 1_000,
+        });
+        owner.stockpile.set(resourceId('food.grain'), 1_000);
+        w.settlements.set(sId, s);
+        w.actors.set(ownerId, owner);
+      }
+
+      w.day = 273;
+      const first = tick({ world: w, rng: createRng('tax-burst-1') });
+      const firstShipments = eventsOfType(first.events, 'tax_shipment_dispatched');
+      // The core pacing property: a single tick must not dispatch all 20
+      // owed shipments at once. The exact daily cap is an internal
+      // detail; assert pacing as "strictly fewer than 20 on day 1, ≥1
+      // dispatched."
+      expect(firstShipments.length).toBeGreaterThanOrEqual(1);
+      expect(firstShipments.length).toBeLessThan(20);
+
+      // Across multiple ticks the rest of the queue should eventually
+      // flush. Run enough ticks for any reasonable daily cap to clear
+      // a 20-deep queue and check the cumulative count covers everything.
+      let totalDispatched = firstShipments.length;
+      for (let k = 0; k < 30 && totalDispatched < 20; k++) {
+        const r = tick({ world: w, rng: createRng(`tax-burst-${k + 2}`) });
+        totalDispatched += eventsOfType(r.events, 'tax_shipment_dispatched').length;
+      }
+      expect(totalDispatched).toBeGreaterThanOrEqual(20);
+    });
+  });
 });

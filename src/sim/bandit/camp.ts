@@ -278,11 +278,24 @@ export const decideCampAction = (inputs: CampDecisionInputs): CampAction => {
   const size = campSize(camp);
   const pressure = patrolPressure(camp, knownNearbyPatrols);
 
-  // 1. Insurgency-scale camps can take settlements directly. With moderate
-  //    probability they pick a friendly (or near-friendly) settlement to attack
-  //    if patrol pressure is bearable.
-  if (size === 'insurgency' && pressure < 1.5 && knownFriendlySettlements.length > 0) {
-    if (rng.chance(0.4)) {
+  // 1. Settlement raids — gated by camp size so smaller bands hit smaller
+  //    settlements without waiting until they reach insurgency scale.
+  //    insurgency (500+) hits anything; large (100-499) raids at moderate
+  //    chance; medium (20-99) sends a small scouting raid at low chance
+  //    against the nearest available hamlet/village. small camps don't
+  //    raid settlements at all — they need caravans or recruitment.
+  //
+  //    Without this scaling the early-game bandit world looks dormant
+  //    because (a) recruitment takes seasons to push a camp past 500
+  //    bandits and (b) caravans that don't pass within sight of a camp
+  //    leave the camp with nothing to do. Scouting raids give the
+  //    bandits proactive behavior visible in the viewer.
+  if (pressure < 1.5 && knownFriendlySettlements.length > 0) {
+    let raidProb = 0;
+    if (size === 'insurgency') raidProb = 0.4;
+    else if (size === 'large') raidProb = 0.22;
+    else if (size === 'medium') raidProb = 0.1;
+    if (raidProb > 0 && rng.chance(raidProb)) {
       const target = rng.pick(knownFriendlySettlements);
       return { type: 'raid_settlement', targetSettlement: target.id };
     }

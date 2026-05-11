@@ -235,16 +235,26 @@ reputation, and friends in low places.
 ### Per-day mechanics
 
 1. **Recruitment from pressure points**: for each settlement, count
-   the recruitment pool = `idle` adults + adults unmet on
-   subsistence for 14+ consecutive days + recently-freed slaves
-   with no patron + demobilised soldiers (post-war, future).
-   A baseline fraction (default ~0.0005/day) defects to wilderness
-   banditry. **Successful nearby bands recruit faster** — if a
-   camp within ~30 hexes has a successful raid in the past 30 days,
-   that camp's recruitment fraction triples (word gets out: "Caelius
-   is rich now"). **Poor villages contribute disproportionately**:
-   a settlement with subsistence shortfall recruits at 4× rate
-   relative to a prosperous one.
+   the recruitment pool ≈ adults × pressure-fraction. Default
+   pressure-fraction = 0.08 (8% of adults are "idle-ish"); 0.25 for
+   settlements with a current food shortfall.
+   A baseline fraction (default ~0.0025/day, i.e. `BASE_RECRUIT_FRAC_PER_DAY`)
+   of that pool defects to wilderness banditry. **Successful nearby
+   bands recruit faster** — if a camp within ~30 hexes has a
+   successful raid in the past 30 days, that camp's recruitment
+   fraction triples (word gets out: "Caelius is rich now"). **Poor
+   villages contribute disproportionately**: a settlement with
+   subsistence shortfall recruits at 4× rate relative to a
+   prosperous one (`POOR_VILLAGE_RECRUIT_BOOST = 4`).
+
+   These constants were bumped ~5× from the initial v1 values
+   (0.0005/day, 5%/20% pool) because the original tuning left the
+   bandit population invisible at human-observable timescales —
+   typical villages contributed less than one recruit per
+   100 village-days, so a camp drawing from a few villages took a
+   year+ to reach even medium scale. The new rates target a normal
+   200-adult village contributing ~1 recruit every 30–50 days; a
+   famine-stricken village about every 3–5 days.
 2. **Joining vs. founding**: defectors walk to the nearest existing
    camp within ~50 hexes if it has space; otherwise a new camp is
    founded in a wilderness forest/hills hex within 5–15 hexes of
@@ -260,7 +270,15 @@ reputation, and friends in low places.
    - `raid_caravan(targetHex)` → emit pendingBattle; resolve via
      T45 ambush at the caravan's hex
    - `raid_settlement(targetSettlement)` → emit pendingBattle;
-     resolve via T38 raid
+     resolve via T38 raid. **Camp-size-scaled probability**:
+     insurgency-scale (500+) raids at 40% chance per check, large
+     (100-499) at 22%, medium (20-99) at 10%. Small (<20) camps
+     don't raid settlements — they need to grow first. All require
+     `pressure < 1.5`. This scaling means a med-sized camp will
+     actively raid the hamlets/villages within its 30-hex horizon
+     instead of waiting forever to reach insurgency — the early
+     bandit phase is no longer "dormant camp sits doing nothing"
+     until it hits 500 bandits.
    - `recruit_drive` → next-week recruit rate from nearby
      settlements doubles
    - `move_camp(toHex)` → walk one hex/day toward toHex
