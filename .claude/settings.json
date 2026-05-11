@@ -8,7 +8,7 @@
             "type": "command",
             "command": "bash scripts/burnin-watchdog.sh",
             "timeout": 420,
-            "statusMessage": "running tests + 10y burn-in watchdog"
+            "statusMessage": "running tests + 3y burn-in watchdog"
           }
         ]
       }

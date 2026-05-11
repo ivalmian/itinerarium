@@ -360,12 +360,6 @@ export type TickEvent =
       readonly fromGrade: 'dirt';
     }
   | {
-      readonly type: 'road_reset';
-      readonly promotedToDirt: number;
-      readonly demotedToNone: number;
-      readonly romanKept: number;
-    }
-  | {
       readonly type: 'building_invested';
       readonly settlement: SettlementId;
       readonly building: BuildingId;
@@ -518,14 +512,6 @@ export const tick = (inputs: TickInputs): TickResult => {
   // and starts accruing/decaying wear like any other dirt road.
   if ((today + 1) % 91 === 0) {
     roadMaintenancePhase(world, events);
-  }
-
-  // --- Day-1825 road reset (one-time) ------------------------------------
-  // Per docs/07 §"Phase 2 — Stabilization" + docs/14 §"Year-5 road reset":
-  // promote heavily-worn trails, demote unused dirt roads, reset wear.
-  // The reset day is open-coded so it's identical across worlds.
-  if (today === ROAD_RESET_DAY) {
-    roadResetPhase(world, events);
   }
 
   // --- Empty settlements disappear (docs/05 §"Growth and decay") ----------
@@ -1337,6 +1323,7 @@ const FOOD_PRIORITY: readonly ResourceId[] = [
   GRAIN_RESOURCE,
   resourceId('food.legumes'),
   resourceId('food.flour'),
+  resourceId('food.milk'),
   resourceId('food.fish'),
   resourceId('food.game'),
   resourceId('food.cheese'),
@@ -1507,6 +1494,7 @@ const rationProcessingMarkup = (id: ResourceId): number => {
 const grainEquivalentMultiplier = (id: ResourceId): number => {
   const idStr = String(id);
   if (idStr === 'food.bread') return 1.3; // 1.3 kg bread ≈ 1 kg grain
+  if (idStr === 'food.milk') return 0.2;
   if (idStr === 'food.fish') return 0.5;
   if (idStr === 'food.game') return 0.5;
   if (idStr === 'food.cheese') return 0.6;
@@ -1667,8 +1655,6 @@ const DIRT_UPGRADE_THRESHOLD = 100;
 const DIRT_DOWNGRADE_THRESHOLD = 20;
 const MAX_ROAD_WEAR = 200;
 const MAX_ROAD_WEAR_ADDED_PER_ENTRY = 10;
-/** Day 1825 = end of pre-road burn-in phase (per docs/07 + docs/14). */
-const ROAD_RESET_DAY = 1825;
 
 const caravanTrailWear = (c: Caravan): number => {
   let crew = 0;
@@ -2700,48 +2686,6 @@ const trailWearTickPhase = (world: WorldState, events: TickEvent[]): void => {
   }
 };
 
-/**
- * One-time road reset at day 1825 (end of phase 2a, before phase 2b).
- * Per docs/07 + docs/14:
- *   - Roman roads kept (engineered, maintained).
- *   - Worn-in trails (roadWear ≥ DIRT_UPGRADE_THRESHOLD on a non-Roman
- *     hex) become 'dirt'.
- *   - Procgen-laid 'dirt' hexes with roadWear < DIRT_DOWNGRADE_THRESHOLD
- *     reset to 'none'.
- *   - All wear counters reset to baseline (100 for kept dirt, 0 for none).
- */
-const roadResetPhase = (world: WorldState, events: TickEvent[]): void => {
-  let promotedToDirt = 0;
-  let demotedToNone = 0;
-  let romanKept = 0;
-  for (const [, tile] of world.grid.tiles()) {
-    if (tile.road === 'roman') {
-      romanKept++;
-      tile.roadWear = 100;
-      continue;
-    }
-    const wear = tile.roadWear ?? 0;
-    const t = tile.terrain;
-    const passable = t !== 'lake' && t !== 'river' && t !== 'mountains';
-    if (tile.road === 'dirt') {
-      if (wear < DIRT_DOWNGRADE_THRESHOLD) {
-        tile.road = 'none';
-        tile.roadWear = 0;
-        demotedToNone++;
-      } else {
-        tile.roadWear = 100;
-      }
-    } else if (tile.road === 'none' && wear >= DIRT_UPGRADE_THRESHOLD && passable) {
-      tile.road = 'dirt';
-      tile.roadWear = 100;
-      promotedToDirt++;
-    } else {
-      tile.roadWear = 0;
-    }
-  }
-  events.push({ type: 'road_reset', promotedToDirt, demotedToNone, romanKept });
-};
-
 // --- Phase 4: Trade ---------------------------------------------------------
 
 /**
@@ -3145,7 +3089,7 @@ const CAPITAL_RESERVE_DEMAND_RESOURCES: readonly ResourceId[] = Object.freeze(
 
 const SERVICE_MARKET_RESOURCES: readonly ResourceId[] = serviceMarketResources();
 
-const RECIPE_INPUT_RESOURCES_BY_BUILDING: ReadonlyMap<string, readonly ResourceId[]> = (() => {
+const RECIPE_NEEDED_RESOURCES_BY_BUILDING: ReadonlyMap<string, readonly ResourceId[]> = (() => {
   const tmp = new Map<string, Map<string, ResourceId>>();
   for (const recipe of allRecipes()) {
     const buildingKey = String(recipe.building);
@@ -3156,6 +3100,9 @@ const RECIPE_INPUT_RESOURCES_BY_BUILDING: ReadonlyMap<string, readonly ResourceI
     }
     for (const input of recipe.inputs.keys()) {
       bucket.set(String(input), input);
+    }
+    for (const requirement of recipe.requires.keys()) {
+      bucket.set(String(requirement), requirement);
     }
   }
 
@@ -3177,9 +3124,9 @@ const demandCandidateResourcesForSettlement = (settlement: Settlement): Readonly
   }
   for (const building of settlement.buildings) {
     if (building.capacity <= 0) continue;
-    const inputs = RECIPE_INPUT_RESOURCES_BY_BUILDING.get(String(building.buildingId));
-    if (inputs !== undefined) {
-      for (const r of inputs) out.add(r);
+    const neededResources = RECIPE_NEEDED_RESOURCES_BY_BUILDING.get(String(building.buildingId));
+    if (neededResources !== undefined) {
+      for (const r of neededResources) out.add(r);
     }
     for (const r of institutionalProcurementResourcesForBuilding(building.buildingId)) {
       out.add(r);
@@ -3212,7 +3159,7 @@ const TRADABLE_RESOURCES: readonly ResourceId[] = (() => {
   for (const id of CAPITAL_RESERVE_DEMAND_RESOURCES) add(id);
   for (const id of SERVICE_MARKET_RESOURCES) add(id);
   for (const id of DEFAULT_GLOBAL_PRICES.keys()) add(id);
-  for (const resources of RECIPE_INPUT_RESOURCES_BY_BUILDING.values()) {
+  for (const resources of RECIPE_NEEDED_RESOURCES_BY_BUILDING.values()) {
     for (const id of resources) add(id);
   }
   for (const building of ['barracks', 'temple', 'forum_market']) {

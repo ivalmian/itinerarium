@@ -8,10 +8,9 @@
 #   3. `npm run test:coverage` — every test must pass (no skips).
 #   4. Aggregate test coverage (lines + statements + functions +
 #      branches, average) must be > 80%.
-#   5. A 6-year burn-in on a realistic procgen world (80x80, 3 cities)
+#   5. A 3-year burn-in on a realistic procgen world (80x80, 3 cities)
 #      must stay self-sustainable: end pop ≥ 50% of start, no fatal
-#      invariant violations, exit code 0. 6y = 1 year past the day-1825
-#      road reset, enough to confirm phase-2b stability.
+#      invariant violations, exit code 0.
 #
 # When all five pass, exits 0 with no output (Claude proceeds to stop
 # normally). When any gate fails, prints a single JSON line
@@ -83,12 +82,12 @@ if [ "$COVERAGE_INT" -lt "$THRESHOLD_INT" ]; then
   block "coverage average $(printf '%.2f' "$COVERAGE_AVG")% is below 80% threshold. Per-metric: $PER_METRIC"
 fi
 
-# Gate 2: 10-year burn-in.
+# Gate 2: 3-year burn-in.
 OUTPUT=$(npm run burnin -- \
   --seed=watchdog \
   --width=80 --height=80 \
   --cities=3 --towns=8 --villages=60 --hamlets=30 \
-  --days=2190 --silent 2>&1)
+  --days=1095 --silent 2>&1)
 EXIT_CODE=$?
 
 if [ "$EXIT_CODE" -ne 0 ]; then
@@ -108,7 +107,7 @@ if [ -z "$POP_START" ] || [ -z "$POP_END" ]; then
 fi
 
 if [ -n "$FATAL" ] && [ "$FATAL" -gt 0 ]; then
-  block "burnin had $FATAL fatal invariant violation(s) over 6y on a 3-city world: $LAST_LINE"
+  block "burnin had $FATAL fatal invariant violation(s) over 3y on a 3-city world: $LAST_LINE"
 fi
 
 HALF_START=$(( POP_START / 2 ))

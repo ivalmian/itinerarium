@@ -96,6 +96,8 @@ const DEFAULTS: Required<Omit<BootOpts, 'seed' | 'mapHostId' | 'sidebarHostId'>>
   sidebarHostId: 'sidebar',
 };
 
+const CARAVAN_MIN_VISUAL_TICK_MS = 160;
+
 interface BuildResult {
   world: WorldState;
   hexMap: HexMap;
@@ -108,10 +110,7 @@ interface BuildResult {
   worldRoot: Container;
 }
 
-const buildWorld = (
-  opts: Required<BootOpts>,
-  state: ViewerState,
-): { world: WorldState } => {
+const buildWorld = (opts: Required<BootOpts>, state: ViewerState): { world: WorldState } => {
   const grid = generateTerrain({
     seed: `${opts.seed}|terrain`,
     widthHexes: opts.mapWidth,
@@ -193,7 +192,7 @@ const buildLayers = (
   catchmentLayer.rebuild(world, hexSize);
   buildingsLayer.rebuild(world, hexSize);
   settlementsLayer.sync(world, hexSize);
-  caravansLayer.syncTick(world);
+  caravansLayer.syncTick(world, undefined, hexSize);
   caravansLayer.setInterpolationT(world, 1, hexSize);
   banditCampsLayer.sync(world, hexSize);
 
@@ -340,6 +339,10 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     sidebar.timeControls.refresh();
   };
 
+  // Scheduler clocks are reset together when the world is re-seeded.
+  let lastTickWallMs = performance.now();
+  let lastCaravanVisualSyncMs = lastTickWallMs;
+
   const reset = (): void => {
     // Tear down old layers.
     app.stage.removeChild(layers.worldRoot);
@@ -350,6 +353,8 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     sidebar.eventLog.clear();
     clearHistory(history);
     setSelection(state, { kind: 'none' });
+    lastTickWallMs = performance.now();
+    lastCaravanVisualSyncMs = lastTickWallMs;
   };
 
   sidebar = createSidebar({
@@ -426,8 +431,6 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
   };
 
   // --- Tick scheduler --------------------------------------------------------
-  let lastTickWallMs = performance.now();
-
   const advanceOneTick = (): readonly TickEvent[] => {
     const today = world.day;
     const rng = createRng(`${merged.seed}|tick-${today}`);
@@ -443,10 +446,7 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     // Build per-caravan path from caravan_moved events so the layer
     // interpolates along the actual hex path (not a straight line that
     // visually cuts through lakes / mountains).
-    const pathPerCaravan = new Map<
-      string,
-      { q: number; r: number }[]
-    >();
+    const pathPerCaravan = new Map<string, { q: number; r: number }[]>();
     for (const ev of result.events) {
       if (ev.type !== 'caravan_moved') continue;
       let arr = pathPerCaravan.get(String(ev.caravan));
@@ -466,6 +466,7 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
         import('../src/sim/types.js').CaravanId,
         readonly { q: number; r: number }[]
       >,
+      hexSize,
     );
 
     // Aggregate recipe outputs from the events for the resource panel.
@@ -504,7 +505,6 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
       } else if (
         ev.type === 'road_upgraded' ||
         ev.type === 'road_downgraded' ||
-        ev.type === 'road_reset' ||
         ev.type === 'road_unmaintained'
       ) {
         needsRoadRebuild = true;
@@ -520,6 +520,7 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     refreshHighlights();
 
     lastTickWallMs = performance.now();
+    lastCaravanVisualSyncMs = lastTickWallMs;
     return result.events;
   };
 
@@ -540,21 +541,23 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
 
   // PIXI ticker drives both interpolation and tick scheduling.
   app.ticker.add(() => {
+    const now = performance.now();
+    const tickIntervalMs =
+      !state.paused && state.speed > 0 ? 1000 / speedToTicksPerSecond(state.speed) : 0;
+    const visualDurationMs =
+      tickIntervalMs > 0
+        ? Math.max(CARAVAN_MIN_VISUAL_TICK_MS, tickIntervalMs)
+        : CARAVAN_MIN_VISUAL_TICK_MS;
+    const visualT = Math.max(0, Math.min(1, (now - lastCaravanVisualSyncMs) / visualDurationMs));
+    layers.caravansLayer.setInterpolationT(world, visualT, hexSize);
     if (!state.paused && state.speed > 0) {
-      const tickIntervalMs = 1000 / speedToTicksPerSecond(state.speed);
-      const now = performance.now();
-      if (now - lastTickWallMs >= tickIntervalMs) {
+      // Draw interpolation before advancing the sim. At high speeds, visual
+      // interpolation is deliberately slower than sim time; the caravan layer
+      // begins each new visual leg from the current rendered position.
+      const elapsed = now - lastTickWallMs;
+      if (elapsed >= tickIntervalMs) {
         advanceOneTick();
       }
-    }
-    // Caravan interpolation: t=0 right after a tick, t=1 right before next.
-    if (!state.paused && state.speed > 0) {
-      const tickIntervalMs = 1000 / speedToTicksPerSecond(state.speed);
-      const elapsed = performance.now() - lastTickWallMs;
-      const t = Math.max(0, Math.min(1, elapsed / tickIntervalMs));
-      layers.caravansLayer.setInterpolationT(world, t, hexSize);
-    } else {
-      layers.caravansLayer.setInterpolationT(world, 1, hexSize);
     }
   });
 
