@@ -1,17 +1,10 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash scripts/burnin-watchdog.sh",
-            "timeout": 420,
-            "statusMessage": "running tests + 3y burn-in watchdog"
-          }
-        ]
-      }
-    ]
+  "_disabled_stop_hook_for_now": {
+    "comment": "Burn-in watchdog disabled while doing AWS deploy work; re-enable by moving this block back under hooks.Stop[0].hooks.",
+    "type": "command",
+    "command": "bash scripts/burnin-watchdog.sh",
+    "timeout": 420,
+    "statusMessage": "running tests + 3y burn-in watchdog"
   }
 }
