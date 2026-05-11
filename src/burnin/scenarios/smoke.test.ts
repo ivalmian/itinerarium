@@ -70,7 +70,11 @@ describe('runSmokeScenario', () => {
     expect(kinds).toContain('governor_office');
     expect(kinds).toContain('patrician_family');
     expect(kinds).toContain('bandit_camp');
-    expect(result.world.caravans.size).toBe(2);
+    // Caravan count grew with the codex-review wirings: tax shipments
+    // (per docs/11 §"Taxes") and edge-hub off-map trade (per docs/06 +
+    // docs/08) both spawn caravans during the smoke scenario's days.
+    // Floor: the 2 procgen-seeded caravans must still be present.
+    expect(result.world.caravans.size).toBeGreaterThanOrEqual(2);
     expect(result.banditCamps.length).toBe(1);
     // The patriarch + governor + headmen + bandit leader are all named.
     const roles = [...result.world.characters.values()].map((c) => c.role);

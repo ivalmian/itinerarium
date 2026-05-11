@@ -51,6 +51,20 @@ import {
   factionId,
 } from './types.js';
 import { resolveAmbush, type AmbushResult } from './conflict/ambush.js';
+import {
+  tickEdgeHubs,
+  DEFAULT_GLOBAL_PRICES,
+  DEFAULT_IMPORT_PALETTE,
+} from './caravan/edgeHub.js';
+import {
+  assessTaxes,
+  createTaxShipmentCaravan,
+  isHarvestTributeDay,
+  isMonthlyAssessmentDay,
+  type SettlementTaxView,
+  type TaxRatesPercent,
+} from './politics/taxShipment.js';
+import { caravanId as makeCaravanIdLocal } from './types.js';
 import { resolveBattle } from './conflict/battle.js';
 import { tickPatrol, type Patrol } from './conflict/patrol.js';
 import { resolveRaid, type WallLevel } from './conflict/raid.js';
@@ -228,6 +242,17 @@ export type TickEvent =
       readonly released: number;
     }
   | {
+      readonly type: 'edge_hub_spawned';
+      readonly newCaravans: number;
+    }
+  | {
+      readonly type: 'tax_shipment_dispatched';
+      readonly fromSettlement: SettlementId;
+      readonly toSettlement: SettlementId;
+      readonly grainModii: number;
+      readonly coin: number;
+    }
+  | {
       readonly type: 'road_upgraded';
       readonly hex: Hex;
       readonly toGrade: 'dirt';
@@ -332,6 +357,13 @@ export const tick = (inputs: TickInputs): TickResult => {
 
   // --- Phase 6: Politics ---------------------------------------------------
   politicsPhase(world, rng.derive('politics'), today, events);
+
+  // --- Edge-hub off-map trade ---------------------------------------------
+  // Per docs/06 §"Edge-hub caravans" + docs/08 §"off-map global market":
+  // exotic imports + high-value exports cross the map border via real
+  // Caravan instances spawned at edge hexes. Without this call,
+  // off-map trade only fires in standalone tests.
+  edgeHubPhase(world, season, today, rng.derive('edge-hub'), events);
 
   // --- Trail wear decay + threshold check ---------------------------------
   // Daily decay: -1 wear per hex; on threshold, upgrade 'none' → 'dirt';
@@ -830,6 +862,238 @@ const addRoadWear = (world: WorldState, h: Hex, amount: number): void => {
   // Roman roads neither accrue wear nor decay (engineered + maintained).
   if (tile.road === 'roman') return;
   tile.roadWear = (tile.roadWear ?? 0) + amount;
+};
+
+// --- Tax shipment phase (docs/11 §"Taxes" + codex review #2) -------------
+
+const DEFAULT_TAX_RATES: TaxRatesPercent = {
+  harvestPct: 10, // 1/10 of recent harvest as grain tribute
+  cartTollPerCart: 0,
+  coinTaxPctOfWealth: 1, // 1% monthly coin assessment
+};
+
+const taxShipmentPhase = (
+  world: WorldState,
+  today: Day,
+  rng: Rng,
+  events: TickEvent[],
+): void => {
+  // Find the governor (one per province; per docs/11 there's one
+  // governor_office actor anchored at the capital).
+  let governor: Actor | undefined;
+  let capital: Settlement | undefined;
+  for (const a of world.actors.values()) {
+    if (a.kind === 'governor_office') {
+      governor = a;
+      break;
+    }
+  }
+  if (governor === undefined) return;
+  for (const s of world.settlements.values()) {
+    if (s.tier === 'large_city' && s.id === governor.homeSettlement) {
+      capital = s;
+      break;
+    }
+  }
+  if (capital === undefined) {
+    // Fall back: use the largest settlement as the capital.
+    let bestPop = -1;
+    for (const s of world.settlements.values()) {
+      const p = s.population.total();
+      if (p > bestPop) {
+        bestPop = p;
+        capital = s;
+      }
+    }
+  }
+  if (capital === undefined) return;
+
+  // Build settlement views: recent harvest = recent grain inflows; coin
+  // wealth = sum of stockpile owners' treasuries.
+  const settlementViews: SettlementTaxView[] = [];
+  for (const s of world.settlements.values()) {
+    if (s.id === capital.id) continue; // capital doesn't tax itself
+    const harvest = s.market.recentInflows.get(resourceId('food.grain')) ?? 0;
+    const cloth = s.market.recentInflows.get(resourceId('goods.cloth')) ?? 0;
+    const owners: { id: ActorId; treasury: number }[] = [];
+    for (const oId of s.stockpileOwners) {
+      const a = world.actors.get(oId);
+      if (a === undefined) continue;
+      owners.push({ id: a.id, treasury: a.treasury });
+    }
+    if (owners.length === 0) continue;
+    settlementViews.push({
+      id: s.id,
+      tier: s.tier,
+      recentHarvestQuantity: Math.max(0, Math.floor(harvest)),
+      recentClothProduction: Math.max(0, Math.floor(cloth)),
+      ownerActors: owners,
+    });
+  }
+
+  const assessments = assessTaxes({
+    governor,
+    taxRatesPercent: DEFAULT_TAX_RATES,
+    settlements: settlementViews,
+    today,
+  });
+
+  // Spawn tax-shipment caravans + drain the owed resources from the
+  // owner's stockpile so the goods physically leave with the caravan.
+  for (const a of assessments) {
+    const fromS = world.settlements.get(a.fromSettlement);
+    if (fromS === undefined) continue;
+    const owner = world.actors.get(a.fromOwnerActor);
+    if (owner === undefined) continue;
+    const have = owner.stockpile.get(a.resource) ?? 0;
+    const drain = Math.min(have, a.quantityOwed);
+    if (drain <= 0) continue;
+    const remaining = have - drain;
+    if (remaining > 1e-9) owner.stockpile.set(a.resource, remaining);
+    else owner.stockpile.delete(a.resource);
+
+    const cId = makeCaravanIdLocal(`tax-${today}-${String(a.fromSettlement)}-${String(a.resource)}`);
+    if (world.caravans.has(cId)) continue; // dedupe within a tick
+    const caravan = createTaxShipmentCaravan({
+      id: cId,
+      assessment: { ...a, quantityOwed: drain },
+      fromHex: fromS.anchor,
+      toHex: capital.anchor,
+      governorActor: governor.id,
+      rng: rng.derive(String(cId)),
+    });
+    world.caravans.set(cId, caravan);
+    events.push({
+      type: 'tax_shipment_dispatched',
+      fromSettlement: a.fromSettlement,
+      toSettlement: capital.id,
+      grainModii: a.resource === resourceId('food.grain') ? drain : 0,
+      coin: a.resource === resourceId('goods.coin') ? drain : 0,
+    });
+  }
+};
+
+// --- Edge-hub phase (docs/06 + docs/08) -----------------------------------
+
+/**
+ * Per-day off-map trade: spawn import + export caravans at edge hexes
+ * with the same Caravan type used by NPC trade. Per docs/06 §"Edge-hub
+ * caravans" + docs/08 §"off-map global market".
+ *
+ * Edge hexes are the hexes on the perimeter of the map (q or r at min /
+ * max of the grid bounds). Cities + capital are import targets and
+ * export sources. Import palette + global prices use library defaults.
+ */
+const edgeHubPhase = (
+  world: WorldState,
+  season: Season,
+  today: Day,
+  rng: Rng,
+  events: TickEvent[],
+): void => {
+  // Build edge-hex list once per tick. Grid is mostly static, but recompute
+  // is cheap enough that we keep it inline for now.
+  const edgeHexes = computeEdgeHexes(world.grid);
+  if (edgeHexes.length === 0) return;
+
+  // City + capital settlements as import targets / export sources.
+  const cityImportTargets: { settlementId: SettlementId; hex: Hex }[] = [];
+  const cityExportSources: {
+    settlementId: SettlementId;
+    hex: Hex;
+    ownerActor: ActorId;
+    localPrices: ReadonlyMap<ResourceId, number>;
+    availableForExport: ReadonlyMap<ResourceId, Quantity>;
+  }[] = [];
+  for (const s of world.settlements.values()) {
+    if (s.tier !== 'small_city' && s.tier !== 'large_city') continue;
+    cityImportTargets.push({ settlementId: s.id, hex: s.anchor });
+    // Export source: pick the wealthiest stockpile owner anchored at the
+    // city; use their stockpile as availableForExport.
+    let owner: Actor | undefined;
+    let bestTreasury = -1;
+    for (const oId of s.stockpileOwners) {
+      const a = world.actors.get(oId);
+      if (a === undefined) continue;
+      if (a.kind !== 'patrician_family' && a.kind !== 'city_corporation') continue;
+      if (a.treasury <= bestTreasury) continue;
+      owner = a;
+      bestTreasury = a.treasury;
+    }
+    if (owner === undefined) continue;
+    cityExportSources.push({
+      settlementId: s.id,
+      hex: s.anchor,
+      ownerActor: owner.id,
+      localPrices: s.market.lastClearingPrice,
+      availableForExport: owner.stockpile,
+    });
+  }
+  if (cityImportTargets.length === 0 && cityExportSources.length === 0) return;
+
+  const result = tickEdgeHubs({
+    config: {
+      edgeHexes,
+      globalPrices: DEFAULT_GLOBAL_PRICES,
+      // Daily spawn probabilities tuned conservatively. With ~80 edge
+      // hexes × 0.005 = ~0.4 import caravans per tick across the
+      // whole edge; with 3 cities × 0.01 = ~0.03 export caravans/tick.
+      // Per-year: ~150 imports, ~10-20 exports. The export rate is
+      // small because most cities don't have a high-margin good ready
+      // every day.
+      baseImportSpawnProbPerDay: 0.005,
+      baseExportSpawnProbPerDay: 0.01,
+      importPalette: DEFAULT_IMPORT_PALETTE,
+    },
+    today,
+    season,
+    cityImportTargets,
+    cityExportSources,
+    rng,
+  });
+
+  // Add new caravans into world.caravans. The export-side cargo was
+  // implicitly drawn from the owner's stockpile by tickEdgeHubs (per
+  // docs/06 §"Exports" — the owner intends to fund the trip), so we
+  // drain it here.
+  for (const c of result.newCaravans) {
+    world.caravans.set(c.id, c);
+    // For exports, drain the cargo from the owner's stockpile.
+    const owner = world.actors.get(c.ownerActor);
+    if (owner === undefined) continue;
+    for (const [res, qty] of c.cargo) {
+      const have = owner.stockpile.get(res) ?? 0;
+      const remaining = have - qty;
+      if (remaining > 1e-9) owner.stockpile.set(res, remaining);
+      else owner.stockpile.delete(res);
+    }
+  }
+
+  if (result.newCaravans.length > 0) {
+    events.push({
+      type: 'edge_hub_spawned',
+      newCaravans: result.newCaravans.length,
+    });
+  }
+};
+
+const computeEdgeHexes = (grid: WorldState['grid']): Hex[] => {
+  let minQ = Infinity, maxQ = -Infinity, minR = Infinity, maxR = -Infinity;
+  for (const [h] of grid.tiles()) {
+    if (h.q < minQ) minQ = h.q;
+    if (h.q > maxQ) maxQ = h.q;
+    if (h.r < minR) minR = h.r;
+    if (h.r > maxR) maxR = h.r;
+  }
+  const out: Hex[] = [];
+  for (const [h, t] of grid.tiles()) {
+    if (h.q === minQ || h.q === maxQ || h.r === minR || h.r === maxR) {
+      // Skip impassable edge hexes (lakes, mountains).
+      if (t.terrain === 'lake' || t.terrain === 'mountains') continue;
+      out.push({ q: h.q, r: h.r });
+    }
+  }
+  return out;
 };
 
 /**
@@ -1389,6 +1653,14 @@ const politicsPhase = (
   // procgen seed is the FINAL building layout for the world's lifetime.
   if ((today + 1) % 90 === 0) {
     investmentPhase(world, today, events);
+  }
+  // Tax shipments: per docs/11 §"Taxes" + the codex review #2.
+  // Governor assesses on harvest-tribute day (autumn) + monthly coin
+  // assessments. Each non-zero owed becomes a real Caravan walking
+  // toward the capital — bandits can ambush it, the road network
+  // matters, etc.
+  if (isHarvestTributeDay(today) || isMonthlyAssessmentDay(today)) {
+    taxShipmentPhase(world, today, rng.derive('tax'), events);
   }
 };
 
