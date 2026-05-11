@@ -35,6 +35,21 @@ export type UnitKind =
   | 'bandit_raid'
   | 'bandit_camp';
 
+export type ScatterKind =
+  | 'tree-oak'
+  | 'tree-pine'
+  | 'tree-cypress'
+  | 'rock-small'
+  | 'rock-medium'
+  | 'grass-tuft'
+  | 'flower-yellow'
+  | 'flower-purple'
+  | 'bush-small'
+  | 'mushroom'
+  | 'fern'
+  | 'log'
+  | 'cactus';
+
 export interface ArtRegistry {
   /** Per-terrain hex tile. For urban hexes, the caller passes a tier-resolved
    *  key like 'urban_town'; bare 'urban' falls back to urban_town. */
@@ -59,6 +74,10 @@ export interface ArtRegistry {
    *  currentColor for its fill so the caller tints by setting Sprite.tint
    *  to the source-terrain color. */
   biomeEdge(dir: EdgeDir): Texture;
+  /** Per-biome decorative scatter sprites (trees / rocks / flowers / etc.)
+   *  that the hex renderer places at deterministic random positions to
+   *  break up the visible grid. */
+  scatter(kind: ScatterKind): Texture;
 }
 
 /** Terrain keys cover both base terrains and urban tier variants. */
@@ -165,6 +184,12 @@ const UNIT_KINDS: readonly UnitKind[] = [
   'bandit_raid', 'bandit_camp',
 ];
 
+const SCATTER_KINDS: readonly ScatterKind[] = [
+  'tree-oak', 'tree-pine', 'tree-cypress', 'rock-small', 'rock-medium',
+  'grass-tuft', 'flower-yellow', 'flower-purple', 'bush-small',
+  'mushroom', 'fern', 'log', 'cactus',
+];
+
 export interface LoadArtOpts {
   /** Optional progress callback for the boot splash. */
   onProgress?: (loaded: number, total: number) => void;
@@ -185,12 +210,14 @@ export const loadArt = async (opts: LoadArtOpts = {}): Promise<ArtRegistry> => {
   const romanRoad = new Map<EdgeDir, Texture>();
   const lakeShore = new Map<EdgeDir, Texture>();
   const biomeEdge = new Map<EdgeDir, Texture>();
+  const scatter = new Map<ScatterKind, Texture>();
 
   const total =
     TERRAIN_KEYS.length +
     BUILDING_IDS.length +
     SETTLEMENT_TIERS.length +
     UNIT_KINDS.length +
+    SCATTER_KINDS.length +
     EDGE_DIRS.length * 5;
   let loaded = 0;
   const tick = (): void => {
@@ -237,6 +264,10 @@ export const loadArt = async (opts: LoadArtOpts = {}): Promise<ArtRegistry> => {
     biomeEdge.set(d, await loadTexture(lookupRaw(`./biome_edges/${d}.svg`), `art-biomeedge-${d}`));
     tick();
   }
+  for (const s of SCATTER_KINDS) {
+    scatter.set(s, await loadTexture(lookupRaw(`./scatter/${s}.svg`), `art-scatter-${s}`));
+    tick();
+  }
 
   const placeholderBuilding =
     building.get('warehouse') ?? building.get('forum_market') ?? building.get('farm')!;
@@ -255,5 +286,6 @@ export const loadArt = async (opts: LoadArtOpts = {}): Promise<ArtRegistry> => {
     romanRoad: (dir) => romanRoad.get(dir)!,
     lakeShore: (dir) => lakeShore.get(dir)!,
     biomeEdge: (dir) => biomeEdge.get(dir)!,
+    scatter: (kind) => scatter.get(kind)!,
   };
 };
