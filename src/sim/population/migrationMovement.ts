@@ -69,6 +69,7 @@ export interface MigrationTickWithGridResult {
 
 const MIGRANT_BASE_HEXES_PER_DAY = 15;
 const PATH_CACHE_DAYS = 5;
+const OFF_ROAD_COST_MULTIPLIER = 2;
 
 const migrantBaseCost = (terrain: Terrain): number => {
   // 1 unit = 1/15 of a day; baseline plains in summer = 1.0.
@@ -103,14 +104,14 @@ const MIGRANT_PROFILE: MovementProfile = {
     if (!isPassable(terrain, season)) return Infinity;
     if (road === 'roman') return 0.7;
     if (road === 'dirt') return 0.85;
-    return migrantBaseCost(terrain);
+    return migrantBaseCost(terrain) * OFF_ROAD_COST_MULTIPLIER;
   },
 };
 
 /**
  * Walk one day's worth of MP along the path. The column's daily budget is
- * normalized to `MIGRANT_BASE_HEXES_PER_DAY` (= 15) hex-cost units, since a
- * plains/no-road tile costs 1 unit each. Each tile entered deducts its
+ * normalized to `MIGRANT_BASE_HEXES_PER_DAY` (= 15) hex-cost units. Each tile
+ * entered deducts its
  * profile cost.
  */
 const advance = (

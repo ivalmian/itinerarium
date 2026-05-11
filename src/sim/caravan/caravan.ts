@@ -335,9 +335,9 @@ const roadMultiplier = (road: RoadGrade): number => {
     case 'dirt':
       return 0.8;
     case 'none':
-      // Off-road. Combined with the terrain multiplier this reaches the
-      // docs/06 ~10 hex/day for laden mule on hills (25 × 1.04 × 0.5 × 0.75).
-      return 0.5;
+      // Off-road is deliberately harsh: roads should dominate route choice,
+      // and unroaded rough terrain should be a fallback rather than a peer.
+      return 0.25;
   }
 };
 

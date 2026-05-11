@@ -84,6 +84,8 @@ const ROAD_DISCOUNT: Record<RoadGrade, number> = {
   roman: 0.4,
 };
 
+const OFF_ROAD_COST_MULTIPLIER = 2;
+
 /**
  * Pack-mule caravan. Costs are calibrated so loadFraction=1 (fully laden)
  * matches the docs/06 reference: 1 MP/hex on Roman road = 25 km/day. Lighter
@@ -101,7 +103,7 @@ export const LADEN_MULE_PROFILE: MovementProfile = {
     if (road === 'dirt') return 1.25 * loadDiscount;
     // Off-road: terrain-dependent and more load-sensitive.
     const offRoadLoad = 1 - 0.25 * (1 - loadFraction);
-    return base * ROAD_DISCOUNT.none * offRoadLoad;
+    return base * ROAD_DISCOUNT.none * OFF_ROAD_COST_MULTIPLIER * offRoadLoad;
   },
 };
 
@@ -119,7 +121,7 @@ export const HEAVY_WAGON_PROFILE: MovementProfile = {
       // Wagons can creep through urban / ruin hexes (paved courtyards, old
       // streets) without a graded road; everywhere else off-road is dead.
       if (terrain !== 'urban' && terrain !== 'ruin') return Infinity;
-      return 4 - 0.5 * (1 - loadFraction);
+      return (4 - 0.5 * (1 - loadFraction)) * OFF_ROAD_COST_MULTIPLIER;
     }
     const loadDiscount = 1 - 0.15 * (1 - loadFraction);
     if (road === 'roman') return 2 * loadDiscount;
@@ -139,7 +141,7 @@ export const COURIER_PROFILE: MovementProfile = {
     const loadFactor = 1 + 0.05 * loadFraction;
     if (road === 'roman') return (1 / 6) * loadFactor;
     if (road === 'dirt') return (1 / 3) * loadFactor;
-    return (base / 5) * loadFactor;
+    return ((base * OFF_ROAD_COST_MULTIPLIER) / 5) * loadFactor;
   },
 };
 

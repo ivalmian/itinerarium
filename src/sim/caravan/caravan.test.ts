@@ -238,12 +238,12 @@ describe('dailyMpAllowance', () => {
     expect(mp).toBeLessThanOrEqual(28);
   });
 
-  it('off-road rough terrain laden mule ≈ 10 hexes/day', () => {
+  it('off-road rough terrain laden mule ≈ 5 hexes/day', () => {
     const c = baseCaravan({ animals: { mule: 10 } });
     c.cargo.set(grain, Math.round(800 / 6.7));
     const mp = dailyMpAllowance(c, 'hills', 'none', 'summer');
-    expect(mp).toBeGreaterThanOrEqual(7);
-    expect(mp).toBeLessThanOrEqual(13);
+    expect(mp).toBeGreaterThanOrEqual(3);
+    expect(mp).toBeLessThanOrEqual(7);
   });
 
   it('mountain pass in winter is near-impassable (0–2 hexes)', () => {

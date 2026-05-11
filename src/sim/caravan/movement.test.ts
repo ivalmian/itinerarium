@@ -102,14 +102,14 @@ describe('tickCaravanMovement — speed under different conditions', () => {
     expect(c.position).toEqual(result.hexesMoved.at(-1) ?? hex(0, 0));
   });
 
-  it('off-road on hills covers ~10 hexes/day (within ±4)', () => {
+  it('off-road on hills covers ~5 hexes/day (within ±2)', () => {
     const g = createGrid();
     fillRect(g, 0, 30, 0, 2, { terrain: 'hills', road: 'none' });
     const c = muleCaravan(hex(0, 0), hex(20, 0));
     c.cargo.set(resourceId('food.grain'), 140);
     const result = tickCaravanMovement({ caravan: c, grid: g, season: 'summer', today: 0 });
-    expect(result.hexesMoved.length).toBeGreaterThanOrEqual(6);
-    expect(result.hexesMoved.length).toBeLessThanOrEqual(14);
+    expect(result.hexesMoved.length).toBeGreaterThanOrEqual(3);
+    expect(result.hexesMoved.length).toBeLessThanOrEqual(7);
   });
 
   it('a heavy wagon laden goes ~12/day on Roman road (within ±4)', () => {

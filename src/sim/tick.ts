@@ -969,13 +969,16 @@ const movementPhase = (
 
 // --- Trail wear helpers (docs/06 §"Trail wear → emergent dirt roads") ----
 
-const WEAR_PER_PACK_ANIMAL = 1.0;
-const WEAR_PER_CREW = 0.5;
+const WEAR_PER_PACK_ANIMAL = 0.2;
+const WEAR_PER_CREW = 0.05;
 const WEAR_PER_NEWS_CARRIER = 0.2;
 const WEAR_PER_PATROL_SOLDIER = 0.5;
 const WEAR_DECAY_PER_DAY = 1.0;
+const DIRT_ROAD_DECAY_PER_DAY = 3.0;
 const DIRT_UPGRADE_THRESHOLD = 100;
 const DIRT_DOWNGRADE_THRESHOLD = 20;
+const MAX_ROAD_WEAR = 200;
+const MAX_ROAD_WEAR_ADDED_PER_ENTRY = 10;
 /** Day 1825 = end of pre-road burn-in phase (per docs/07 + docs/14). */
 const ROAD_RESET_DAY = 1825;
 
@@ -995,7 +998,8 @@ const addRoadWear = (world: WorldState, h: Hex, amount: number): void => {
   if (tile === undefined) return;
   // Roman roads neither accrue wear nor decay (engineered + maintained).
   if (tile.road === 'roman') return;
-  tile.roadWear = (tile.roadWear ?? 0) + amount;
+  const boundedAmount = Math.min(amount, MAX_ROAD_WEAR_ADDED_PER_ENTRY);
+  tile.roadWear = Math.min(MAX_ROAD_WEAR, (tile.roadWear ?? 0) + boundedAmount);
 };
 
 // --- Demolition phase (docs/15 §C8 demolition) ---------------------------
@@ -1722,10 +1726,11 @@ const computeEdgeHexes = (grid: WorldState['grid']): readonly Hex[] => {
 };
 
 /**
- * Daily wear maintenance: every non-Roman hex with wear > 0 loses
- * WEAR_DECAY_PER_DAY. Wear past DIRT_UPGRADE_THRESHOLD on a 'none' hex
- * promotes to 'dirt'. Sustained wear < DIRT_DOWNGRADE_THRESHOLD on a
- * 'dirt' hex demotes back to 'none'.
+ * Daily wear maintenance: unbuilt trail memory decays slowly, while dirt
+ * roads decay faster so unused roads disappear from both sim state and the
+ * viewer. Wear past DIRT_UPGRADE_THRESHOLD on a 'none' hex promotes to
+ * 'dirt'. Sustained wear < DIRT_DOWNGRADE_THRESHOLD on a 'dirt' hex demotes
+ * back to 'none'.
  *
  * Iterates the entire grid; cheap because the per-tile work is just a
  * subtract + branch. At 6,400 hexes (80×80) this is ~0.1 ms.
@@ -1735,7 +1740,8 @@ const trailWearTickPhase = (world: WorldState, events: TickEvent[]): void => {
     if (tile.road === 'roman') continue;
     let wear = tile.roadWear ?? 0;
     if (wear > 0) {
-      wear = Math.max(0, wear - WEAR_DECAY_PER_DAY);
+      const decay = tile.road === 'dirt' ? DIRT_ROAD_DECAY_PER_DAY : WEAR_DECAY_PER_DAY;
+      wear = Math.max(0, wear - decay);
       tile.roadWear = wear;
     }
     if (tile.road === 'none' && wear >= DIRT_UPGRADE_THRESHOLD) {
@@ -1746,6 +1752,7 @@ const trailWearTickPhase = (world: WorldState, events: TickEvent[]): void => {
       events.push({ type: 'road_upgraded', hex: { q: h.q, r: h.r }, toGrade: 'dirt' });
     } else if (tile.road === 'dirt' && wear < DIRT_DOWNGRADE_THRESHOLD) {
       tile.road = 'none';
+      tile.roadWear = 0;
       events.push({ type: 'road_downgraded', hex: { q: h.q, r: h.r }, fromGrade: 'dirt' });
     }
   }

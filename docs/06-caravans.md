@@ -95,14 +95,14 @@ day, since hex = 1 km).
 
 | Mover | Roman road | Dirt road | Off-road (rough) | Mountain pass winter |
 |---|---|---|---|---|
-| Pack mule caravan, laden | ~25 | ~20 | ~10 | 0–2 |
-| Pack mule caravan, light | ~30 | ~25 | ~12 | 2–4 |
-| Pack donkey caravan | ~20 | ~17 | ~9 | 0–2 |
+| Pack mule caravan, laden | ~25 | ~20 | ~5 | 0–2 |
+| Pack mule caravan, light | ~30 | ~25 | ~6 | 2–4 |
+| Pack donkey caravan | ~20 | ~17 | ~4–5 | 0–2 |
 | Ox-cart, laden | ~15 | ~12 | impassable | impassable |
 | Heavy wagon, laden | ~12 | ~8 | impassable | impassable |
-| Walking peasant / migrant column | ~20 | ~18 | ~10 | 0–3 |
-| Roman legion on march | ~30 | ~25 | ~15 | 5–10 |
-| Express courier (changing horses) | ~150 | ~80 | ~30 | 5–15 |
+| Walking peasant / migrant column | ~20 | ~18 | ~5 | 0–3 |
+| Roman legion on march | ~30 | ~25 | ~7–8 | 5–10 |
+| Express courier (changing horses) | ~150 | ~80 | ~15 | 5–15 |
 
 These are first-pass; tunable. Movement progress accumulates as a
 fraction; partial movement carries to the next day. Wagons can fail
@@ -110,7 +110,7 @@ in mud, snow, or steep climbs. Crossing a river needs a ford or
 bridge or a delay.
 
 Implication: a mule caravan crossing a 100-km province takes ~4 days
-on a Roman road, ~5 days on dirt, ~10+ days off-road. A famine
+on a Roman road, ~5 days on dirt, ~20+ days off-road. A famine
 relief caravan is a real number of days late, not "instant on the
 turn the famine starts."
 
@@ -123,13 +123,13 @@ modified by the mover's equipment / animals / load. Higher difficulty
 
 | Hex | Roman road | Dirt road | Off-road |
 |---|---|---|---|
-| Plains / fertile valley | 1 | 1.25 | 2.5 |
-| Coast / steppe / urban | 1 | 1.25 | 2.5 |
-| Hills / desert | 1 | 1.5 | 3.5 |
-| Forest | 1 | 1.5 | 4 |
-| Dense forest | 1 | 2 | 6 |
-| Marsh | 1 | 2 | 5 |
-| Mountains (summer) | 1 | 2 | 8 |
+| Plains / fertile valley | 1 | 1.25 | 5 |
+| Coast / steppe / urban | 1 | 1.25 | 5 |
+| Hills / desert | 1 | 1.5 | 7 |
+| Forest | 1 | 1.5 | 8 |
+| Dense forest | 1 | 2 | 12 |
+| Marsh | 1 | 2 | 10 |
+| Mountains (summer) | 1 | 2 | 16 |
 | Mountains (winter) | impassable | impassable | impassable |
 | River (without ford/bridge) | impassable | impassable | impassable |
 | Lake | impassable | impassable | impassable |
@@ -179,13 +179,16 @@ counter (integer, 0 at procgen for un-roaded hexes). Every day:
 
 1. **Wear accrues** per traffic. Each caravan, news carrier, and
    patrol that ENTERS a hex during movement adds:
-   - +1 per pack-mule equivalent (~50 kg cargo capacity)
-   - +0.5 per crew member (people on foot pack the trail too,
+   - +0.2 per pack-mule equivalent (~50 kg cargo capacity)
+   - +0.05 per crew member (people on foot pack the trail too,
      just less than animals)
    - +0.2 per news carrier (single person walking)
    - +0.5 per patrol soldier
-   So a 50-mule + 12-crew caravan crossing a hex adds 50 + 6 = 56
-   wear. A two-soldier patrol adds 1.
+   A single moving unit's contribution to one hex is capped at 10
+   wear per day, so a giant caravan can help wear a route in, but
+   cannot instantly bank years of road memory. A 50-mule + 12-crew
+   caravan crossing a hex adds about 10.6 wear before that cap, so
+   it lands at +10. A two-soldier patrol adds 1.
 2. **Wear decays** -1 per day on every hex with roadWear > 0
    (wilderness reclaims unused trails). So a hex needs at least 1
    wear-unit/day on average just to hold its accumulated trail.
@@ -202,9 +205,10 @@ counter (integer, 0 at procgen for un-roaded hexes). Every day:
    its roads) is tracked in docs/15 §C11.
 5. **Dirt roads can downgrade.** A `dirt` hex whose roadWear
    falls below 20 (sustained low traffic) reverts to
-   `road = 'none'`. Wear keeps accruing during the dirt phase, so
-   a popular dirt road builds up reserve and won't snap back the
-   first quiet week.
+   `road = 'none'`. Dirt roads decay faster than unbuilt trail
+   memory (-3/day), so an unused dirt road seeded at 100 disappears
+   in about four weeks, while a popular dirt road still stays alive
+   under steady traffic.
 
 ### Why this is good
 
@@ -227,20 +231,21 @@ These are first-pass; numbers will move during burn-in:
 
 | Constant | Default | Meaning |
 |---|---|---|
-| `WEAR_PER_PACK_ANIMAL` | 1.0 | per hex entered |
-| `WEAR_PER_CREW` | 0.5 | per hex entered |
+| `WEAR_PER_PACK_ANIMAL` | 0.2 | per hex entered |
+| `WEAR_PER_CREW` | 0.05 | per hex entered |
 | `WEAR_PER_NEWS_CARRIER` | 0.2 | per hex entered |
 | `WEAR_PER_PATROL_SOLDIER` | 0.5 | per hex entered |
 | `WEAR_DECAY_PER_DAY` | 1.0 | per hex with wear > 0 |
+| `DIRT_ROAD_DECAY_PER_DAY` | 3.0 | per dirt-road hex with wear > 0 |
 | `DIRT_UPGRADE_THRESHOLD` | 100 | wear needed to upgrade `none` → `dirt` |
 | `DIRT_DOWNGRADE_THRESHOLD` | 20 | wear floor below which `dirt` → `none` |
+| `MAX_ROAD_WEAR` | 200 | maximum stored wear on a non-Roman hex |
+| `MAX_ROAD_WEAR_ADDED_PER_ENTRY` | 10 | maximum one moving unit adds to one hex in one day |
 | `ROMAN_WEARS` | false | Roman roads don't accrue wear or decay |
 
-A medium caravan (~10 mules, ~5 crew) puts down ~12 wear per hex
-crossed. So a single caravan transit adds ~12; ~10 transits in
-quick succession can take a hex from wilderness to dirt road.
-That matches the intuition: the third or fourth caravan along a
-route is when locals start calling it a path.
+A medium caravan (~10 mules, ~5 crew) puts down ~2.25 wear per
+hex crossed. So a single caravan transit helps, but does not build
+a road by itself; a popular route over a season does.
 
 ### Procgen interaction
 

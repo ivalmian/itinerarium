@@ -44,7 +44,7 @@ export interface NewsTickWithGridInputs {
 /**
  * Routing profile for a news carrier on foot. Costs are calibrated so a
  * carrier with `movementPointsPerDay = 20` covers ~20 hexes/day on a Roman
- * road, ~16 on dirt, ~10-12 on plains off-road, and is much slower in
+ * road, ~16 on dirt, ~5-6 on plains off-road, and is much slower in
  * difficult terrain. Returns Infinity for terrain that's truly impassable
  * for the carrier in the given season (lakes, winter mountains, spring
  * marshes).
@@ -76,12 +76,14 @@ const refugeeBaseCost = (terrain: Terrain): number => {
   }
 };
 
+const OFF_ROAD_COST_MULTIPLIER = 2;
+
 const REFUGEE_PROFILE: MovementProfile = {
   costFor(terrain: Terrain, road: RoadGrade, season: Season, _loadFraction: number): number {
     if (!isPassable(terrain, season)) return Infinity;
     if (road === 'roman') return 1;
     if (road === 'dirt') return 1.25;
-    return refugeeBaseCost(terrain);
+    return refugeeBaseCost(terrain) * OFF_ROAD_COST_MULTIPLIER;
   },
 };
 

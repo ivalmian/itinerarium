@@ -74,14 +74,14 @@ describe('tickMigrationWithGrid — basic movement', () => {
 });
 
 describe('tickMigrationWithGrid — speed', () => {
-  it('a column makes ~15 hexes/day in normal terrain (within ±5)', () => {
+  it('a column makes ~7 hexes/day off-road in normal terrain', () => {
     const g = createGrid();
     fillRect(g, 0, 40, 0, 2);
     const c = baseColumn(hex(0, 0), hex(40, 0));
     const r = tickMigrationWithGrid(tickInputs(c, g, 1 as Day, createRng('s')));
     const moved = hexDistance(r.column.position, hex(0, 0));
-    expect(moved).toBeGreaterThanOrEqual(10);
-    expect(moved).toBeLessThanOrEqual(20);
+    expect(moved).toBeGreaterThanOrEqual(5);
+    expect(moved).toBeLessThanOrEqual(9);
   });
 
   it('a column is slower off-road in hills than on a Roman road on plains', () => {

@@ -52,8 +52,8 @@ describe('movement profiles', () => {
     const offRoad = LADEN_MULE_PROFILE.costFor('plains', 'none', 'summer', 1);
     const dirt = LADEN_MULE_PROFILE.costFor('plains', 'dirt', 'summer', 1);
     expect(offRoad).toBeGreaterThan(dirt);
-    // Roughly 2.5x off-road per docs/06.
-    expect(offRoad).toBeGreaterThanOrEqual(2);
+    // Roughly 4x dirt-road cost after the harsher off-road tuning.
+    expect(offRoad).toBeGreaterThanOrEqual(5);
   });
 
   it('LADEN_MULE through mountain pass in winter is impassable', () => {

@@ -43,7 +43,7 @@ During the turn, the player spends MP on actions:
 |---|---|
 | Move to an adjacent hex on Roman road | 1 MP (modified by terrain/weather/load) |
 | Move to an adjacent hex on dirt road | ~1.25 MP |
-| Move to an adjacent hex off-road (rough) | ~2.5 MP |
+| Move to an adjacent hex off-road (rough) | ~5 MP |
 | Enter a market and post trade intents | small fixed MP |
 | Engage in combat | variable; may consume the rest of the day |
 | Investigate a hidden feature | variable per feature |

@@ -161,7 +161,7 @@ loop: production → consumption → trade → demographics & disease
 | 22 | News-carrier rumor propagation | **Locked** — reputation updates travel at the speed of caravans / refugees / escaped survivors, never instantly |
 | 23 | Battle survivor witness mechanic | **Locked** — escaped survivors become real news carriers; "leave no witnesses" is hard but possible; missing caravans seed indirect rumor |
 | 24 | Player turn UX | **Vagrus-style** — daily MP pool spent during the turn; end the turn by camping; clicking End Turn without actions advances one day; auto-pause flags surface notable events |
-| 25 | Terrain difficulty model | **Per-(terrain, road) difficulty factors** (road=1, dirt=1.25, off-road varies 2.5–8); modified by load + equipment + animals. See [06 — Caravans](06-caravans.md) |
+| 25 | Terrain difficulty model | **Per-(terrain, road) difficulty factors** (road=1, dirt=1.25, off-road varies 5–16); modified by load + equipment + animals. See [06 — Caravans](06-caravans.md) |
 | 26 | Goal-bearing units | **Caravans, migrations, military units, patrols carry persistent goals** (move_to / trade_at / escort / patrol / return_home / flee_to) on a stack, subject to money/food/health/season constraints |
 | 27 | Communicated price discovery | **Merchant guilds** mediate price gossip — caravans deposit observations to home guild, members read on arrival, guilds exchange across cities. Each NPC plans crowding-aware (no stampedes). See [08 — Money & Trade](08-money-and-trade.md) |
 | 28 | Escalating banditry response | Local watch → family guard → governor patrol → cohort sweep → cross-province reinforcement. Patterns of incidents (not single events) drive escalation. See [12 — Bandits & Conflict](12-bandits-and-conflict.md) |

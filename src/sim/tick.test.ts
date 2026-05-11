@@ -368,6 +368,52 @@ describe('tick (per-day loop)', () => {
     });
   });
 
+  describe('trail wear phase', () => {
+    it('caps road wear from heavy repeated caravan traffic', () => {
+      const w = buildEmptyWorld();
+      w.grid.set(hex(0, 0), makeTile('plains'));
+      w.grid.set(hex(1, 0), makeTile('plains'));
+      w.grid.set(hex(2, 0), makeTile('plains'));
+      for (const [, t] of w.grid.tiles()) {
+        t.road = 'none';
+        t.roadWear = 0;
+      }
+
+      const cId = caravanId('heavy-traffic');
+      const c = createCaravan({
+        id: cId,
+        ownerActor: actorId('city-corp-1'),
+        position: hex(0, 0),
+        destination: hex(2, 0),
+        crew: [{ kind: 'merchant', count: 2000, weapons: 0, armor: 0 }],
+        animals: { mule: 5000 },
+        vehicles: {},
+      });
+      c.cargo.set(resourceId('food.bread'), 100000);
+      w.caravans.set(cId, c);
+
+      tick({ world: w, rng: createRng('road-wear-cap') });
+
+      expect(w.grid.get(hex(1, 0))?.roadWear).toBeLessThanOrEqual(10);
+    });
+
+    it('demotes unused dirt roads quickly and clears their wear', () => {
+      const w = buildEmptyWorld();
+      w.grid.set(hex(0, 0), {
+        ...makeTile('plains'),
+        road: 'dirt',
+        roadWear: 22,
+      });
+
+      const r = tick({ world: w, rng: createRng('road-decay') });
+      const downgraded = eventsOfType(r.events, 'road_downgraded');
+
+      expect(w.grid.get(hex(0, 0))?.road).toBe('none');
+      expect(w.grid.get(hex(0, 0))?.roadWear).toBe(0);
+      expect(downgraded).toHaveLength(1);
+    });
+  });
+
   describe('trade phase', () => {
     it('emits market_cleared events for resources with both demand and supply', () => {
       const w = buildOneSettlementWorld({

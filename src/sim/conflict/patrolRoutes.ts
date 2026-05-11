@@ -161,31 +161,35 @@ const ROUTE_PROFILE: MovementProfile = {
     if (!isPassable(terrain, FIXED_SEASON)) return Infinity;
     if (road === 'roman') return 1;
     if (road === 'dirt') return 1.3;
-    switch (terrain) {
-      case 'plains':
-      case 'fertile_valley':
-      case 'urban':
-      case 'ruin':
-      case 'steppe':
-        return 2;
-      case 'hills':
-        return 3;
-      case 'desert':
-        return 3.5;
-      case 'forest':
-        return 3;
-      case 'dense_forest':
-        return 5;
-      case 'river':
-        return 4;
-      case 'marsh':
-        return 6;
-      case 'mountains':
-        return 6;
-      case 'lake':
-        return Infinity;
-    }
+    return patrolOffRoadCost(terrain) * 2;
   },
+};
+
+const patrolOffRoadCost = (terrain: Terrain): number => {
+  switch (terrain) {
+    case 'plains':
+    case 'fertile_valley':
+    case 'urban':
+    case 'ruin':
+    case 'steppe':
+      return 2;
+    case 'hills':
+      return 3;
+    case 'desert':
+      return 3.5;
+    case 'forest':
+      return 3;
+    case 'dense_forest':
+      return 5;
+    case 'river':
+      return 4;
+    case 'marsh':
+      return 6;
+    case 'mountains':
+      return 6;
+    case 'lake':
+      return Infinity;
+  }
 };
 
 /**
