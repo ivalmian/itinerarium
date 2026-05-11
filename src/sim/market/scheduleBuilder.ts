@@ -417,6 +417,148 @@ const RECIPES_BY_INPUT: ReadonlyMap<string, readonly RecipeDef[]> = (() => {
   return out;
 })();
 
+const RECIPES_BY_OUTPUT: ReadonlyMap<string, readonly RecipeDef[]> = (() => {
+  const out = new Map<string, RecipeDef[]>();
+  for (const recipe of allRecipes()) {
+    for (const output of recipe.outputs.keys()) {
+      const k = String(output);
+      let bucket = out.get(k);
+      if (bucket === undefined) {
+        bucket = [];
+        out.set(k, bucket);
+      }
+      bucket.push(recipe);
+    }
+  }
+  return out;
+})();
+
+/**
+ * Daily subsistence basket per working adult, valued at local prices
+ * to produce a real wage. Per docs/04 §"Consumption per adult per
+ * day" — the worker must eat, salt their food, heat their dwelling,
+ * and replace clothing over time. These are the things wages have to
+ * cover. (Per the user: "we should have labor costs, presumably
+ * labor buys goods they consume. eg a farmer buys bread.")
+ *
+ * Quantities are per docs/04. The basket deliberately mixes a
+ * staple (grain), a dietary necessity (salt), a fuel (wood), and a
+ * slow-burn manufactured good (cloth) so the wage tracks the
+ * full subsistence shopping list, not just one number.
+ *
+ * For the wage calculation we use a *substitutable food* convention:
+ * if no grain price has been observed yet, fall back to bread or
+ * cheese; if there's no fuel price we substitute charcoal at the
+ * documented heat ratio. Only items with a positive local price
+ * contribute — missing markets count as zero (the worker just
+ * doesn't get to buy that item) rather than crashing the wage.
+ */
+const SUBSISTENCE_BASKET: ReadonlyArray<{
+  readonly substitutes: readonly { readonly resource: ResourceId; readonly qtyKg: number }[];
+}> = Object.freeze([
+  // Calories — ~0.4 kg grain-equivalent per day, substitutable.
+  {
+    substitutes: [
+      { resource: 'food.bread' as ResourceId, qtyKg: 0.5 }, // bread is heavier per kcal
+      { resource: 'food.flour' as ResourceId, qtyKg: 0.4 },
+      { resource: 'food.grain' as ResourceId, qtyKg: 0.4 },
+      { resource: 'food.cheese' as ResourceId, qtyKg: 0.2 },
+      { resource: 'food.fish' as ResourceId, qtyKg: 0.4 },
+      { resource: 'food.game' as ResourceId, qtyKg: 0.4 },
+    ],
+  },
+  // Salt — 7 g/day, no substitute. Required.
+  {
+    substitutes: [{ resource: 'mineral.salt' as ResourceId, qtyKg: 0.007 }],
+  },
+  // Fuel — 0.7 kg wood/day, charcoal substitutes at 4× heat density.
+  {
+    substitutes: [
+      { resource: 'material.wood' as ResourceId, qtyKg: 0.7 },
+      { resource: 'material.charcoal' as ResourceId, qtyKg: 0.175 },
+    ],
+  },
+  // Clothing — 1 garment per 700 days, ≈ 0.001 unit/day of cloth.
+  {
+    substitutes: [{ resource: 'goods.cloth' as ResourceId, qtyKg: 0.001 }],
+  },
+]);
+
+/**
+ * Imputed wage per worker-day, in coins, computed as the cost of a
+ * real subsistence basket at local recent prices. For each basket
+ * item we pick the cheapest available substitute that has a positive
+ * local price; items where none of the substitutes have any local
+ * price contribute 0 (the worker just doesn't get to buy that item
+ * yet — but the rest of the basket still has cost). This anchors
+ * labor cost endogenously to local prices, so:
+ *   - When grain becomes scarce and pricey, wages rise → every
+ *     labor-intensive good gets more expensive (cost-push wage
+ *     inflation, the classic "price of bread" mechanism).
+ *   - When grain is cheap, wages fall and labor-intensive goods
+ *     follow.
+ *   - When local prices for everything in the basket are unknown,
+ *     wage = 0 and MC reduces to its input-cost component (which
+ *     itself is anchored by globally-priced resources at the start).
+ */
+const laborCostPerWorkerDay = (prices: ReadonlyMap<ResourceId, number>): number => {
+  let total = 0;
+  for (const item of SUBSISTENCE_BASKET) {
+    let cheapest = Infinity;
+    for (const sub of item.substitutes) {
+      const p = prices.get(sub.resource) ?? 0;
+      if (p <= 0) continue;
+      const cost = sub.qtyKg * p;
+      if (cost < cheapest) cheapest = cost;
+    }
+    if (Number.isFinite(cheapest)) total += cheapest;
+  }
+  return total;
+};
+
+/**
+ * Marginal cost of producing one unit of `resource`, computed against
+ * `prices` for the inputs and the labor cost imputed from the local
+ * grain price. Per docs/08 §"Why marginal cost is the supply floor":
+ * this is the classical P = MC anchor for the supply curve. We take
+ * the cheapest available recipe; if the resource has no producing
+ * recipe (purely extracted with nominal inputs only), MC reduces to
+ * the labor component.
+ *
+ * Missing input prices contribute 0 rather than disqualifying the
+ * recipe — partial information is better than 0 cost. The labor term
+ * is always included, so even a fully-unpriced recipe still has an
+ * MC floor equal to wage × labor.
+ *
+ * Returns 0 only if no recipe produces the resource AND there is no
+ * grain-price signal (the very first day before any clearing).
+ */
+const marginalCostFor = (
+  resource: ResourceId,
+  prices: ReadonlyMap<ResourceId, number>,
+): number => {
+  const recipes = RECIPES_BY_OUTPUT.get(String(resource));
+  if (recipes === undefined || recipes.length === 0) return 0;
+  const wage = laborCostPerWorkerDay(prices);
+  let cheapest = Infinity;
+  for (const recipe of recipes) {
+    const outQty = recipe.outputs.get(resource) ?? 0;
+    if (outQty <= 0) continue;
+    let inputCost = 0;
+    for (const [inRes, inQty] of recipe.inputs) {
+      const p = prices.get(inRes) ?? 0;
+      if (p <= 0) continue;
+      inputCost += (inQty * p) / outQty;
+    }
+    let totalLabor = 0;
+    for (const [, headcount] of recipe.labor) totalLabor += headcount;
+    const laborCostPerOutput = (totalLabor * wage) / outQty;
+    const cost = inputCost + laborCostPerOutput;
+    if (cost < cheapest) cheapest = cost;
+  }
+  return Number.isFinite(cheapest) ? cheapest : 0;
+};
+
 const pickRepresentativeOutput = (
   recipe: RecipeDef,
   prices: ReadonlyMap<ResourceId, number>,
@@ -467,12 +609,30 @@ const supplyForResource = (
   const recentPrice = inputs.recentLocalPrices.get(resource) ?? 0;
   const def = getResource(resource);
   const storageHoldingDays = def.perishableDays ?? 365;
+  // Per docs/08 §"Why marginal cost is the supply floor": the
+  // classical P = MC anchor. Producers won't (rationally) sell below
+  // marginal cost — at P < MC every unit loses money. We compute MC
+  // from the cheapest recipe that produces this resource, valued at
+  // recent local input prices. The earlier formulation used 0.8 ×
+  // recent_output_price, which had no anchor to inputs and produced
+  // a downward death-spiral whenever supply briefly exceeded demand.
+  const marginalCost = marginalCostFor(resource, inputs.recentLocalPrices);
   for (const [ownerActor, byResource] of inputs.stockpilesByOwner) {
     const qty = byResource.get(resource);
     if (qty === undefined || qty <= 0) continue;
     const kind = inputs.ownerKindByActor?.get(ownerActor);
     const urgency = kind !== undefined ? URGENCY_BY_KIND[kind] : DEFAULT_OWNER_URGENCY;
-    const productionCost = recentPrice > 0 ? recentPrice * DEFAULT_PRODUCTION_COST_RATIO : 0;
+    // For resources with a real producing recipe: MC is the floor.
+    // For purely-extracted resources (timber, ore, raw fish) the
+    // recipe has nominal/zero priced inputs, so MC ≈ 0; fall back to
+    // a light fraction of the recent observed price to keep the
+    // supply curve sloping (extractors don't sell at literally 0).
+    const productionCost =
+      marginalCost > 0
+        ? marginalCost
+        : recentPrice > 0
+          ? recentPrice * DEFAULT_PRODUCTION_COST_RATIO
+          : 0;
     const expectedFuturePrice = recentPrice;
     out.push(
       ownerSupply({

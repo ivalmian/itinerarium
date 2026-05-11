@@ -127,8 +127,13 @@ Each owner with a stockpile of the resource decides whether to sell
 and at what minimum price.
 
 ```
-production_cost   = recipe inputs + labor + amortization
-                    (sunk, but a floor for "below this it's a loss")
+production_cost   = MARGINAL COST anchored to inputs:
+                    Σ over recipes that produce this resource of
+                      (input_qty × recent_input_price) / output_qty,
+                    taking the cheapest available recipe.
+                    (Labor is currently ignored in the cost; it
+                    eats from the worker's own subsistence pool, not
+                    from the market.)
 opportunity_cost  = expected price next week minus storage cost
 spoilage_pressure = if perishable AND days_to_spoil < holding_period,
                     urgency to sell rises
@@ -147,6 +152,32 @@ supply(p) = available_to_sell  if p ≥ reservation_price
 
 Aggregate supply at price `p` = sum across all owners. Upward-
 sloping step function.
+
+### Why marginal cost is the supply floor (locked, economic theory)
+
+The classical micro-economic competitive-equilibrium identity is
+**P = MC** at the margin. Producers do not knowingly sell below
+their marginal cost — at P < MC every additional unit loses money,
+so the rational producer would rather hold inventory or stop
+making more. This anchors the supply curve to a real,
+input-derived cost rather than to whatever the last clearing price
+happened to be.
+
+The earlier formulation set `production_cost = 0.8 ×
+recent_output_price`, which had no anchor to inputs. When supply
+exceeded demand the output price fell, the next tick's reservation
+fell with it, and prices spiraled into 1e-7 territory — a
+death-spiral that the user flagged as "decay → spike → decay" when
+band-aided with periodic re-seeding. The MC formulation removes
+the spiral at its source: input prices have to fall too before the
+output price can drop, and they can't fall below their own MC. The
+whole price column floats up and down together but stays bounded
+to physically real costs of production.
+
+Side benefits: cost-push inflation works correctly (an iron
+shortage raises tool prices via MC propagation), and cost-pull
+deflation works correctly (a bumper grain harvest lowers flour
+prices via the bake_bread recipe's flour input).
 
 This is where "patricians hoard during famine" becomes emergent. A
 patrician family with a full granary has `owner_urgency_factor`

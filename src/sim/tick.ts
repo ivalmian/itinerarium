@@ -1864,21 +1864,40 @@ const tradePhase = (
     const localTradable = tradable.filter((r) => presentResources.has(r));
     if (localTradable.length === 0) continue;
 
-    // Synthesize a recentLocalPrices map: use the observed clearing
-    // price if present + non-zero, else fall back to the global-market
-    // baseline (or 1 coin/unit). Without a non-zero baseline,
-    // buildSettlementSchedules sets productionCost = 0.8 × 0 = 0,
-    // sellers have reservation 0, market clears at 0, and the next
-    // tick's "recent price" is still 0 → permanent zero-price death
-    // spiral. The baseline kicks the spiral so the price discovers a
-    // real local floor.
+    // Synthesize a recentLocalPrices map. We seed *every* resource we
+    // might need to reason about — not just locally-tradable ones —
+    // because the marginal-cost anchor in scheduleBuilder needs to
+    // look up input prices (grain, salt, wood, etc.) when computing
+    // MC of a refined good, even if those inputs aren't currently in
+    // someone's local stockpile. Sources, in priority order:
+    //   1. Last observed local clearing price (the truest local
+    //      signal).
+    //   2. Off-map global price, IF this resource has one (caravans
+    //      from outside the province know the empire-wide reference
+    //      for grain, oil, wine, cloth, tools, weapons, silver,
+    //      gold, exotics, slaves — these are the high-value
+    //      long-distance goods worth shipping at scale; this is a
+    //      real economic signal, not an arbitrary pin).
+    //   3. Otherwise: unseeded. Local-only goods (flour, bread,
+    //      charcoal, lumber, pottery, hides) have no external
+    //      anchor; their price has to emerge from local marginal
+    //      cost. The MC formula tolerates missing input prices
+    //      (contributes 0 for that input), so the chain bootstraps
+    //      itself within a few ticks: grain has a global price → MC
+    //      of flour computable → flour clears → MC of bread
+    //      computable → bread clears, etc.
+    // Per the user: "i don't think pinning prices to some arbitrary
+    // values is good, that's not what happens irl either."
     const seededPrices = new Map<ResourceId, number>();
-    for (const r of localTradable) {
+    for (const r of tradable) {
       const observed = settlement.market.lastClearingPrice.get(r) ?? 0;
       if (observed > 0) {
         seededPrices.set(r, observed);
-      } else {
-        seededPrices.set(r, DEFAULT_GLOBAL_PRICES.get(r) ?? 1);
+        continue;
+      }
+      const globalPrice = DEFAULT_GLOBAL_PRICES.get(r);
+      if (globalPrice !== undefined && globalPrice > 0) {
+        seededPrices.set(r, globalPrice);
       }
     }
 

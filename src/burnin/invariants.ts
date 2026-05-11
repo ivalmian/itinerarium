@@ -215,21 +215,28 @@ export const priceFinite: Invariant = ({ world }) => {
 export const noPathologicalZeroPrices: Invariant = ({ world }) => {
   const out: InvariantViolation[] = [];
   if (world.day < 30) return out; // grace period
+  // "Pathological" = price below 1e-3 coins/unit. The cheapest sane
+  // good in the canonical price table is grain at 1.5; anything more
+  // than three orders of magnitude below that is sellers giving goods
+  // away because of a numerical death spiral, not a real equilibrium.
+  // Per the user: "most clearing prices are like 1e-7... this is
+  // pathological. we should aim for prices that are in single digits."
+  const PATHOLOGICAL_PRICE = 1e-3;
   let total = 0;
-  let zero = 0;
+  let pathological = 0;
   for (const settlement of world.settlements.values()) {
     for (const [, price] of settlement.market.lastClearingPrice) {
       total++;
-      if (price === 0) zero++;
+      if (price < PATHOLOGICAL_PRICE) pathological++;
     }
   }
   if (total === 0) return out;
-  const fraction = zero / total;
+  const fraction = pathological / total;
   if (fraction > 0.5) {
     out.push(
       violation(
         'noPathologicalZeroPrices',
-        `${zero}/${total} (${(fraction * 100).toFixed(0)}%) of cleared markets are at price 0 — sellers giving goods away. The trade phase is broken.`,
+        `${pathological}/${total} (${(fraction * 100).toFixed(0)}%) of cleared markets have prices < ${PATHOLOGICAL_PRICE} coins/unit — sellers giving goods away. The trade phase is broken.`,
         'fatal',
       ),
     );
