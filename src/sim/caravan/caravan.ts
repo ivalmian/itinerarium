@@ -20,6 +20,7 @@ import { getResource } from '../resources/index.js';
 import type { Rng } from '../rng.js';
 import type { Day } from '../types.js';
 import type { ActorId, CaravanId, Coin, Position, Quantity, ResourceId } from '../types.js';
+import type { Goal } from './goal.js';
 import { isPassable, type RoadGrade, type Season, type Terrain } from '../world/terrain.js';
 
 // --- Animals ---------------------------------------------------------------
@@ -159,6 +160,15 @@ export interface Caravan {
   priceBook: Map<ResourceId, Map<string, PriceObservation>>;
   /** 0..1 average crew/animal health (rations, fatigue, infection erode it). */
   health: number;
+  /**
+   * Persistent goal stack (docs/15 §C18 + docs/06 §"Goal-bearing units").
+   * The per-tick AI peeks the top, advances it; pops when complete.
+   * For backwards compat the field is optional — caravans without an
+   * explicit stack use the legacy single-`destination` re-planning path
+   * in tick.ts caravanReplanPhase. New caravans (NPC trade routes,
+   * tax shipments, edge-hub imports/exports) push goals at creation.
+   */
+  goalStack?: Goal[];
 }
 
 export interface CreateCaravanInput {

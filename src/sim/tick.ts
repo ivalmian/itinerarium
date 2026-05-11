@@ -45,6 +45,12 @@ import {
   mergeLedgerInto,
   type Guild,
 } from './politics/guild.js';
+import {
+  isGoalComplete,
+  peekGoal,
+  popGoal,
+  type Goal,
+} from './caravan/goal.js';
 import { actorId, banditCampId as makeBanditCampId, characterId, factionId } from './types.js';
 import { resolveAmbush, type AmbushResult } from './conflict/ambush.js';
 import { tickEdgeHubs, DEFAULT_GLOBAL_PRICES, DEFAULT_IMPORT_PALETTE } from './caravan/edgeHub.js';
@@ -150,6 +156,12 @@ export type TickEvent =
       readonly to: Hex;
     }
   | { readonly type: 'caravan_arrived'; readonly caravan: CaravanId; readonly at: Hex }
+  | {
+      readonly type: 'caravan_disbanded';
+      readonly caravan: CaravanId;
+      readonly at: Hex;
+      readonly reason: 'zero_health' | 'idle_too_long';
+    }
   | {
       readonly type: 'market_cleared';
       readonly settlement: SettlementId;
@@ -871,6 +883,26 @@ const movementPhase = (
   today: Day,
   events: TickEvent[],
 ): void => {
+  // Disband caravans whose health hit 0 BEFORE moving. A 0% HP caravan
+  // means crew + animals are dead/incapacitated; the cargo is loose
+  // goods on the road (we don't model the loose-goods drop yet).
+  // Per the user's note + docs/06 §"Consumption en route".
+  const disbanded: CaravanId[] = [];
+  for (const [cId, c] of world.caravans) {
+    if (c.health <= 0) disbanded.push(cId);
+  }
+  for (const cId of disbanded) {
+    const c = world.caravans.get(cId);
+    if (c === undefined) continue;
+    world.caravans.delete(cId);
+    events.push({
+      type: 'caravan_disbanded',
+      caravan: cId,
+      at: { q: c.position.q, r: c.position.r },
+      reason: 'zero_health',
+    });
+  }
+
   for (const [cId, c] of world.caravans) {
     const before = { q: c.position.q, r: c.position.r };
     const result = tickCaravanMovement({ caravan: c, grid: world.grid, season, today });
@@ -945,6 +977,31 @@ const addRoadWear = (world: WorldState, h: Hex, amount: number): void => {
   // Roman roads neither accrue wear nor decay (engineered + maintained).
   if (tile.road === 'roman') return;
   tile.roadWear = (tile.roadWear ?? 0) + amount;
+};
+
+// --- GoalStack helpers (docs/15 §C18) ------------------------------------
+
+const goalDestination = (
+  goal: Goal,
+  settlementAnchorByCity: ReadonlyMap<SettlementId, Hex>,
+): Hex | null => {
+  switch (goal.type) {
+    case 'move_to':
+      return { q: goal.hex.q, r: goal.hex.r };
+    case 'return_home':
+      return { q: goal.home.q, r: goal.home.r };
+    case 'flee_to':
+      return { q: goal.safe.q, r: goal.safe.r };
+    case 'trade_at': {
+      const a = settlementAnchorByCity.get(goal.settlement);
+      return a === undefined ? null : { q: a.q, r: a.r };
+    }
+    case 'escort':
+    case 'patrol':
+      // Engine-driven: the patrol/escort layer sets destinations
+      // based on target/route. Caravan AI doesn't override.
+      return null;
+  }
 };
 
 // --- Merchant guilds (docs/15 §C17) --------------------------------------
@@ -2395,7 +2452,30 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day): void => {
   const candidates = settlementIndex.candidates;
   if (candidates.length < 2) return;
 
+  // Build a city-anchor lookup once per phase for goal-completion checks.
+  const settlementAnchorByCity = new Map<SettlementId, Hex>();
+  for (const s of world.settlements.values()) settlementAnchorByCity.set(s.id, s.anchor);
+
   for (const [cId, c] of world.caravans) {
+    // Per docs/15 §C18: if this caravan has a goalStack, advance it
+    // BEFORE the legacy single-destination logic. When the top goal
+    // completes, pop and adopt the next goal's implied destination.
+    if (c.goalStack !== undefined && c.goalStack.length > 0) {
+      while (c.goalStack.length > 0) {
+        const top = peekGoal(c.goalStack) as Goal;
+        if (!isGoalComplete(top, c.position, { settlementAnchorByCity })) break;
+        popGoal(c.goalStack);
+      }
+      const next = peekGoal(c.goalStack);
+      if (next !== undefined) {
+        // Adopt the goal's implied destination so the existing movement
+        // engine drives the caravan toward it. trade_at + return_home +
+        // flee_to + move_to all imply a hex; escort + patrol use the
+        // active route logic in the patrol/conflict layer.
+        const dest = goalDestination(next, settlementAnchorByCity);
+        if (dest !== null) c.destination = dest;
+      }
+    }
     if (c.destination === null) continue;
     if (!hexEquals(c.position, c.destination)) continue; // not yet arrived
 
