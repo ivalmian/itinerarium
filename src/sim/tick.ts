@@ -1108,9 +1108,12 @@ const localTradePhase = (
         if (!isAnchorPassable(b)) continue;
         const dist = hexDistance(a.anchor, b.anchor);
         if (dist > LOCAL_TRADE_MAX_HEX_DISTANCE) continue;
-        const transportCost = TRANSPORT_COST_BY_DISTANCE[dist] ?? 0;
+        // Per docs/06 §"Distance and cost", the table is in coin/kg, not
+        // coin/unit. tryLocalTrade scales by the resource's weightKgPerUnit
+        // before comparing prices.
+        const transportCostPerKg = TRANSPORT_COST_BY_DISTANCE[dist] ?? 0;
         for (const resId of LOCAL_TRADE_RESOURCES) {
-          tryLocalTrade(world, a, b, resId, transportCost, events);
+          tryLocalTrade(world, a, b, resId, transportCostPerKg, events);
         }
       }
     }
@@ -1122,13 +1125,24 @@ const tryLocalTrade = (
   a: Settlement,
   b: Settlement,
   resId: ResourceId,
-  transportCost: number,
+  transportCostPerKg: number,
   events: TickEvent[],
 ): void => {
   const priceA = a.market.lastClearingPrice.get(resId);
   const priceB = b.market.lastClearingPrice.get(resId);
   if (priceA === undefined || priceB === undefined) return;
   if (priceA <= 0 || priceB <= 0) return;
+
+  // Per docs/06 §"Distance and cost", transport is a coin/kg surcharge.
+  // Convert to coin/unit using the resource's weight before comparing
+  // prices (which are themselves coin/unit). Heavy goods like grain
+  // (~6.7 kg/modius) eat a meaningful chunk of any price spread; tiny
+  // luxuries like spices barely notice.
+  const def = getResource(resId);
+  const weightKgPerUnit = def.weightKgPerUnit;
+  if (weightKgPerUnit <= 0) return;
+  const transportCostPerUnit = transportCostPerKg * weightKgPerUnit;
+
   // Pick seller = cheaper, buyer = dearer; only fire if spread covers
   // transport. The PETTY_MERCHANT_CUT is also netted out so we don't trade
   // away the merchant's livelihood.
@@ -1136,12 +1150,12 @@ const tryLocalTrade = (
   let buyer: Settlement;
   let sellerPrice: number;
   let buyerPrice: number;
-  if (priceA + transportCost < priceB) {
+  if (priceA + transportCostPerUnit < priceB) {
     seller = a;
     buyer = b;
     sellerPrice = priceA;
     buyerPrice = priceB;
-  } else if (priceB + transportCost < priceA) {
+  } else if (priceB + transportCostPerUnit < priceA) {
     seller = b;
     buyer = a;
     sellerPrice = priceB;
@@ -1149,7 +1163,7 @@ const tryLocalTrade = (
   } else {
     return;
   }
-  const spread = buyerPrice - sellerPrice - transportCost;
+  const spread = buyerPrice - sellerPrice - transportCostPerUnit;
   if (spread <= 0) return;
   // Petty merchant absorbs a small cut of the spread; if the residual
   // spread is non-positive, no trade is attractive enough to walk.
@@ -1158,7 +1172,7 @@ const tryLocalTrade = (
 
   // Settle at the midpoint price (split the spread). The buyer pays
   // mid; the seller receives mid. Transport cost is implicit in the
-  // gap between sellerPrice + transportCost ≤ mid ≤ buyerPrice.
+  // gap between sellerPrice + transportCostPerUnit ≤ mid ≤ buyerPrice.
   const midPrice = (sellerPrice + buyerPrice) / 2;
   if (midPrice <= 0) return;
 
@@ -1166,10 +1180,6 @@ const tryLocalTrade = (
   if (sellerActor === null) return;
   const buyerActor = pickBuyerActor(world, buyer);
   if (buyerActor === null) return;
-
-  const def = getResource(resId);
-  const weightKgPerUnit = def.weightKgPerUnit;
-  if (weightKgPerUnit <= 0) return;
 
   const sellerStock = sellerActor.stockpile.get(resId) ?? 0;
   if (sellerStock <= 0) return;
@@ -1543,26 +1553,53 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day): void => {
   if (candidates.length < 2) return;
 
   // Index settlements by anchor hex for the price-book observation step.
-  const settlementByAnchor = new Map<string, Settlement>();
+  // Multiple settlements may share a hex (the pagus + dependent-hamlets
+  // case from docs/05 §"Same-hex coexistence"); the entry is therefore an
+  // array. A caravan that walks into the hex sees every market stall
+  // there, so it observes prices from every settlement on the tile.
+  const settlementsByAnchor = new Map<string, Settlement[]>();
   for (const s of world.settlements.values()) {
-    settlementByAnchor.set(`${s.anchor.q},${s.anchor.r}`, s);
+    const k = `${s.anchor.q},${s.anchor.r}`;
+    let bucket = settlementsByAnchor.get(k);
+    if (bucket === undefined) {
+      bucket = [];
+      settlementsByAnchor.set(k, bucket);
+    }
+    bucket.push(s);
   }
 
   for (const [cId, c] of world.caravans) {
     if (c.destination === null) continue;
     if (!hexEquals(c.position, c.destination)) continue; // not yet arrived
 
-    // 1. Record observed local prices into caravan's price book.
-    const local = settlementByAnchor.get(`${c.position.q},${c.position.r}`);
-    if (local !== undefined) {
-      for (const [resource, price] of local.market.lastClearingPrice) {
-        if (!Number.isFinite(price) || price <= 0) continue;
+    // 1. Record observed local prices into caravan's price book. The
+    // priceBook key is the hex (the merchant remembers "this is what
+    // bread cost in town X"); when multiple settlements share a hex we
+    // average their clearing prices for each resource so the order in
+    // which settlements were inserted into world.settlements does not
+    // change what the caravan remembers.
+    const localBucket = settlementsByAnchor.get(`${c.position.q},${c.position.r}`);
+    if (localBucket !== undefined && localBucket.length > 0) {
+      const sumByResource = new Map<ResourceId, { sum: number; count: number }>();
+      for (const local of localBucket) {
+        for (const [resource, price] of local.market.lastClearingPrice) {
+          if (!Number.isFinite(price) || price <= 0) continue;
+          const acc = sumByResource.get(resource);
+          if (acc === undefined) sumByResource.set(resource, { sum: price, count: 1 });
+          else {
+            acc.sum += price;
+            acc.count += 1;
+          }
+        }
+      }
+      for (const [resource, { sum, count }] of sumByResource) {
+        const avg = sum / count;
         let book = c.priceBook.get(resource);
         if (book === undefined) {
           book = new Map<string, { price: number; observedOnDay: Day }>();
           c.priceBook.set(resource, book);
         }
-        book.set(`${c.position.q},${c.position.r}`, { price, observedOnDay: today });
+        book.set(`${c.position.q},${c.position.r}`, { price: avg, observedOnDay: today });
       }
     }
 
@@ -2550,10 +2587,28 @@ const spawnNewsFromAmbush = (
 const newsArrivalPhase = (world: WorldState, _today: Day, events: TickEvent[]): void => {
   if (world.newsCarriers === undefined || world.newsCarriers.size === 0) return;
 
-  // Index settlements by anchor hex once per call.
-  const settlementByAnchor = new Map<string, Settlement>();
+  // Index settlements by anchor hex once per call. Multiple settlements may
+  // share a hex (the pagus + dependent-hamlets case from docs/05 §"Same-hex
+  // coexistence"). The carrier physically arrives at the hex and would
+  // talk to whoever it finds there — but processNewsArrival's receiver
+  // list is `charactersAtSettlement`, which is itself hex-keyed (via
+  // NamedCharacter.location), so calling processNewsArrival once per
+  // same-hex settlement would apply the SAME reputation deltas to the
+  // SAME characters multiple times. To avoid that double-counting we
+  // process the carrier once against the FIRST same-hex settlement; the
+  // settlement reference is otherwise diagnostic-only inside
+  // processNewsArrival (per its docstring). The "settlement event log"
+  // semantics from docs/13 §5 will fan out to all same-hex settlements
+  // when that log lands.
+  const settlementsByAnchor = new Map<string, Settlement[]>();
   for (const s of world.settlements.values()) {
-    settlementByAnchor.set(`${s.anchor.q},${s.anchor.r}`, s);
+    const k = `${s.anchor.q},${s.anchor.r}`;
+    let bucket = settlementsByAnchor.get(k);
+    if (bucket === undefined) {
+      bucket = [];
+      settlementsByAnchor.set(k, bucket);
+    }
+    bucket.push(s);
   }
 
   // Build per-settlement character list. NamedCharacter.location is the hex
@@ -2571,13 +2626,15 @@ const newsArrivalPhase = (world: WorldState, _today: Day, events: TickEvent[]): 
   for (const [id, carrier] of [...world.newsCarriers]) {
     if (!carrier.arrived) continue;
     const destKey = `${carrier.destination.q},${carrier.destination.r}`;
-    const settlement = settlementByAnchor.get(destKey);
-    if (settlement === undefined) {
+    const destBucket = settlementsByAnchor.get(destKey);
+    if (destBucket === undefined || destBucket.length === 0) {
       // Carrier arrived somewhere with no settlement (shouldn't happen
       // since we picked anchors as destinations) — drop it.
       world.newsCarriers.delete(id);
       continue;
     }
+    // Process against the first same-hex settlement (see comment above).
+    const settlement = destBucket[0]!;
     const characters = charsBySettlementAnchor.get(destKey) ?? [];
 
     const victimFaction =

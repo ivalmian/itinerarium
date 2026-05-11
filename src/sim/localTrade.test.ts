@@ -171,16 +171,55 @@ describe('localTradePhase (docs/06 §"Local trade between nearby settlements")',
   });
 
   it('skips trade when the spread does not cover transport cost', () => {
-    // priceB - priceA = 0.005, transport at distance 1 = 0.005 — no margin.
+    // Per docs/06 §"Distance and cost", transport is per-kg. food.grain is
+    // 6.7 kg/modius, so distance-1 cost is 6.7 × 0.005 = 0.0335 coin/unit.
+    // priceB - priceA = 0.03 < 0.0335 → no trade.
     const w = buildPairWorld({
       distance: 1,
       priceA: 1.0,
-      priceB: 1.005,
+      priceB: 1.03,
       stockA: 100,
       treasuryB: 1000,
     });
     const r = tick({ world: w, rng: createRng('lt-no-spread') });
     expect(localTradeEvents(r.events).length).toBe(0);
+  });
+
+  it('scales transport cost by resource weight (per-kg, per docs/06)', () => {
+    // food.grain is 6.7 kg/modius. At distance 1 the cost is 0.005 coin/kg →
+    // 0.0335 coin/modius. priceA=1, priceB=1.05 → spread 0.05 > 0.0335 trades.
+    const trades = localTradeEvents(
+      tick({
+        world: buildPairWorld({
+          distance: 1,
+          priceA: 1.0,
+          priceB: 1.05,
+          stockA: 100,
+          treasuryB: 1000,
+        }),
+        rng: createRng('lt-perkg-trade'),
+      }).events,
+    );
+    expect(trades.find((t) => String(t.resource) === 'food.grain')).toBeDefined();
+
+    // Contrast: food.bread is only 1 kg/loaf, so distance-1 cost is just
+    // 0.005 coin/loaf. At priceA=1, priceB=1.01 the spread 0.01 > 0.005
+    // trades for bread but would NOT trade for grain (grain's per-modius
+    // cost is 0.0335 — six times higher).
+    const breadTrades = localTradeEvents(
+      tick({
+        world: buildPairWorld({
+          distance: 1,
+          priceA: 1.0,
+          priceB: 1.01,
+          stockA: 100,
+          treasuryB: 1000,
+          resource: 'food.bread',
+        }),
+        rng: createRng('lt-perkg-bread'),
+      }).events,
+    );
+    expect(breadTrades.find((t) => String(t.resource) === 'food.bread')).toBeDefined();
   });
 
   it('moves goods at the midpoint price (split the spread)', () => {
