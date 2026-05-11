@@ -390,6 +390,36 @@ const routeEvent = (history: ViewerHistory, day: Day, e: TickEvent): void => {
         summary: `bought ${e.quantity} ${String(e.resource)} ← ${shortId(String(e.fromSettlement))}`,
       });
       return;
+    case 'caravan_traded': {
+      // Per-caravan transaction record: side + qty + resource + coin.
+      // Shown in the caravan popup's Transactions section so the player
+      // can see exactly what each unit bought / sold and for how much.
+      const unitPrice = e.quantity > 0 ? e.coin / e.quantity : 0;
+      const sign = e.side === 'sold' ? '+' : '−';
+      const qtyStr = Number.isInteger(e.quantity)
+        ? String(e.quantity)
+        : e.quantity.toFixed(1);
+      addCaravanEvent(history, e.caravan, {
+        day,
+        kind: e.type,
+        summary: `${e.side} ${qtyStr} ${String(e.resource)} @ ${unitPrice.toFixed(2)} ${sign}${Math.round(e.coin)}c · ${shortId(String(e.settlement))}`,
+      });
+      return;
+    }
+    case 'caravan_profit_remitted':
+      addCaravanEvent(history, e.caravan, {
+        day,
+        kind: e.type,
+        summary: `remitted ${Math.round(e.coin)}c to owner · ${shortId(String(e.settlement))}`,
+      });
+      return;
+    case 'caravan_exported_off_map':
+      addCaravanEvent(history, e.caravan, {
+        day,
+        kind: e.type,
+        summary: `exported ${Number.isInteger(e.quantity) ? e.quantity : e.quantity.toFixed(1)} ${String(e.resource)} off-map +${Math.round(e.coin)}c`,
+      });
+      return;
     default:
       return;
   }

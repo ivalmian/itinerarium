@@ -63,7 +63,7 @@ import { resolveBattle } from './conflict/battle.js';
 import { tickPatrol, type Patrol } from './conflict/patrol.js';
 import { resolveRaid, type WallLevel } from './conflict/raid.js';
 import {
-  dailyCrewRationKg,
+  dailyCarriedFoodReserveKg,
   createCaravan,
   totalCrewCount,
   totalCarryKg,
@@ -82,6 +82,7 @@ import {
   laborCostPerWorkerDay,
   serviceMarketResources,
 } from './market/scheduleBuilder.js';
+import type { DemandSource } from './market/demand.js';
 import {
   applyEndemicMortality,
   maybeTriggerEpidemic,
@@ -417,6 +418,7 @@ const YEAR_DAYS = 365;
 
 const SUBSISTENCE_GRAIN_KG_PER_ADULT_PER_DAY = 0.4; // docs/04
 const KG_PER_MODIUS = 6.7; // resources/catalog.ts food.grain unit
+const COIN_RESOURCE = resourceId('goods.coin');
 
 /**
  * Public entry point. Mutates world in place and returns a structured
@@ -465,7 +467,7 @@ export const tick = (inputs: TickInputs): TickResult => {
   // settlements", docs/08 §"Per-settlement markets, regional smoothing").
   // This is what keeps ~8000 separate markets aligned into a regional
   // price gradient instead of 8000 disconnected wells.
-  localTradePhase(world, season, today, events);
+  localTradePhase(world, season, today, events, subsistenceAccess);
 
   // --- Phase 4b: Consumption / famine pressure -----------------------------
   consumptionPhase(world, today, events, stats, subsistenceAccess);
@@ -646,7 +648,7 @@ const productionPhase = (
             }
             for (const [resId, qty] of result.outputsProduced) {
               if (isServiceResource(resId)) continue;
-              increaseStockpile(ownerActor, resId, qty);
+              receiveResourceOrCoin(ownerActor, resId, qty);
               recordInflow(settlement, resId, qty);
             }
             depleteMineDeposit(world, b, recipe, result);
@@ -1144,7 +1146,8 @@ const productionOutputInventoryCapacityForRecipe = (
     if (qtyPerRun <= 0 || isServiceResource(resource)) continue;
     const targetStock =
       ownerInstalledCapacity * qtyPerRun * productionOutputStockTargetDays(resource);
-    const currentStock = ownerActor.stockpile.get(resource) ?? 0;
+    const currentStock =
+      resource === COIN_RESOURCE ? ownerActor.treasury : (ownerActor.stockpile.get(resource) ?? 0);
     const gap = targetStock - currentStock;
     if (gap <= 0) return 0;
     capacity = Math.min(capacity, gap / qtyPerRun);
@@ -1168,6 +1171,15 @@ const increaseStockpile = (actor: Actor, resource: ResourceId, qty: Quantity): v
   if (qty <= 0) return;
   const current = actor.stockpile.get(resource) ?? 0;
   actor.stockpile.set(resource, current + qty);
+};
+
+const receiveResourceOrCoin = (actor: Actor, resource: ResourceId, qty: Quantity): void => {
+  if (qty <= 0) return;
+  if (resource === COIN_RESOURCE) {
+    actor.treasury += qty;
+    return;
+  }
+  increaseStockpile(actor, resource, qty);
 };
 
 const isServiceResource = (resource: ResourceId): boolean =>
@@ -2225,9 +2237,9 @@ const DEFAULT_TAX_RATES: TaxRatesPercent = {
   coinTaxPctOfWealth: 1, // 1% monthly coin assessment
 };
 
-const MAX_TAX_SHIPMENT_CARAVANS_DISPATCHED_PER_DAY = 2;
+const MAX_TAX_SHIPMENT_CARAVANS_DISPATCHED_PER_DAY = 1;
 const MAX_ACTIVE_TAX_SHIPMENT_CARAVANS = 24;
-const MAX_TAX_ASSESSMENTS_PER_CARAVAN = 8;
+const MAX_TAX_ASSESSMENTS_PER_CARAVAN = 24;
 const pendingTaxAssessmentsByWorld: WeakMap<WorldState, TaxAssessment[]> = new WeakMap();
 
 const compareTaxAssessments = (a: TaxAssessment, b: TaxAssessment): number => {
@@ -2260,6 +2272,12 @@ const pendingTaxQueueForWorld = (world: WorldState): TaxAssessment[] => {
 const drainTaxAssessment = (world: WorldState, assessment: TaxAssessment): number => {
   const owner = world.actors.get(assessment.fromOwnerActor);
   if (owner === undefined) return 0;
+  if (assessment.resource === COIN_RESOURCE) {
+    const drain = Math.min(owner.treasury, assessment.quantityOwed);
+    if (drain <= 0) return 0;
+    owner.treasury -= drain;
+    return drain;
+  }
   const have = owner.stockpile.get(assessment.resource) ?? 0;
   const drain = Math.min(have, assessment.quantityOwed);
   if (drain <= 0) return 0;
@@ -2412,8 +2430,9 @@ const taxShipmentPhase = (world: WorldState, today: Day, rng: Rng, events: TickE
 const EDGE_HUB_IMPORT_CARAVAN_PREFIX = 'import-';
 const EDGE_HUB_EXPORT_CARAVAN_PREFIX = 'export-';
 const OFF_MAP_HOUSE_OWNER_PREFIX = 'off-map-house-';
-const EDGE_HUB_MAX_ACTIVE_IMPORT_CARAVANS = 32;
-const EDGE_HUB_MAX_ACTIVE_EXPORT_CARAVANS = 16;
+const EDGE_HUB_MAX_ACTIVE_IMPORT_CARAVANS = 12;
+const EDGE_HUB_MAX_ACTIVE_EXPORT_CARAVANS = 8;
+const EDGE_HUB_DISPATCH_INTERVAL_DAYS = 3;
 
 const isEdgeHubImportCaravan = (caravan: Caravan): boolean => {
   return (
@@ -2467,6 +2486,8 @@ const edgeHubPhase = (
   rng: Rng,
   events: TickEvent[],
 ): void => {
+  if (today % EDGE_HUB_DISPATCH_INTERVAL_DAYS !== 0) return;
+
   const edgeHexes = selectEdgeHubGates(computeEdgeHexes(world.grid));
   if (edgeHexes.length === 0) return;
 
@@ -2523,13 +2544,13 @@ const edgeHubPhase = (
       // Off-map trade enters through a small number of abstract border
       // gates, not every passable perimeter hex. This keeps imports/exports
       // as a paced long-haul flow instead of random-looking perimeter bursts.
-      baseImportSpawnProbPerDay: 0.05,
-      baseExportSpawnProbPerDay: 0.03,
+      baseImportSpawnProbPerDay: 0.02,
+      baseExportSpawnProbPerDay: 0.01,
       activeImportCaravans: activeEdgeCaravans.imports,
       activeExportCaravans: activeEdgeCaravans.exports,
-      maxImportSpawnsPerDay: 2,
+      maxImportSpawnsPerDay: 1,
       maxExportSpawnsPerDay: 1,
-      maxTotalSpawnsPerDay: Math.min(3, worldRoom),
+      maxTotalSpawnsPerDay: Math.min(1, worldRoom),
       maxActiveImportCaravans: EDGE_HUB_MAX_ACTIVE_IMPORT_CARAVANS,
       maxActiveExportCaravans: EDGE_HUB_MAX_ACTIVE_EXPORT_CARAVANS,
       importPalette: DEFAULT_IMPORT_PALETTE,
@@ -2813,6 +2834,24 @@ const lowestFiniteAsk = (
   return Number.isFinite(best) ? best : null;
 };
 
+const boundedSellerOnlyAsk = (
+  resource: ResourceId,
+  supplySources: readonly { readonly reservationPrice: number }[],
+  recentLocalPrices: ReadonlyMap<ResourceId, number>,
+): number | null => {
+  const ask = lowestFiniteAsk(supplySources);
+  if (ask === null) return null;
+  return Math.min(ask, marketMaxPriceForResource(resource, supplySources, recentLocalPrices));
+};
+
+const deleteClearingPriceIfNoRecordedOutflow = (
+  settlement: Settlement,
+  resource: ResourceId,
+): void => {
+  if ((settlement.market.recentOutflows.get(resource) ?? 0) > 0) return;
+  settlement.market.lastClearingPrice.delete(resource);
+};
+
 const tradePhase = (
   world: WorldState,
   season: Season,
@@ -2914,7 +2953,7 @@ const tradePhase = (
 
     for (const [resId, pair] of schedules.schedulesByResource) {
       if (pair.demand.sources.length === 0 && pair.supply.sources.length === 0) {
-        settlement.market.lastClearingPrice.delete(resId);
+        deleteClearingPriceIfNoRecordedOutflow(settlement, resId);
         continue;
       }
       const result = clearMarket(pair.demand, pair.supply, {
@@ -2937,10 +2976,10 @@ const tradePhase = (
             unmetDemand: result.unmetDemandAtClearingPrice,
           });
         } else if (pair.supply.sources.length > 0) {
-          const ask = lowestFiniteAsk(pair.supply.sources);
+          const ask = boundedSellerOnlyAsk(resId, pair.supply.sources, seededPrices);
           if (ask !== null) recordClearingPrice(settlement, resId, ask);
         } else {
-          settlement.market.lastClearingPrice.delete(resId);
+          deleteClearingPriceIfNoRecordedOutflow(settlement, resId);
         }
         continue;
       }
@@ -2956,30 +2995,28 @@ const tradePhase = (
         const demandSource = demandSourceById.get(trade.buyerSourceId);
         const buyerActorId = demandSource?.buyerActor;
         const buyer = buyerActorId !== undefined ? world.actors.get(buyerActorId) : undefined;
-        const buyerPaysSeller = buyer !== undefined && buyer.id !== seller.id;
+        if (buyerActorId === undefined) continue;
+        if (buyer === undefined) continue;
+        const concreteBuyer = buyer;
+        const buyerPaysSeller = concreteBuyer.id !== seller.id;
         const maxByBuyerTreasury =
-          buyerPaysSeller && trade.price > 0 ? buyer.treasury / trade.price : trade.quantity;
+          buyerPaysSeller && trade.price > 0
+            ? concreteBuyer.treasury / trade.price
+            : trade.quantity;
         const qty = Math.min(trade.quantity, maxByBuyerTreasury);
         if (qty <= 1e-9) continue;
 
-        const coin = buyerPaysSeller ? Math.min(qty * trade.price, buyer.treasury) : 0;
+        const coin = buyerPaysSeller ? Math.min(qty * trade.price, concreteBuyer.treasury) : 0;
         const serviceTrade = isServiceResource(resId);
         if (!serviceTrade) decreaseStockpile(seller, resId, qty);
-        if (buyer !== undefined) {
-          if (buyerPaysSeller) {
-            if (coin > 0) {
-              buyer.treasury -= coin;
-              seller.treasury += coin;
-            }
+        if (buyerPaysSeller) {
+          if (coin > 0) {
+            concreteBuyer.treasury -= coin;
+            seller.treasury += coin;
           }
-          if (demandSource?.buyerDisposition === 'stockpile' && !serviceTrade) {
-            increaseStockpile(buyer, resId, qty);
-          }
-        } else {
-          // Population/comfort/status demand sources are consumed directly:
-          // the seller receives coin, but there is no concrete household
-          // stockpile yet to hold the good after purchase.
-          seller.treasury += qty * trade.price;
+        }
+        if (demandSource?.buyerDisposition === 'stockpile' && !serviceTrade) {
+          increaseStockpile(concreteBuyer, resId, qty);
         }
         if (demandSource?.buyerDisposition !== 'stockpile') {
           recordOutflow(settlement, resId, qty);
@@ -3008,10 +3045,10 @@ const tradePhase = (
             unmetDemand,
           });
         } else if (pair.supply.sources.length > 0) {
-          const ask = lowestFiniteAsk(pair.supply.sources);
+          const ask = boundedSellerOnlyAsk(resId, pair.supply.sources, seededPrices);
           if (ask !== null) recordClearingPrice(settlement, resId, ask);
         } else {
-          settlement.market.lastClearingPrice.delete(resId);
+          deleteClearingPriceIfNoRecordedOutflow(settlement, resId);
         }
         continue;
       }
@@ -3053,6 +3090,9 @@ const POPULATION_DEMAND_RESOURCES: readonly ResourceId[] = Object.freeze(
     'food.legumes',
     'mineral.salt',
     'material.wood',
+    'food.milk',
+    'food.fish',
+    'food.game',
     'food.wine',
     'food.olive_oil',
     'food.cheese',
@@ -3215,9 +3255,11 @@ const localTradePhase = (
   season: Season,
   today: Day,
   events: TickEvent[],
+  subsistenceAccess: SubsistenceAccessMap,
 ): void => {
-  void today;
   const settlementsByAnchorHex = settlementAnchorIndexForWorld(world).byAnchorHex;
+  const ownerKindByActor = ownerKindByActorForWorld(world);
+  const demandCache = new Map<string, readonly DemandSource[]>();
 
   // Cache anchor passability per phase. v1 approximation: a pair is feasible
   // if both anchors are on passable terrain this season. Real path
@@ -3258,7 +3300,19 @@ const localTradePhase = (
         if (transportCostPerKg === undefined) continue;
         for (const resId of LOCAL_TRADE_RESOURCES) {
           if (dist > localTradeMaxHexDistanceForResource(resId)) continue;
-          tryLocalTrade(world, a, b, resId, transportCostPerKg, events);
+          tryLocalTrade(
+            world,
+            a,
+            b,
+            resId,
+            transportCostPerKg,
+            season,
+            today,
+            ownerKindByActor,
+            demandCache,
+            subsistenceAccess,
+            events,
+          );
         }
       }
     }
@@ -3309,6 +3363,11 @@ const tryLocalTrade = (
   b: Settlement,
   resId: ResourceId,
   transportCostPerKg: number,
+  season: Season,
+  today: Day,
+  ownerKindByActor: ReadonlyMap<ActorId, Actor['kind']>,
+  demandCache: Map<string, readonly DemandSource[]>,
+  subsistenceAccess: SubsistenceAccessMap,
   events: TickEvent[],
 ): void => {
   const priceA = a.market.lastClearingPrice.get(resId);
@@ -3361,25 +3420,55 @@ const tryLocalTrade = (
 
   const sellerActor = pickSellerActor(world, seller, resId);
   if (sellerActor === null) return;
-  const buyerActor = pickBuyerActor(world, buyer);
-  if (buyerActor === null) return;
+  const buyerIntent = pickLocalTradeBuyer(
+    world,
+    buyer,
+    resId,
+    midPrice,
+    season,
+    today,
+    ownerKindByActor,
+    demandCache,
+  );
+  if (buyerIntent === null) return;
+  const buyerActor = buyerIntent.actor;
+  if (buyerActor.id === sellerActor.id) return;
 
   const sellerStock = sellerActor.stockpile.get(resId) ?? 0;
   if (sellerStock <= 0) return;
   const maxByLoad = localTradeLoadKgForResource(resId) / weightKgPerUnit;
   const maxByTreasury = buyerActor.treasury / midPrice;
-  const qty = Math.min(maxByLoad, sellerStock, maxByTreasury);
+  let maxByDemand = buyerIntent.quantityDemanded;
+  if (buyerIntent.curve === 'subsistence') {
+    const access = subsistenceAccess.get(buyer);
+    const modiiPerUnit = grainEquivalentModiiPerUnit(resId);
+    if (access !== undefined && modiiPerUnit > 0) {
+      const remainingModii = Math.max(0, access.needModii - access.fulfilledModii);
+      maxByDemand = Math.min(maxByDemand, remainingModii / modiiPerUnit);
+    }
+  }
+  const qty = Math.min(maxByLoad, sellerStock, maxByTreasury, maxByDemand);
   if (qty <= 1e-9) return;
 
   const coinPaid = qty * midPrice;
   // Apply the transfer.
   decreaseStockpile(sellerActor, resId, qty);
-  const buyerCurrent = buyerActor.stockpile.get(resId) ?? 0;
-  buyerActor.stockpile.set(resId, buyerCurrent + qty);
+  if (buyerIntent.disposition === 'stockpile') {
+    increaseStockpile(buyerActor, resId, qty);
+  }
   sellerActor.treasury = sellerActor.treasury + coinPaid;
   buyerActor.treasury = buyerActor.treasury - coinPaid;
   recordOutflow(seller, resId, qty);
   recordInflow(buyer, resId, qty);
+  if (buyerIntent.disposition === 'consume') {
+    recordOutflow(buyer, resId, qty);
+    if (buyerIntent.curve === 'subsistence') {
+      const access = subsistenceAccess.get(buyer);
+      if (access !== undefined) {
+        access.fulfilledModii += qty * grainEquivalentModiiPerUnit(resId);
+      }
+    }
+  }
 
   events.push({
     type: 'local_trade',
@@ -3389,6 +3478,154 @@ const tryLocalTrade = (
     quantity: qty,
     coinPaid,
   });
+};
+
+interface LocalTradeBuyerIntent {
+  readonly actor: Actor;
+  readonly disposition: 'consume' | 'stockpile';
+  readonly curve: DemandSource['curve'] | 'fallback';
+  readonly quantityDemanded: number;
+}
+
+const localTradeDemandCacheKey = (settlement: Settlement, resource: ResourceId): string =>
+  `${String(settlement.id)}\u0000${String(resource)}`;
+
+const seededPricesForSettlement = (settlement: Settlement): Map<ResourceId, number> => {
+  const seededPrices = new Map<ResourceId, number>();
+  for (const resource of TRADABLE_RESOURCES) {
+    const observed = settlement.market.lastClearingPrice.get(resource) ?? 0;
+    if (observed > 0) {
+      seededPrices.set(resource, observed);
+      continue;
+    }
+    const globalPrice = DEFAULT_GLOBAL_PRICES.get(resource);
+    if (globalPrice !== undefined && globalPrice > 0) {
+      seededPrices.set(resource, globalPrice);
+    }
+  }
+  return seededPrices;
+};
+
+const localTradeDemandSourcesFor = (
+  world: WorldState,
+  settlement: Settlement,
+  resource: ResourceId,
+  season: Season,
+  today: Day,
+  ownerKindByActor: ReadonlyMap<ActorId, Actor['kind']>,
+  demandCache: Map<string, readonly DemandSource[]>,
+): readonly DemandSource[] => {
+  const key = localTradeDemandCacheKey(settlement, resource);
+  const cached = demandCache.get(key);
+  if (cached !== undefined) return cached;
+
+  const owners: Actor[] = [];
+  const stockpilesByOwner = new Map<ActorId, ReadonlyMap<ResourceId, Quantity>>();
+  for (const ownerId of settlement.stockpileOwners) {
+    const actor = world.actors.get(ownerId);
+    if (actor === undefined) continue;
+    owners.push(actor);
+    stockpilesByOwner.set(actor.id, actor.stockpile);
+  }
+  if (owners.length === 0) {
+    demandCache.set(key, []);
+    return [];
+  }
+
+  const pair = buildSettlementSchedules({
+    settlement,
+    stockpilesByOwner,
+    resources: [resource],
+    recentLocalPrices: seededPricesForSettlement(settlement),
+    today,
+    season,
+    ownerKindByActor,
+    actorTreasuryByActor: new Map(owners.map((actor) => [actor.id, actor.treasury] as const)),
+    grid: world.grid,
+  }).schedulesByResource.get(resource);
+
+  const sources = pair?.demand.sources ?? [];
+  demandCache.set(key, sources);
+  return sources;
+};
+
+const pickDemandBackedLocalBuyer = (
+  world: WorldState,
+  sources: readonly DemandSource[],
+  price: number,
+): LocalTradeBuyerIntent | null => {
+  let best:
+    | {
+        readonly source: DemandSource;
+        readonly actor: Actor;
+        readonly quantityDemanded: number;
+      }
+    | null = null;
+
+  for (const source of sources) {
+    if (source.buyerActor === undefined || source.buyerDisposition === undefined) continue;
+    const quantityDemanded = source.quantityAt(price);
+    if (!Number.isFinite(quantityDemanded) || quantityDemanded <= 1e-9) continue;
+    const actor = world.actors.get(source.buyerActor);
+    if (actor === undefined || actor.treasury <= 0) continue;
+    if (
+      best === null ||
+      source.maxWillingnessToPay > best.source.maxWillingnessToPay ||
+      (source.maxWillingnessToPay === best.source.maxWillingnessToPay &&
+        quantityDemanded > best.quantityDemanded) ||
+      (source.maxWillingnessToPay === best.source.maxWillingnessToPay &&
+        quantityDemanded === best.quantityDemanded &&
+        String(source.id) < String(best.source.id))
+    ) {
+      best = { source, actor, quantityDemanded };
+    }
+  }
+
+  if (best === null) return null;
+  // buyerDisposition is guaranteed defined by the `source.buyerDisposition === undefined`
+  // continue guard above; the TS narrow is lost across the `best = …` assignment.
+  return {
+    actor: best.actor,
+    disposition: best.source.buyerDisposition!,
+    curve: best.source.curve,
+    quantityDemanded: best.quantityDemanded,
+  };
+};
+
+const pickLocalTradeBuyer = (
+  world: WorldState,
+  settlement: Settlement,
+  resource: ResourceId,
+  price: number,
+  season: Season,
+  today: Day,
+  ownerKindByActor: ReadonlyMap<ActorId, Actor['kind']>,
+  demandCache: Map<string, readonly DemandSource[]>,
+): LocalTradeBuyerIntent | null => {
+  const sources = localTradeDemandSourcesFor(
+    world,
+    settlement,
+    resource,
+    season,
+    today,
+    ownerKindByActor,
+    demandCache,
+  );
+  if (sources.length > 0) {
+    return pickDemandBackedLocalBuyer(world, sources, price);
+  }
+
+  // Legacy fallback for sparse/debug worlds: a price spread can still move
+  // stock to a market factor even when the handcrafted fixture has no
+  // population, buildings, or explicit demand source.
+  const fallback = pickBuyerActor(world, settlement);
+  if (fallback === null) return null;
+  return {
+    actor: fallback,
+    disposition: 'stockpile',
+    curve: 'fallback',
+    quantityDemanded: Number.POSITIVE_INFINITY,
+  };
 };
 
 const pickSellerActor = (
@@ -3430,6 +3667,7 @@ const INDUSTRIAL_LOCAL_TRADE_MAX_HEX_DISTANCE = 6;
 const MAX_HOUSEHOLD_PETTY_LOAD_KG = 50;
 const MAX_WORKSHOP_CARTAGE_LOAD_KG = 500;
 const MAX_INDUSTRIAL_CARTAGE_LOAD_KG = 3_000;
+const MAX_WALKING_HERD_LOCAL_TRADE_UNITS = 0.1;
 
 const WORKSHOP_CARTAGE_RESOURCES: ReadonlySet<string> = new Set([
   'goods.tools',
@@ -3451,6 +3689,9 @@ const INDUSTRIAL_CARTAGE_RESOURCES: ReadonlySet<string> = new Set([
 
 const localTradeLoadKgForResource = (resource: ResourceId): number => {
   const def = getResource(resource);
+  if (def.category === 'livestock') {
+    return def.weightKgPerUnit * MAX_WALKING_HERD_LOCAL_TRADE_UNITS;
+  }
   if (def.category === 'mineral' || def.category === 'metal') {
     return MAX_INDUSTRIAL_CARTAGE_LOAD_KG;
   }
@@ -3465,6 +3706,9 @@ const localTradeLoadKgForResource = (resource: ResourceId): number => {
 
 const localTradeMaxHexDistanceForResource = (resource: ResourceId): number => {
   const def = getResource(resource);
+  if (def.category === 'livestock') {
+    return HOUSEHOLD_LOCAL_TRADE_MAX_HEX_DISTANCE;
+  }
   if (def.category === 'mineral' || def.category === 'metal') {
     return INDUSTRIAL_LOCAL_TRADE_MAX_HEX_DISTANCE;
   }
@@ -3499,56 +3743,19 @@ const TRANSPORT_COST_BY_DISTANCE: Readonly<Record<number, number>> = {
 };
 
 /**
- * Resources eligible for the local-trade pass. Mirrors the trade phase's
- * tradable set, plus the small-volume goods listed in the implementation
- * plan that have observed prices via production inflow→supply chains.
+ * Resources eligible for the local-trade pass. This is derived from the full
+ * tradable set so new physical goods do not silently get prices without local
+ * arbitrage. Services are local capacities with coin-only settlement, people
+ * move through population/cargo systems, and coin itself is the payment rail.
  */
-const LOCAL_TRADE_RESOURCES: readonly ResourceId[] = [
-  resourceId('food.grain'),
-  resourceId('food.flour'),
-  resourceId('food.bread'),
-  resourceId('food.wine'),
-  resourceId('food.olive_oil'),
-  resourceId('food.cheese'),
-  resourceId('food.salted_fish'),
-  resourceId('food.salted_meat'),
-  resourceId('goods.cloth'),
-  resourceId('goods.clothing'),
-  resourceId('goods.furniture'),
-  resourceId('goods.tools'),
-  resourceId('goods.weapons'),
-  resourceId('goods.armor'),
-  resourceId('goods.shields'),
-  resourceId('goods.cart'),
-  resourceId('mineral.iron_ore'),
-  resourceId('mineral.copper_ore'),
-  resourceId('mineral.tin_ore'),
-  resourceId('mineral.lead_ore'),
-  resourceId('mineral.silver_ore'),
-  resourceId('mineral.gold_ore'),
-  resourceId('mineral.salt'),
-  resourceId('food.olives'),
-  resourceId('food.grapes'),
-  resourceId('material.pottery'),
-  resourceId('material.amphora'),
-  resourceId('material.leather'),
-  resourceId('material.linen_fiber'),
-  resourceId('material.wood'),
-  resourceId('material.charcoal'),
-  resourceId('material.lumber'),
-  resourceId('material.clay'),
-  resourceId('metal.iron'),
-  resourceId('metal.copper'),
-  resourceId('metal.tin'),
-  resourceId('metal.bronze'),
-  resourceId('metal.lead'),
-  resourceId('metal.silver'),
-  resourceId('metal.gold'),
-  resourceId('exotic.spices'),
-  resourceId('exotic.silk'),
-  resourceId('exotic.incense'),
-  resourceId('exotic.dyes'),
-];
+const LOCAL_TRADE_RESOURCES: readonly ResourceId[] = Object.freeze(
+  TRADABLE_RESOURCES.filter((id) => {
+    const key = String(id);
+    if (key === 'goods.coin') return false;
+    const category = getResource(id).category;
+    return category !== 'service' && category !== 'people';
+  }),
+);
 
 const LOCAL_TRADE_WEIGHT_KG_BY_RESOURCE: ReadonlyMap<ResourceId, number> = new Map(
   LOCAL_TRADE_RESOURCES.map((id) => [id, getResource(id).weightKgPerUnit] as const),
@@ -3937,13 +4144,13 @@ const caravanRationCargoKg = (c: Caravan): number => {
 };
 
 const caravanRationReserveKg = (c: Caravan): number =>
-  dailyCrewRationKg(c) * CARAVAN_RATION_RESERVE_DAYS;
+  dailyCarriedFoodReserveKg(c) * CARAVAN_RATION_RESERVE_DAYS;
 
 const caravanMissingRationReserveKg = (c: Caravan): number =>
   Math.max(0, caravanRationReserveKg(c) - caravanRationCargoKg(c));
 
 const caravanRationDays = (c: Caravan): number => {
-  const dailyKg = dailyCrewRationKg(c);
+  const dailyKg = dailyCarriedFoodReserveKg(c);
   if (dailyKg <= 0) return Number.POSITIVE_INFINITY;
   return caravanRationCargoKg(c) / dailyKg;
 };
@@ -4175,7 +4382,7 @@ const buyCaravanRationsAtLocalMarkets = (
   settlements: readonly Settlement[],
   events: TickEvent[],
 ): number => {
-  const targetKg = dailyCrewRationKg(caravan) * CARAVAN_RATION_RESERVE_DAYS;
+  const targetKg = dailyCarriedFoodReserveKg(caravan) * CARAVAN_RATION_RESERVE_DAYS;
   let remainingKg = targetKg - caravanRationCargoKg(caravan);
   if (remainingKg <= 1e-9) return 0;
 
@@ -4226,6 +4433,7 @@ const buyCaravanRationsAtLocalMarkets = (
       caravan.treasury -= coin;
       quote.seller.actor.treasury += coin;
     }
+    recordClearingPrice(quote.seller.settlement, quote.resource, quote.seller.price);
     recordOutflow(quote.seller.settlement, quote.resource, qty);
     remainingKg -= qty * quote.weightKgPerUnit;
     boughtKg += qty * quote.weightKgPerUnit;
@@ -4400,7 +4608,7 @@ const completeTaxShipmentIfArrived = (
   const owner = world.actors.get(caravan.ownerActor);
   if (owner !== undefined) {
     for (const [resource, qty] of caravan.cargo) {
-      increaseStockpile(owner, resource, qty);
+      receiveResourceOrCoin(owner, resource, qty);
       const settlement = settlements[0];
       if (settlement !== undefined) recordInflow(settlement, resource, qty);
     }
@@ -4597,7 +4805,8 @@ const createReplacementMerchantCaravan = (
     treasury: operatingTreasury,
   });
   if (!world.grid.has(caravan.position)) return null;
-  const minStarterRationKg = dailyCrewRationKg(caravan) * MERCHANT_CARAVAN_MIN_STARTER_RATION_DAYS;
+  const minStarterRationKg =
+    dailyCarriedFoodReserveKg(caravan) * MERCHANT_CARAVAN_MIN_STARTER_RATION_DAYS;
   if (
     estimateLocalRationPurchaseKg(world, caravan, [origin], operatingTreasury) < minStarterRationKg
   ) {
@@ -4863,6 +5072,7 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
         // travel-cost model, so cargo demand is cash-feasible instead of
         // spending the caravan into starvation.
         maxSpendCoin: Math.max(0, c.treasury - missingRationKg),
+        reserveTripOperatingCost: true,
         ...(originAvailability !== undefined
           ? { originAvailableQuantity: originAvailability }
           : {}),

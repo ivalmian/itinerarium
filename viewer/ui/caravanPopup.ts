@@ -58,6 +58,8 @@ export const renderCaravanPopup = (opts: CaravanPopupOpts): CaravanPopupContent 
   root.appendChild(renderCargoSection(world, c));
   root.appendChild(renderCrewSection(c));
   root.appendChild(renderHistorySection(c, history));
+  const transactions = renderTransactionsSection(history, c.id);
+  if (transactions !== null) root.appendChild(transactions);
   const events = renderEventsSection(history, c.id);
   if (events !== null) root.appendChild(events);
 
@@ -531,16 +533,62 @@ const renderHistorySection = (c: Caravan, history: ViewerHistory): HTMLElement =
   return section;
 };
 
+/** Event kinds that the Transactions section already covers. The
+ *  generic Recent-events section skips them so the same row doesn't
+ *  appear twice. */
+const TRANSACTION_KINDS: ReadonlySet<string> = new Set([
+  'caravan_traded',
+  'caravan_profit_remitted',
+  'caravan_exported_off_map',
+]);
+
 const renderEventsSection = (
   history: ViewerHistory,
   id: CaravanId,
 ): HTMLElement | null => {
   const events = history.caravanEvents.get(id);
   if (events === undefined || events.length === 0) return null;
+  const nonTx = events.filter((e) => !TRANSACTION_KINDS.has(e.kind));
+  if (nonTx.length === 0) return null;
   const section = popupSection('Recent events');
   const list = document.createElement('div');
   list.className = 'popup-event-list';
-  for (const e of events.slice(-25)) {
+  for (const e of nonTx.slice(-25)) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const day = document.createElement('span');
+    day.className = 'day';
+    day.textContent = `d${e.day}`;
+    row.appendChild(day);
+    row.appendChild(document.createTextNode(e.summary));
+    list.appendChild(row);
+  }
+  section.appendChild(list);
+  return section;
+};
+
+/**
+ * Per-caravan transaction log: every caravan_traded / profit_remitted /
+ * off-map export event, newest at the bottom, with a running net P/L
+ * shown at the bottom. Coin sign convention: buys are negative cash flow
+ * (the caravan spent coin), sells are positive (the caravan received it).
+ */
+const renderTransactionsSection = (
+  history: ViewerHistory,
+  id: CaravanId,
+): HTMLElement | null => {
+  const events = history.caravanEvents.get(id);
+  if (events === undefined || events.length === 0) return null;
+  const tx = events.filter((e) => TRANSACTION_KINDS.has(e.kind));
+  if (tx.length === 0) return null;
+  const section = popupSection('Transactions');
+  const list = document.createElement('div');
+  list.className = 'popup-event-list';
+  // Show the last 40 to keep the popup bounded; the per-entity buffer
+  // already caps at ~250 (history.ts pushBoundedEvents) so this is a
+  // soft display cap.
+  const recent = tx.slice(-40);
+  for (const e of recent) {
     const row = document.createElement('div');
     row.className = 'row';
     const day = document.createElement('span');
