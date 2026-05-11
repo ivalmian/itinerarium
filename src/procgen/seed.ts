@@ -34,6 +34,7 @@ import {
   type CharacterClass,
   type Sex,
 } from '../sim/population/index.js';
+import { drawDemographicsFromPool, ROLE_BIASES } from '../sim/population/demographics.js';
 import {
   ACTOR_KINDS,
   createActor,
@@ -1008,17 +1009,40 @@ const seedInitialBanditCamps = (
     addFaction(ctx, faction);
     addCharacter(ctx, leader);
 
+    const banditCount = rng.int(8, 18);
+    const hangersOnCount = rng.int(2, 6);
+    // Demographics: bandits are recruited locally per docs/12 §"Banditry as
+    // a fate" → draw from the city's working-age pool the camp shadows.
+    // Hangers-on (children, captives, dependents) come from the same pool
+    // but with a wider, less male-dominated bias.
+    const sourceCity = [...ctx.settlements.values()].find(
+      (s) => s.anchor.q === target.anchor.q && s.anchor.r === target.anchor.r,
+    );
+    const banditDemographics = drawDemographicsFromPool(
+      sourceCity?.population,
+      banditCount,
+      ROLE_BIASES.bandit,
+      rng.derive(`bandit-demo-${String(campId)}`),
+    );
+    const hangersOnDemographics = drawDemographicsFromPool(
+      sourceCity?.population,
+      hangersOnCount,
+      ROLE_BIASES.bandit_hanger_on,
+      rng.derive(`hangers-demo-${String(campId)}`),
+    );
     const camp = createCamp({
       id: campId,
       name: `${leaderName}'s band`,
       hex,
       ownerActor: aId,
-      banditCount: rng.int(8, 18),
-      hangersOnCount: rng.int(2, 6),
+      banditCount,
+      hangersOnCount,
       weaponsPerBandit: 0.4,
       armorPerBandit: 0.15,
       averageHealth: 0.85,
       treasury: actor.treasury,
+      banditDemographics,
+      hangersOnDemographics,
     });
     banditCamps.set(campId, camp);
   }
@@ -1062,16 +1086,23 @@ const seedInitialPatrols = (
       const garrisonRoute = routeForGarrisonPatrol(settlement, grid);
       if (garrisonRoute.length > 0) {
         const id = `patrol-garrison-${counter++}`;
+        const count = 24; // ~one century / contubernia detachment
         const unit = campaignerUnit({
           id: `patrol:${id}`,
           posture: 'attacking',
-          count: 24, // ~one century / contubernia detachment
+          count,
           training: 0.85,
           weapons: 0.8,
           armor: 0.65,
           health: 0.95,
           terrainBonus: 0,
         });
+        const demographics = drawDemographicsFromPool(
+          settlement.population,
+          count,
+          ROLE_BIASES.patrol_soldier,
+          rng.derive(`patrol-demo-${id}`),
+        );
         patrols.set(
           id,
           createPatrol({
@@ -1081,6 +1112,7 @@ const seedInitialPatrols = (
             basedAt: settlement.id,
             route: garrisonRoute,
             unit,
+            demographics,
           }),
         );
       }
@@ -1091,16 +1123,23 @@ const seedInitialPatrols = (
       const watchRoute = routeForCityWatch(settlement, grid);
       if (watchRoute.length > 0) {
         const id = `patrol-watch-${counter++}`;
+        const count = 12; // a small watch
         const unit = campaignerUnit({
           id: `patrol:${id}`,
           posture: 'attacking',
-          count: 12, // a small watch
+          count,
           training: 0.55,
           weapons: 0.5,
           armor: 0.3,
           health: 0.9,
           terrainBonus: 0,
         });
+        const demographics = drawDemographicsFromPool(
+          settlement.population,
+          count,
+          ROLE_BIASES.patrol_soldier,
+          rng.derive(`patrol-demo-${id}`),
+        );
         patrols.set(
           id,
           createPatrol({
@@ -1110,12 +1149,12 @@ const seedInitialPatrols = (
             basedAt: settlement.id,
             route: watchRoute,
             unit,
+            demographics,
           }),
         );
       }
     }
   }
-  void rng;
 };
 
 // --- helpers ----------------------------------------------------------------
