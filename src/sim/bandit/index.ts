@@ -11,4 +11,11 @@ export type {
   CampSize,
   CreateCampInput,
 } from './camp.js';
-export { campAsCombatUnit, campSize, createCamp, decideCampAction, recruit } from './camp.js';
+export {
+  applyBanditCasualties,
+  campAsCombatUnit,
+  campSize,
+  createCamp,
+  decideCampAction,
+  recruit,
+} from './camp.js';

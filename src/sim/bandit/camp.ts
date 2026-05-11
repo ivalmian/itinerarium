@@ -21,6 +21,7 @@
  */
 
 import type { CombatUnit, Posture } from '../conflict/battle.js';
+import { drainDemographics, type Demographics } from '../population/demographics.js';
 import type { Rng } from '../rng.js';
 import type {
   ActorId,
@@ -51,6 +52,20 @@ export interface BanditCamp {
   readonly armorPerBandit: number;
   /** 0..1. */
   readonly averageHealth: number;
+  /**
+   * Per-(sex, age band) split of the camp's `banditCount` fighters.
+   * Optional — existing fixtures don't all carry it. When present the
+   * counts should sum to `banditCount`.
+   *
+   * docs/12-bandits-and-conflict.md §"Bandit demographics"
+   */
+  readonly banditDemographics?: Demographics;
+  /**
+   * Per-(sex, age band) split of the camp's `hangersOnCount`. Same
+   * optional/sum semantics as `banditDemographics`. Hangers-on are
+   * children, captives, and non-fighting dependents.
+   */
+  readonly hangersOnDemographics?: Demographics;
 }
 
 export interface CreateCampInput {
@@ -66,6 +81,8 @@ export interface CreateCampInput {
   readonly treasury?: Coin;
   /** Optional initial loot (otherwise empty). */
   readonly loot?: ReadonlyMap<ResourceId, Quantity>;
+  readonly banditDemographics?: Demographics;
+  readonly hangersOnDemographics?: Demographics;
 }
 
 export type CampAction =
@@ -134,6 +151,12 @@ export const createCamp = (input: CreateCampInput): BanditCamp => {
     averageHealth: input.averageHealth,
     treasury,
     loot,
+    ...(input.banditDemographics !== undefined
+      ? { banditDemographics: new Map(input.banditDemographics) }
+      : {}),
+    ...(input.hangersOnDemographics !== undefined
+      ? { hangersOnDemographics: new Map(input.hangersOnDemographics) }
+      : {}),
   };
 };
 
@@ -153,6 +176,44 @@ export const recruit = (camp: BanditCamp, newBandits: number): BanditCamp => {
   return {
     ...camp,
     banditCount: camp.banditCount + newBandits,
+  };
+};
+
+/**
+ * Apply bandit casualties: returns a new camp with `deaths` removed from
+ * `banditCount` AND from `banditDemographics` (proportionally) when
+ * present. Mirrors `applyCrewCasualties` in src/sim/caravan/caravan.ts.
+ *
+ * Returns the drained demographics map so callers can feed deaths back
+ * into the home settlement's PopulationPool (the village or city the
+ * bandits were originally recruited from).
+ *
+ * docs/12-bandits-and-conflict.md §"Bandit demographics" — casualties.
+ */
+export const applyBanditCasualties = (
+  camp: BanditCamp,
+  deaths: number,
+  rng: Rng,
+): { readonly camp: BanditCamp; readonly removed: ReadonlyMap<string, number> } => {
+  if (!Number.isInteger(deaths) || deaths <= 0) {
+    return { camp, removed: new Map() };
+  }
+  const take = Math.min(camp.banditCount, deaths);
+  const newCount = camp.banditCount - take;
+  let drained: Map<string, number> = new Map();
+  let newDemo: Demographics | undefined = camp.banditDemographics;
+  if (camp.banditDemographics !== undefined) {
+    const mut = new Map(camp.banditDemographics);
+    drained = drainDemographics(mut, take, rng.derive('bandit-drain'));
+    newDemo = mut;
+  }
+  return {
+    camp: {
+      ...camp,
+      banditCount: newCount,
+      ...(newDemo !== undefined ? { banditDemographics: newDemo } : {}),
+    },
+    removed: drained,
   };
 };
 

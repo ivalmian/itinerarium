@@ -67,6 +67,49 @@ fragment it, or a particularly rich score lets the leaders retire
 into respectability (laundering coin into land — historically
 real).
 
+### Bandit demographics
+
+Per the pillar-1 rule "everyone in all units has gender and age",
+every `BanditCamp` carries two optional **demographics** maps:
+
+- `banditDemographics` — sums to `banditCount`. The fighters.
+- `hangersOnDemographics` — sums to `hangersOnCount`. Children,
+  captives, dependents.
+
+Both use the same sparse `Map<string, number>` keyed by
+`${sex}|${ageBand}` shape as `CrewMember.demographics` (docs/06)
+and `Settlement.population`.
+
+Sourcing rule (procgen + recruitment):
+
+- The initial-camp seeder pulls from the **nearest city's
+  working-age population pool** via
+  `drawDemographicsFromPool(pool, count, bias, rng)`, matching the
+  "banditry as a fate" doctrine: bandits are recruited from real
+  villages and city poor, not generated from thin air.
+- Per-role bias profiles (`ROLE_BIASES` in
+  `src/sim/population/demographics.ts`):
+  - `bandit` — heavily male (10% female weight), fighting-age
+    15-44.
+  - `bandit_hanger_on` — wider, female-favored (50/100 sex
+    weight), with strong weight on children (5-14) and a sliver
+    of the elderly. Reflects the historical mix of camp
+    dependents.
+- Recruitment drives (the `recruit_drive` action) add fighters;
+  the demographics extension to that path is a follow-up — the
+  current `recruit()` helper doesn't draw new demographics.
+
+Casualty rule (battle):
+
+- `applyBanditCasualties(camp, deaths, rng)` in
+  `src/sim/bandit/camp.ts` returns a new camp with `banditCount`
+  AND `banditDemographics` reduced together (largest-remainder
+  rounding, RNG tie-breaking for determinism).
+- The drained per-bucket map is returned for downstream
+  feed-back-to-source-village accounting (currently a follow-up).
+
+The fields are **optional** so existing fixtures keep working.
+
 ## Patrols (Roman-era)
 
 Authorities push back. Roman-era options, all modeled in the current scope:
