@@ -268,26 +268,12 @@ export const runBurnIn = async (opts: BurnInOpts): Promise<BurnInReport> => {
     world = result.world;
 
     // Accumulate event-derived stats.
-    for (const e of result.events) {
-      switch (e.type) {
-        case 'recipe_ran':
-          recipeRuns += 1;
-          break;
-        case 'market_cleared':
-          marketsCleared += 1;
-          break;
-        case 'cohort_deaths':
-          if (e.cause === 'famine') famineDeaths += e.deaths;
-          else if (e.cause === 'disease') diseaseDeaths += e.deaths;
-          else if (e.cause === 'baseline') baselineDeaths += e.deaths;
-          break;
-        case 'epidemic_started':
-          epidemicsTriggered += 1;
-          break;
-        default:
-          break;
-      }
-    }
+    recipeRuns += result.stats.recipeRuns;
+    marketsCleared += result.stats.marketsCleared;
+    famineDeaths += result.stats.famineDeaths;
+    diseaseDeaths += result.stats.diseaseDeaths;
+    baselineDeaths += result.stats.baselineDeaths;
+    epidemicsTriggered += result.stats.epidemicsTriggered;
 
     // Periodic invariant check on the day AFTER tick advances world.day.
     const checkDay = world.day - 1;

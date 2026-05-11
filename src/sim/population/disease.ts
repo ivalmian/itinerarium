@@ -134,6 +134,8 @@ export const DISEASES: ReadonlyMap<string, DiseaseDef> = new Map<string, Disease
   [PLAGUE.id, PLAGUE],
 ]);
 
+const DISEASE_LIST: readonly DiseaseDef[] = [SMALLPOX, TYPHUS, PLAGUE];
+
 // ---------------------------------------------------------------------------
 // Per-settlement health record.
 // ---------------------------------------------------------------------------
@@ -242,13 +244,7 @@ const slaveEndemicMultiplier: Partial<Record<CharacterClass, number>> = {
 };
 
 const sampleBinomial = (n: number, p: number, rng: Rng): number => {
-  if (n <= 0 || p <= 0) return 0;
-  if (p >= 1) return n;
-  let k = 0;
-  for (let i = 0; i < n; i++) {
-    if (rng.next() < p) k++;
-  }
-  return k;
+  return rng.countBelow(n, p);
 };
 
 export interface EndemicResult {
@@ -265,21 +261,19 @@ export const applyEndemicMortality = (
   if (pool.total() === 0) return { deaths: 0 };
   const climateMul = climateEndemicMultiplier(climate);
   const terrainMul = terrainEndemicMultiplier(terrain);
-  const snapshot: Array<readonly [CohortKey, number]> = [];
-  for (const entry of pool.cohorts()) snapshot.push(entry);
   let totalDeaths = 0;
-  for (const [key, count] of snapshot) {
-    if (count <= 0) continue;
+  pool.forEachCohort((key, count) => {
+    if (count <= 0) return;
     const annualPer1000 = ENDEMIC_BASELINE_PER1000_PER_YEAR_BY_BAND[key.age];
     const classMul = slaveEndemicMultiplier[key.class] ?? 1;
     const dailyP = (annualPer1000 / 1000 / 365) * climateMul * terrainMul * classMul;
-    if (dailyP <= 0) continue;
+    if (dailyP <= 0) return;
     const deaths = sampleBinomial(count, dailyP, rng);
     if (deaths > 0) {
       pool.set(key, count - deaths);
       totalDeaths += deaths;
     }
-  }
+  });
   return { deaths: totalDeaths };
 };
 
@@ -327,14 +321,15 @@ export const maybeTriggerEpidemic = (
   today: Day,
 ): EpidemicTriggerResult => {
   if (pool.total() === 0) return { triggered: null };
-  const candidates: DiseaseDef[] = [];
-  for (const d of DISEASES.values()) {
-    if (!health.infections.has(d.id)) candidates.push(d);
-  }
-  if (candidates.length === 0) return { triggered: null };
+  if (health.infections.size >= DISEASE_LIST.length) return { triggered: null };
   const densityFactor = Math.max(0, density) / EPIDEMIC_SPAWN_REFERENCE_DENSITY;
   const p = EPIDEMIC_SPAWN_BASE_RATE_PER_DAY * densityFactor * climateSpawnMultiplier(climate);
   if (rng.next() >= p) return { triggered: null };
+  const candidates: DiseaseDef[] = [];
+  for (const d of DISEASE_LIST) {
+    if (!health.infections.has(d.id)) candidates.push(d);
+  }
+  if (candidates.length === 0) return { triggered: null };
   // Picking among candidates uses the same RNG; deterministic.
   const idx = Math.floor(rng.next() * candidates.length);
   const chosen = candidates[Math.min(idx, candidates.length - 1)];
@@ -352,9 +347,8 @@ export interface InfectionTickResult {
 
 const ageBandWeight = (pool: PopulationPool): Map<AgeBand, number> => {
   const weights = new Map<AgeBand, number>();
-  for (const a of AGE_BANDS) weights.set(a, 0);
-  for (const [key, count] of pool.cohorts()) {
-    weights.set(key.age, (weights.get(key.age) ?? 0) + count);
+  for (const a of AGE_BANDS) {
+    weights.set(a, pool.totalByAgeBand(a));
   }
   return weights;
 };
@@ -391,11 +385,11 @@ const allocateDeathsAcrossPool = (
     // bite. We build a per-(sex,class) snapshot for this band first.
     const subBuckets: Array<readonly [CohortKey, number]> = [];
     let subTotal = 0;
-    for (const [key, n] of pool.cohorts()) {
-      if (key.age !== band || n <= 0) continue;
+    pool.forEachCohort((key, n) => {
+      if (key.age !== band || n <= 0) return;
       subBuckets.push([key, n]);
       subTotal += n;
-    }
+    });
     if (subTotal === 0) continue;
     let subRemaining = allocated;
     for (let i = 0; i < subBuckets.length; i++) {

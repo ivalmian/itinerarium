@@ -371,6 +371,18 @@ const seasonMultiplier = (t: Terrain, season: Season): number => {
   return 1;
 };
 
+export interface CaravanMovementStats {
+  readonly baseMp: number;
+  readonly hasRoadDependentVehicle: boolean;
+  readonly loadMult: number;
+}
+
+export const caravanMovementStats = (c: Caravan): CaravanMovementStats => ({
+  baseMp: slowestBaseMp(c),
+  hasRoadDependentVehicle: hasRoadDependentVehicle(c),
+  loadMult: 1.2 - 0.2 * loadFraction(c),
+});
+
 /**
  * MP allowance for one day. Multiplies slowest-unit base MP by
  * load factor (1.0 empty → ~0.7 fully laden), road grade,
@@ -384,26 +396,29 @@ export const dailyMpAllowance = (
   road: RoadGrade,
   season: Season,
 ): number => {
+  return dailyMpAllowanceWithStats(caravanMovementStats(c), terrain, road, season);
+};
+
+export const dailyMpAllowanceWithStats = (
+  stats: CaravanMovementStats,
+  terrain: Terrain,
+  road: RoadGrade,
+  season: Season,
+): number => {
   if (!isPassable(terrain, season)) return 0;
 
   // A road-only vehicle on an unroaded hex is effectively stuck.
-  if (hasRoadDependentVehicle(c) && road === 'none') {
+  if (stats.hasRoadDependentVehicle && road === 'none') {
     if (terrain !== 'plains' && terrain !== 'fertile_valley') return 0;
     // On hard plains an ox-cart can creep along, but very slowly.
   }
 
-  const base = slowestBaseMp(c);
+  const base = stats.baseMp;
   if (base <= 0) return 0;
-
-  // docs/06 base MPs are calibrated for a laden caravan in good
-  // conditions. An empty caravan moves ~20% faster; a fully laden
-  // one moves at the base rate. Linear in load fraction.
-  const load = loadFraction(c);
-  const loadMult = 1.2 - 0.2 * load;
 
   const mp =
     base *
-    loadMult *
+    stats.loadMult *
     roadMultiplier(road) *
     terrainMultiplier(terrain) *
     seasonMultiplier(terrain, season);

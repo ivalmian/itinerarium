@@ -22,10 +22,18 @@ import { hexKey, hexNeighbors, hexesWithinRange, parseHexKey } from './hex.js';
 import type { Hex } from './hex.js';
 import type { HexTile } from './terrain.js';
 
+const COORD_KEY_OFFSET = 32768;
+const COORD_KEY_STRIDE = 65536;
+
+const coordKey = (q: number, r: number): number =>
+  (q + COORD_KEY_OFFSET) * COORD_KEY_STRIDE + (r + COORD_KEY_OFFSET);
+
 export interface HexGrid {
   size(): number;
   get(h: Hex): HexTile | undefined;
+  getAt(q: number, r: number): HexTile | undefined;
   has(h: Hex): boolean;
+  hasAt(q: number, r: number): boolean;
   set(h: Hex, tile: HexTile): void;
   hexes(): IterableIterator<Hex>;
   tiles(): IterableIterator<readonly [Hex, HexTile]>;
@@ -37,16 +45,19 @@ export interface HexGrid {
 
 class MapHexGrid implements HexGrid {
   private readonly store: Map<string, HexTile>;
+  private readonly coordStore: Map<number, HexTile>;
 
   constructor(initial?: ReadonlyMap<string, HexTile>) {
     this.store = new Map();
+    this.coordStore = new Map();
     if (initial !== undefined) {
       for (const [key, tile] of initial) {
         // Validate the key by round-tripping. parseHexKey throws on garbage,
         // which surfaces malformed procgen output at construction time
         // rather than at first lookup.
-        parseHexKey(key);
+        const h = parseHexKey(key);
         this.store.set(key, tile);
+        this.coordStore.set(coordKey(h.q, h.r), tile);
       }
     }
   }
@@ -59,12 +70,21 @@ class MapHexGrid implements HexGrid {
     return this.store.get(hexKey(h));
   }
 
+  getAt(q: number, r: number): HexTile | undefined {
+    return this.coordStore.get(coordKey(q, r));
+  }
+
   has(h: Hex): boolean {
     return this.store.has(hexKey(h));
   }
 
+  hasAt(q: number, r: number): boolean {
+    return this.coordStore.has(coordKey(q, r));
+  }
+
   set(h: Hex, tile: HexTile): void {
     this.store.set(hexKey(h), tile);
+    this.coordStore.set(coordKey(h.q, h.r), tile);
   }
 
   *hexes(): IterableIterator<Hex> {

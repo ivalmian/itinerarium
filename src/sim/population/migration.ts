@@ -277,13 +277,7 @@ const ageProfileFor = (reason: MigrationReason): Record<AgeBand, number> => {
 };
 
 const sampleBinomial = (n: number, p: number, rng: Rng): number => {
-  if (n <= 0 || p <= 0) return 0;
-  if (p >= 1) return n;
-  let k = 0;
-  for (let i = 0; i < n; i++) {
-    if (rng.next() < p) k++;
-  }
-  return k;
+  return rng.countBelow(n, p);
 };
 
 const pickBestDestination = (
@@ -322,16 +316,16 @@ export const decideEmigration = (input: DecideEmigrationInputs): MigrationDecisi
     if (profileWeight <= 0) continue;
     const p = severityScale * MAX_COHORT_DRAIN_FRACTION * profileWeight;
     if (p <= 0) continue;
-    for (const [key, count] of input.settlement.population.cohorts()) {
-      if (key.age !== a) continue;
-      if (key.class === 'slave') continue;
-      if (count <= 0) continue;
+    input.settlement.population.forEachCohort((key, count) => {
+      if (key.age !== a) return;
+      if (key.class === 'slave') return;
+      if (count <= 0) return;
       const leavers = sampleBinomial(count, Math.min(1, p), input.rng);
       if (leavers > 0) {
         cohorts.set(key, leavers);
         total += leavers;
       }
-    }
+    });
   }
 
   if (total === 0) return null;

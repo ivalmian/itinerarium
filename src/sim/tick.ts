@@ -35,27 +35,13 @@
 import { allBuildings, getBuilding } from './buildings/catalog.js';
 import { tickCaravanMovement } from './caravan/movement.js';
 import { planCaravanRoute } from './caravan/ai.js';
-import {
-  createCamp,
-  decideCampAction,
-  recruit,
-  type BanditCamp,
-} from './bandit/camp.js';
+import { createCamp, decideCampAction, recruit, type BanditCamp } from './bandit/camp.js';
 import { createActor } from './politics/actor.js';
 import { createCharacter, generateFullName } from './politics/character.js';
 import { createFaction } from './politics/faction.js';
-import {
-  actorId,
-  banditCampId as makeBanditCampId,
-  characterId,
-  factionId,
-} from './types.js';
+import { actorId, banditCampId as makeBanditCampId, characterId, factionId } from './types.js';
 import { resolveAmbush, type AmbushResult } from './conflict/ambush.js';
-import {
-  tickEdgeHubs,
-  DEFAULT_GLOBAL_PRICES,
-  DEFAULT_IMPORT_PALETTE,
-} from './caravan/edgeHub.js';
+import { tickEdgeHubs, DEFAULT_GLOBAL_PRICES, DEFAULT_IMPORT_PALETTE } from './caravan/edgeHub.js';
 import {
   assessTaxes,
   createTaxShipmentCaravan,
@@ -299,6 +285,16 @@ export type TickEvent =
 export interface TickResult {
   readonly world: WorldState;
   readonly events: readonly TickEvent[];
+  readonly stats: TickStats;
+}
+
+export interface TickStats {
+  recipeRuns: number;
+  marketsCleared: number;
+  famineDeaths: number;
+  diseaseDeaths: number;
+  baselineDeaths: number;
+  epidemicsTriggered: number;
 }
 
 /** One-day reputation half-life: 90 days. Tunable per docs/13. */
@@ -317,6 +313,14 @@ const KG_PER_MODIUS = 6.7; // resources/catalog.ts food.grain unit
 export const tick = (inputs: TickInputs): TickResult => {
   const { world, rng } = inputs;
   const events: TickEvent[] = [];
+  const stats: TickStats = {
+    recipeRuns: 0,
+    marketsCleared: 0,
+    famineDeaths: 0,
+    diseaseDeaths: 0,
+    baselineDeaths: 0,
+    epidemicsTriggered: 0,
+  };
   const today: Day = world.day;
   const season: Season = dayOfYearToSeason(today);
 
@@ -326,20 +330,20 @@ export const tick = (inputs: TickInputs): TickResult => {
   settlementsById = world.settlements;
 
   // --- Phase 1: Production -------------------------------------------------
-  productionPhase(world, season, events);
+  productionPhase(world, season, events, stats);
   // After production, drain mason+carpenter worker-days toward each
   // settlement's pendingBuildings. Per docs/15 §C8 — construction takes
   // real time and labor; new buildings don't appear instantly.
   constructionPhase(world, today, events);
 
   // --- Phase 2: Consumption ------------------------------------------------
-  consumptionPhase(world, today, events);
+  consumptionPhase(world, today, events, stats);
 
   // --- Phase 3: Movement ---------------------------------------------------
   movementPhase(world, season, today, events);
 
   // --- Phase 4: Trade ------------------------------------------------------
-  tradePhase(world, season, today, events);
+  tradePhase(world, season, today, events, stats);
   // After every settlement clears its market, run the petty-merchant /
   // villager-pickup-cart pass that arbitrages price spreads between
   // settlements within 3 hexes (docs/06 §"Local trade between nearby
@@ -349,7 +353,7 @@ export const tick = (inputs: TickInputs): TickResult => {
   localTradePhase(world, season, today, events);
 
   // --- Phase 5: Demographics ----------------------------------------------
-  demographicsPhase(world, today, rng.derive('demographics'), events);
+  demographicsPhase(world, today, rng.derive('demographics'), events, stats);
 
   // --- Phase 6: Politics ---------------------------------------------------
   politicsPhase(world, rng.derive('politics'), today, events);
@@ -387,7 +391,7 @@ export const tick = (inputs: TickInputs): TickResult => {
   // matched the season they ran in.
   world.day = today + 1;
 
-  return { world, events };
+  return { world, events, stats };
 };
 
 // --- Phase 1: Production ----------------------------------------------------
@@ -402,14 +406,19 @@ export const tick = (inputs: TickInputs): TickResult => {
  * refined → manufactured) so a bake_bread call in the same tick can see the
  * flour produced by a mill_grain earlier in the same phase.
  */
-const productionPhase = (world: WorldState, season: Season, events: TickEvent[]): void => {
-  const recipesInOrder = topoSortedRecipes();
+const productionPhase = (
+  world: WorldState,
+  season: Season,
+  events: TickEvent[],
+  stats: TickStats,
+): void => {
   for (const settlement of world.settlements.values()) {
     const labor = laborAvailableInSettlement(settlement);
-    for (const recipe of recipesInOrder) {
-      // Find any building in the settlement matching this recipe's building.
-      for (const b of settlement.buildings) {
-        if (b.buildingId !== recipe.building) continue;
+    const buildingsById = buildingsByKindForSettlement(settlement);
+    for (const recipe of RECIPES_IN_TOPO_ORDER) {
+      const buildings = buildingsById.get(recipe.building);
+      if (buildings === undefined) continue;
+      for (const b of buildings) {
         const ownerActor = world.actors.get(b.ownerActor);
         if (ownerActor === undefined) continue;
         if (b.capacity <= 0) continue;
@@ -447,6 +456,7 @@ const productionPhase = (world: WorldState, season: Season, events: TickEvent[])
           }
           // Decrement building capacity for the day.
           b.capacity = Math.max(0, b.capacity - result.buildingCapacityUsed);
+          stats.recipeRuns += 1;
           events.push({
             type: 'recipe_ran',
             settlement: settlement.id,
@@ -464,6 +474,34 @@ const productionPhase = (world: WorldState, season: Season, events: TickEvent[])
     }
   }
 };
+
+const buildingsByKindForSettlement = (
+  settlement: Settlement,
+): ReadonlyMap<BuildingId, readonly Settlement['buildings'][number][]> => {
+  const cached = buildingsByKindCache.get(settlement);
+  if (cached !== undefined && cached.buildingCount === settlement.buildings.length) {
+    return cached.byKind;
+  }
+  const out = new Map<BuildingId, Settlement['buildings'][number][]>();
+  for (const b of settlement.buildings) {
+    let bucket = out.get(b.buildingId);
+    if (bucket === undefined) {
+      bucket = [];
+      out.set(b.buildingId, bucket);
+    }
+    bucket.push(b);
+  }
+  buildingsByKindCache.set(settlement, { buildingCount: settlement.buildings.length, byKind: out });
+  return out;
+};
+
+const buildingsByKindCache: WeakMap<
+  Settlement,
+  {
+    readonly buildingCount: number;
+    readonly byKind: ReadonlyMap<BuildingId, readonly Settlement['buildings'][number][]>;
+  }
+> = new WeakMap();
 
 /**
  * Per-role labor estimate read from the settlement's `jobAllocations` (per
@@ -487,11 +525,7 @@ const laborAvailableInSettlement = (settlement: Settlement): Map<JobId, number> 
   }
   // Fallback: legacy uniform availability. Used only when a settlement was
   // constructed without procgen seeding job allocations (e.g. test stubs).
-  let adults = 0;
-  for (const [key, count] of settlement.population.cohorts()) {
-    const ageNum = parseInt(key.age.split('-')[0] ?? '0', 10);
-    if (ageNum >= 15 && ageNum < 60) adults += count;
-  }
+  const adults = settlement.population.totalAdults();
   void getJob;
   for (const recipe of allRecipes()) {
     for (const role of recipe.labor.keys()) {
@@ -536,6 +570,8 @@ const topoSortedRecipes = (): readonly ReturnType<typeof allRecipes>[number][] =
   for (const r of recipes) visit(r);
   return out;
 };
+
+const RECIPES_IN_TOPO_ORDER = topoSortedRecipes();
 
 const decreaseStockpile = (actor: Actor, resource: ResourceId, qty: Quantity): void => {
   if (qty <= 0) return;
@@ -585,11 +621,14 @@ const faminePressure: WeakMap<Settlement, FaminePressureRecord> = new WeakMap();
  * fish). When the day's draw is short of need, famine pressure accrues; if
  * pressure stays elevated for several days, cohort_deaths fire.
  */
-const consumptionPhase = (world: WorldState, today: Day, events: TickEvent[]): void => {
+const consumptionPhase = (
+  world: WorldState,
+  today: Day,
+  events: TickEvent[],
+  stats: TickStats,
+): void => {
   for (const settlement of world.settlements.values()) {
-    const adults = adultPopulation(settlement);
-    const children = childPopulation(settlement);
-    const elders = elderPopulation(settlement);
+    const { adults, children, elders } = populationAgeBuckets(settlement);
     // Children consume ~0.5×, elders ~0.8× per docs/04.
     const adultEquivalent = adults + children * 0.5 + elders * 0.8;
     if (adultEquivalent <= 0) continue;
@@ -621,6 +660,7 @@ const consumptionPhase = (world: WorldState, today: Day, events: TickEvent[]): v
       if (rec.consecutiveShortageDays >= 5) {
         const deaths = computeFamineDeaths(settlement, shortfall / Math.max(1, grainNeededModii));
         if (deaths > 0) {
+          stats.famineDeaths += deaths;
           events.push({
             type: 'cohort_deaths',
             settlement: settlement.id,
@@ -636,31 +676,17 @@ const consumptionPhase = (world: WorldState, today: Day, events: TickEvent[]): v
   }
 };
 
-const adultPopulation = (s: Settlement): number => {
-  let n = 0;
-  for (const [key, count] of s.population.cohorts()) {
-    const a = parseInt(key.age.split('-')[0] ?? '0', 10);
-    if (a >= 15 && a < 60) n += count;
-  }
-  return n;
-};
-const childPopulation = (s: Settlement): number => {
-  let n = 0;
-  for (const [key, count] of s.population.cohorts()) {
-    const a = parseInt(key.age.split('-')[0] ?? '0', 10);
-    if (a < 15) n += count;
-  }
-  return n;
-};
-const elderPopulation = (s: Settlement): number => {
-  let n = 0;
-  for (const [key, count] of s.population.cohorts()) {
-    const a = parseInt(key.age.split('-')[0] ?? '0', 10);
-    if (a >= 60) n += count;
-  }
-  return n;
+const populationAgeBuckets = (
+  s: Settlement,
+): { readonly adults: number; readonly children: number; readonly elders: number } => {
+  return {
+    adults: s.population.totalAdults(),
+    children: s.population.totalChildren(),
+    elders: s.population.totalElders(),
+  };
 };
 
+const adultPopulation = (s: Settlement): number => s.population.totalAdults();
 const FOOD_PRIORITY: readonly ResourceId[] = [
   resourceId('food.bread'),
   resourceId('food.flour'),
@@ -754,9 +780,9 @@ const computeFamineDeaths = (settlement: Settlement, shortfallFrac: number): num
     const take = Math.min(remaining, inBand);
     let drained = 0;
     const snapshot: Array<[Parameters<Settlement['population']['set']>[0], number]> = [];
-    for (const [key, count] of settlement.population.cohorts()) {
+    settlement.population.forEachCohort((key, count) => {
       if (key.age === age && count > 0) snapshot.push([key, count]);
-    }
+    });
     for (const [key, count] of snapshot) {
       if (drained >= take) break;
       const share = Math.max(1, Math.round((count / inBand) * take));
@@ -868,12 +894,7 @@ const DEFAULT_TAX_RATES: TaxRatesPercent = {
   coinTaxPctOfWealth: 1, // 1% monthly coin assessment
 };
 
-const taxShipmentPhase = (
-  world: WorldState,
-  today: Day,
-  rng: Rng,
-  events: TickEvent[],
-): void => {
+const taxShipmentPhase = (world: WorldState, today: Day, rng: Rng, events: TickEvent[]): void => {
   // Find the governor (one per province; per docs/11 there's one
   // governor_office actor anchored at the capital).
   let governor: Actor | undefined;
@@ -948,7 +969,9 @@ const taxShipmentPhase = (
     if (remaining > 1e-9) owner.stockpile.set(a.resource, remaining);
     else owner.stockpile.delete(a.resource);
 
-    const cId = makeCaravanIdLocal(`tax-${today}-${String(a.fromSettlement)}-${String(a.resource)}`);
+    const cId = makeCaravanIdLocal(
+      `tax-${today}-${String(a.fromSettlement)}-${String(a.resource)}`,
+    );
     if (world.caravans.has(cId)) continue; // dedupe within a tick
     const caravan = createTaxShipmentCaravan({
       id: cId,
@@ -987,8 +1010,6 @@ const edgeHubPhase = (
   rng: Rng,
   events: TickEvent[],
 ): void => {
-  // Build edge-hex list once per tick. Grid is mostly static, but recompute
-  // is cheap enough that we keep it inline for now.
   const edgeHexes = computeEdgeHexes(world.grid);
   if (edgeHexes.length === 0) return;
 
@@ -1073,8 +1094,16 @@ const edgeHubPhase = (
   }
 };
 
-const computeEdgeHexes = (grid: WorldState['grid']): Hex[] => {
-  let minQ = Infinity, maxQ = -Infinity, minR = Infinity, maxR = -Infinity;
+const edgeHexCache: WeakMap<WorldState['grid'], readonly Hex[]> = new WeakMap();
+
+const computeEdgeHexes = (grid: WorldState['grid']): readonly Hex[] => {
+  const cached = edgeHexCache.get(grid);
+  if (cached !== undefined) return cached;
+
+  let minQ = Infinity,
+    maxQ = -Infinity,
+    minR = Infinity,
+    maxR = -Infinity;
   for (const [h] of grid.tiles()) {
     if (h.q < minQ) minQ = h.q;
     if (h.q > maxQ) maxQ = h.q;
@@ -1089,6 +1118,7 @@ const computeEdgeHexes = (grid: WorldState['grid']): Hex[] => {
       out.push({ q: h.q, r: h.r });
     }
   }
+  edgeHexCache.set(grid, out);
   return out;
 };
 
@@ -1188,6 +1218,7 @@ const tradePhase = (
   season: Season,
   today: Day,
   events: TickEvent[],
+  stats: TickStats,
 ): void => {
   // Per docs/08 + codex review #5: replaced the v1 8-resource hardcoded
   // "grain or comfort" model with the full demand/supply schedule
@@ -1197,8 +1228,7 @@ const tradePhase = (
   // observation #1 in the viewer: grain/flour/bread always 0.5,
   // cheese/tool/wine always 1000).
   const tradable = TRADABLE_RESOURCES;
-  const ownerKindByActor = new Map<ActorId, Actor['kind']>();
-  for (const a of world.actors.values()) ownerKindByActor.set(a.id, a.kind);
+  const ownerKindByActor = ownerKindByActorForWorld(world);
 
   for (const settlement of world.settlements.values()) {
     if (settlement.population.total() === 0) continue;
@@ -1219,13 +1249,13 @@ const tradePhase = (
     // clear; building their full demand schedule wastes ~50× the work
     // per settlement per tick. The full catalog still clears wherever
     // there IS supply.
-    const presentResources = new Set<string>();
+    const presentResources = new Set<ResourceId>();
     for (const o of owners) {
       for (const [res, qty] of o.stockpile) {
-        if (qty > 0) presentResources.add(String(res));
+        if (qty > 0) presentResources.add(res);
       }
     }
-    const localTradable = tradable.filter((r) => presentResources.has(String(r)));
+    const localTradable = tradable.filter((r) => presentResources.has(r));
     if (localTradable.length === 0) continue;
 
     // Synthesize a recentLocalPrices map: use the observed clearing
@@ -1257,6 +1287,7 @@ const tradePhase = (
     });
 
     for (const [resId, pair] of schedules.schedulesByResource) {
+      if (pair.demand.sources.length === 0 || pair.supply.sources.length === 0) continue;
       const result = clearMarket(pair.demand, pair.supply, { maxPrice: 10000 });
       if (result.totalTraded <= 0) continue;
       for (const trade of result.trades) {
@@ -1268,6 +1299,7 @@ const tradePhase = (
         seller.treasury = seller.treasury + trade.quantity * trade.price;
       }
       recordClearingPrice(settlement, resId, result.clearingPrice);
+      stats.marketsCleared += 1;
       events.push({
         type: 'market_cleared',
         settlement: settlement.id,
@@ -1277,6 +1309,24 @@ const tradePhase = (
       });
     }
   }
+};
+
+interface OwnerKindCache {
+  readonly actorCount: number;
+  readonly ownerKindByActor: ReadonlyMap<ActorId, Actor['kind']>;
+}
+
+const ownerKindCache: WeakMap<WorldState, OwnerKindCache> = new WeakMap();
+
+const ownerKindByActorForWorld = (world: WorldState): ReadonlyMap<ActorId, Actor['kind']> => {
+  const cached = ownerKindCache.get(world);
+  if (cached !== undefined && cached.actorCount === world.actors.size) {
+    return cached.ownerKindByActor;
+  }
+  const ownerKindByActor = new Map<ActorId, Actor['kind']>();
+  for (const a of world.actors.values()) ownerKindByActor.set(a.id, a.kind);
+  ownerKindCache.set(world, { actorCount: world.actors.size, ownerKindByActor });
+  return ownerKindByActor;
 };
 
 /**
@@ -1357,18 +1407,7 @@ const localTradePhase = (
   events: TickEvent[],
 ): void => {
   void today;
-  // Build hex → settlements index once. Multiple settlements may share a hex
-  // (the pagus + hamlets case); the entry is therefore an array.
-  const settlementsByAnchorHex = new Map<string, Settlement[]>();
-  for (const s of world.settlements.values()) {
-    const k = hexKey(s.anchor);
-    let bucket = settlementsByAnchorHex.get(k);
-    if (bucket === undefined) {
-      bucket = [];
-      settlementsByAnchorHex.set(k, bucket);
-    }
-    bucket.push(s);
-  }
+  const settlementsByAnchorHex = settlementAnchorIndexForWorld(world).byAnchorHex;
 
   // Cache anchor passability per phase. v1 approximation: a pair is feasible
   // if both anchors are on passable terrain this season. Real path
@@ -1413,6 +1452,44 @@ const localTradePhase = (
   }
 };
 
+interface SettlementAnchorIndex {
+  readonly settlementCount: number;
+  readonly byAnchorHex: ReadonlyMap<string, readonly Settlement[]>;
+  readonly candidates: readonly {
+    readonly id: SettlementId;
+    readonly hex: Hex;
+    readonly tier: Settlement['tier'];
+  }[];
+}
+
+const settlementAnchorIndexCache: WeakMap<WorldState, SettlementAnchorIndex> = new WeakMap();
+
+const settlementAnchorIndexForWorld = (world: WorldState): SettlementAnchorIndex => {
+  const cached = settlementAnchorIndexCache.get(world);
+  if (cached !== undefined && cached.settlementCount === world.settlements.size) return cached;
+
+  const byAnchorHex = new Map<string, Settlement[]>();
+  const candidates: { id: SettlementId; hex: Hex; tier: Settlement['tier'] }[] = [];
+  for (const s of world.settlements.values()) {
+    candidates.push({ id: s.id, hex: s.anchor, tier: s.tier });
+    const k = hexKey(s.anchor);
+    let bucket = byAnchorHex.get(k);
+    if (bucket === undefined) {
+      bucket = [];
+      byAnchorHex.set(k, bucket);
+    }
+    bucket.push(s);
+  }
+
+  const index: SettlementAnchorIndex = {
+    settlementCount: world.settlements.size,
+    byAnchorHex,
+    candidates,
+  };
+  settlementAnchorIndexCache.set(world, index);
+  return index;
+};
+
 const tryLocalTrade = (
   world: WorldState,
   a: Settlement,
@@ -1431,8 +1508,8 @@ const tryLocalTrade = (
   // prices (which are themselves coin/unit). Heavy goods like grain
   // (~6.7 kg/modius) eat a meaningful chunk of any price spread; tiny
   // luxuries like spices barely notice.
-  const def = getResource(resId);
-  const weightKgPerUnit = def.weightKgPerUnit;
+  const weightKgPerUnit =
+    LOCAL_TRADE_WEIGHT_KG_BY_RESOURCE.get(resId) ?? getResource(resId).weightKgPerUnit;
   if (weightKgPerUnit <= 0) return;
   const transportCostPerUnit = transportCostPerKg * weightKgPerUnit;
 
@@ -1573,17 +1650,27 @@ const LOCAL_TRADE_RESOURCES: readonly ResourceId[] = [
   resourceId('metal.iron'),
 ];
 
+const LOCAL_TRADE_WEIGHT_KG_BY_RESOURCE: ReadonlyMap<ResourceId, number> = new Map(
+  LOCAL_TRADE_RESOURCES.map((id) => [id, getResource(id).weightKgPerUnit] as const),
+);
+
 // --- Phase 5: Demographics --------------------------------------------------
 
 /** Per-Settlement health record, keyed by reference for the same reason as faminePressure. */
 const settlementHealthMap: WeakMap<Settlement, SettlementHealth> = new WeakMap();
 
-const demographicsPhase = (world: WorldState, today: Day, rng: Rng, events: TickEvent[]): void => {
+const demographicsPhase = (
+  world: WorldState,
+  today: Day,
+  rng: Rng,
+  events: TickEvent[],
+  stats: TickStats,
+): void => {
   for (const settlement of world.settlements.values()) {
     if (settlement.population.total() === 0) continue;
-    const subRng = rng.derive(`settle-${String(settlement.id)}`);
+    const rngLabel = `settle-${String(settlement.id)}`;
     // 1) Vital rates.
-    tickDaily(settlement.population, ROMAN_VITAL_RATES, subRng.derive('vital'));
+    tickDaily(settlement.population, ROMAN_VITAL_RATES, rng.derive(`${rngLabel}|vital`));
 
     // 2) Endemic mortality + epidemic.
     const tile = world.grid.get(settlement.anchor);
@@ -1592,10 +1679,11 @@ const demographicsPhase = (world: WorldState, today: Day, rng: Rng, events: Tick
       settlement.population,
       tile.climate,
       tile.terrain,
-      subRng.derive('endemic'),
+      rng.derive(`${rngLabel}|endemic`),
       today,
     );
     if (endemic.deaths > 0) {
+      stats.baselineDeaths += endemic.deaths;
       events.push({
         type: 'cohort_deaths',
         settlement: settlement.id,
@@ -1614,18 +1702,23 @@ const demographicsPhase = (world: WorldState, today: Day, rng: Rng, events: Tick
       settlement.population,
       density,
       tile.climate,
-      subRng.derive('epidemic-spawn'),
+      rng.derive(`${rngLabel}|epidemic-spawn`),
       today,
     );
     if (trigger.triggered !== null) {
+      stats.epidemicsTriggered += 1;
       events.push({
         type: 'epidemic_started',
         settlement: settlement.id,
         disease: trigger.triggered.id,
       });
     }
-    const infRes = tickInfection(health, settlement.population, subRng.derive('infection'), today);
+    const infRes =
+      health.infections.size === 0
+        ? { deaths: 0, recovered: 0 }
+        : tickInfection(health, settlement.population, rng.derive(`${rngLabel}|infection`), today);
     if (infRes.deaths > 0) {
+      stats.diseaseDeaths += infRes.deaths;
       events.push({
         type: 'cohort_deaths',
         settlement: settlement.id,
@@ -1638,12 +1731,7 @@ const demographicsPhase = (world: WorldState, today: Day, rng: Rng, events: Tick
 
 // --- Phase 6: Politics ------------------------------------------------------
 
-const politicsPhase = (
-  world: WorldState,
-  rng: Rng,
-  today: Day,
-  events: TickEvent[],
-): void => {
+const politicsPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[]): void => {
   // Reputation decay applies once per tick; entries below ε are pruned.
   world.reputation.decayTick(REPUTATION_HALF_LIFE_DAYS);
   // Caravan re-planning: every NPC caravan sitting at its destination
@@ -1775,11 +1863,7 @@ const REALLOCATION_RATE = 0.0066;
  * Emits a `workers_reallocated` TickEvent per move so burn-in telemetry can
  * see the system at work.
  */
-const workerReallocationPhase = (
-  world: WorldState,
-  _today: Day,
-  events: TickEvent[],
-): void => {
+const workerReallocationPhase = (world: WorldState, _today: Day, events: TickEvent[]): void => {
   for (const settlement of world.settlements.values()) {
     if (settlement.jobAllocations.size === 0) continue;
 
@@ -1846,28 +1930,9 @@ const workerReallocationPhase = (
 };
 
 const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day): void => {
-  // Build the candidate-settlements list once per tick (constant per day).
-  const candidates: { id: SettlementId; hex: Hex; tier: Settlement['tier'] }[] = [];
-  for (const s of world.settlements.values()) {
-    candidates.push({ id: s.id, hex: s.anchor, tier: s.tier });
-  }
+  const settlementIndex = settlementAnchorIndexForWorld(world);
+  const candidates = settlementIndex.candidates;
   if (candidates.length < 2) return;
-
-  // Index settlements by anchor hex for the price-book observation step.
-  // Multiple settlements may share a hex (the pagus + dependent-hamlets
-  // case from docs/05 §"Same-hex coexistence"); the entry is therefore an
-  // array. A caravan that walks into the hex sees every market stall
-  // there, so it observes prices from every settlement on the tile.
-  const settlementsByAnchor = new Map<string, Settlement[]>();
-  for (const s of world.settlements.values()) {
-    const k = `${s.anchor.q},${s.anchor.r}`;
-    let bucket = settlementsByAnchor.get(k);
-    if (bucket === undefined) {
-      bucket = [];
-      settlementsByAnchor.set(k, bucket);
-    }
-    bucket.push(s);
-  }
 
   for (const [cId, c] of world.caravans) {
     if (c.destination === null) continue;
@@ -1879,7 +1944,7 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day): void => {
     // average their clearing prices for each resource so the order in
     // which settlements were inserted into world.settlements does not
     // change what the caravan remembers.
-    const localBucket = settlementsByAnchor.get(`${c.position.q},${c.position.r}`);
+    const localBucket = settlementIndex.byAnchorHex.get(hexKey(c.position));
     if (localBucket !== undefined && localBucket.length > 0) {
       const sumByResource = new Map<ResourceId, { sum: number; count: number }>();
       for (const local of localBucket) {
@@ -1911,6 +1976,7 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day): void => {
       knownPrices: c.priceBook,
       knownBanditDensity: new Map(), // v1: no bandit-density signal yet
       knownToll: () => 0, // v1: no toll signal yet
+      includeReason: false,
       rng: rng.derive(String(cId)),
     });
 
@@ -1963,16 +2029,12 @@ const POOR_VILLAGE_RECRUIT_BOOST = 4;
  */
 const CAMP_RECRUIT_CAP = 500;
 
-const banditPhase = (
-  world: WorldState,
-  rng: Rng,
-  today: Day,
-  events: TickEvent[],
-): void => {
+const banditPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[]): void => {
   // Don't early-exit when banditCamps is empty: recruitFromIdle below is
   // the only path by which the world's bandit population can recover from
   // zero (after patrols wipe out the seeded camps).
   if (world.banditCamps === undefined) return;
+  const settlementIndex = settlementAnchorIndexForWorld(world);
 
   // Step 1: bandit decisions + raid resolution.
   for (const [campId, camp] of [...world.banditCamps]) {
@@ -1993,9 +2055,7 @@ const banditPhase = (
       // Skip caravans currently at a settlement (urban hex) — too risky,
       // bandits prefer the road. We approximate "urban" by checking a
       // settlement anchor.
-      const atSettlement = [...world.settlements.values()].some((s) =>
-        hexEquals(s.anchor, c.position),
-      );
+      const atSettlement = settlementIndex.byAnchorHex.has(hexKey(c.position));
       if (atSettlement) continue;
       knownNearbyCaravans.push({
         hex: c.position,
@@ -2035,10 +2095,7 @@ const banditPhase = (
         let hostile = false;
         for (const oId of s.stockpileOwners) {
           const a = world.actors.get(oId);
-          if (
-            a !== undefined &&
-            (a.kind === 'governor_office' || a.kind === 'city_corporation')
-          ) {
+          if (a !== undefined && (a.kind === 'governor_office' || a.kind === 'city_corporation')) {
             const rep = world.reputation.get(camp.ownerActor, a.id);
             if (rep < -0.3) {
               hostile = true;
@@ -2341,7 +2398,9 @@ const executeSettlementRaid = (
     let remaining = result.settlementCasualties.defenderDeaths;
     for (const p of defendingPatrols) {
       if (remaining <= 0) break;
-      const share = Math.round((p.unit.count / totalPatrolCount) * result.settlementCasualties.defenderDeaths);
+      const share = Math.round(
+        (p.unit.count / totalPatrolCount) * result.settlementCasualties.defenderDeaths,
+      );
       const take = Math.min(share, p.unit.count, remaining);
       if (take <= 0) continue;
       p.unit = { ...p.unit, count: p.unit.count - take };
@@ -2375,7 +2434,11 @@ const executeSettlementRaid = (
   if (result.settlementCasualties.civilianDeaths > 20 || cargoLost > 200) mag = 'severe';
   if (result.settlementCasualties.civilianDeaths > 100 || cargoLost > 1000) mag = 'atrocious';
   // Always emit news of the attack — the village itself is the spawn point.
-  const dest = nearestSettlementWithinRange(world, target.anchor, NEWS_CARRIER_MAX_DESTINATION_HEXES);
+  const dest = nearestSettlementWithinRange(
+    world,
+    target.anchor,
+    NEWS_CARRIER_MAX_DESTINATION_HEXES,
+  );
   if (dest !== null && world.newsCarriers !== undefined) {
     const id = `news-${today}-raid-${String(campId)}-${String(target.id)}`;
     if (!world.newsCarriers.has(id)) {
@@ -2427,9 +2490,9 @@ const applyCivilianDeaths = (settlement: Settlement, count: number): number => {
     const take = Math.min(remaining, inBand);
     let drained = 0;
     const snap: Array<[Parameters<Settlement['population']['set']>[0], number]> = [];
-    for (const [key, c] of settlement.population.cohorts()) {
+    settlement.population.forEachCohort((key, c) => {
       if (key.age === age && c > 0) snap.push([key, c]);
-    }
+    });
     for (const [key, c] of snap) {
       if (drained >= take) break;
       const share = Math.max(1, Math.round((c / inBand) * take));
@@ -2524,12 +2587,7 @@ const findCaravanAtHex = (world: WorldState, hex: Hex): Caravan | null => {
   return null;
 };
 
-const recruitFromIdle = (
-  world: WorldState,
-  rng: Rng,
-  _today: Day,
-  events: TickEvent[],
-): void => {
+const recruitFromIdle = (world: WorldState, rng: Rng, _today: Day, events: TickEvent[]): void => {
   // Note: we don't early-exit on banditCamps.size === 0. When patrols wipe
   // all camps, the founding branch below is the ONLY way the world's
   // bandit population can recover — exiting here would freeze the world
@@ -2607,11 +2665,7 @@ const recruitFromIdle = (
  * the necessary actor + faction + leader so reputation propagation works
  * the same as procgen-seeded camps.
  */
-const foundNewCamp = (
-  world: WorldState,
-  near: Settlement,
-  rng: Rng,
-): BanditCampId | null => {
+const foundNewCamp = (world: WorldState, near: Settlement, rng: Rng): BanditCampId | null => {
   if (world.banditCamps === undefined) return null;
   // Search outward from settlement anchor for an acceptable wilderness hex.
   const acceptable: Hex[] = [];
@@ -2626,11 +2680,7 @@ const foundNewCamp = (
         // only "obviously impossible" terrain (water + urban). Forest /
         // hills get scored higher implicitly because the spiral search
         // returns them first.
-        if (
-          tile.terrain === 'lake' ||
-          tile.terrain === 'river' ||
-          tile.terrain === 'urban'
-        ) {
+        if (tile.terrain === 'lake' || tile.terrain === 'river' || tile.terrain === 'urban') {
           continue;
         }
         // Don't found ON top of an existing camp.
@@ -2717,9 +2767,9 @@ const drainAdultsFromSettlement = (settlement: Settlement, count: number): void 
     const take = Math.min(remaining, inBand);
     let drained = 0;
     const snap: Array<[Parameters<Settlement['population']['set']>[0], number]> = [];
-    for (const [key, c] of settlement.population.cohorts()) {
+    settlement.population.forEachCohort((key, c) => {
       if (key.age === age && c > 0) snap.push([key, c]);
-    }
+    });
     for (const [key, c] of snap) {
       if (drained >= take) break;
       const share = Math.max(1, Math.floor((c / inBand) * take));
@@ -2838,7 +2888,11 @@ const spawnNewsFromAmbush = (
     cargoLost > 0 || result.caravanCasualties.crewDeaths > 0 || result.coinTaken > 0;
   if (fledEscaped <= 0 && !incidentMaterial) return;
 
-  const dest = nearestSettlementWithinRange(world, caravan.position, NEWS_CARRIER_MAX_DESTINATION_HEXES);
+  const dest = nearestSettlementWithinRange(
+    world,
+    caravan.position,
+    NEWS_CARRIER_MAX_DESTINATION_HEXES,
+  );
   if (dest === null) return;
 
   const fullMagnitude = ambushMagnitude(
@@ -2993,12 +3047,7 @@ const buildActorToFactionIndex = (world: WorldState): Map<string, FactionId> => 
  *   3. For each pending battle, run resolveBattle, apply casualties to
  *      both sides, emit news carriers from camp-side fled_escaped.
  */
-const patrolPhase = (
-  world: WorldState,
-  rng: Rng,
-  today: Day,
-  events: TickEvent[],
-): void => {
+const patrolPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[]): void => {
   if (world.patrols === undefined || world.patrols.size === 0) return;
   // Patrols still walk their routes even if camps are momentarily zero —
   // they're salaried; not exiting here also avoids missing newly-founded
@@ -3040,7 +3089,12 @@ const patrolPhase = (
       }
     }
     // Caravan inspection list — patrol checks for suspicious caravans on hex.
-    const knownCaravans: { caravanId: CaravanId; ownerActor: ActorId; hex: Hex; suspicious: boolean }[] = [];
+    const knownCaravans: {
+      caravanId: CaravanId;
+      ownerActor: ActorId;
+      hex: Hex;
+      suspicious: boolean;
+    }[] = [];
     for (const c of world.caravans.values()) {
       if (hexDistance(c.position, nextHex) <= 1) {
         knownCaravans.push({
@@ -3066,7 +3120,11 @@ const patrolPhase = (
 
     // Trail wear from the patrol step. Soldier-on-foot weight per docs/06.
     if (!hexEquals(patrol.position, result.patrol.position)) {
-      addRoadWear(world, result.patrol.position, result.patrol.unit.count * WEAR_PER_PATROL_SOLDIER);
+      addRoadWear(
+        world,
+        result.patrol.position,
+        result.patrol.unit.count * WEAR_PER_PATROL_SOLDIER,
+      );
     }
 
     // Emit dispatch event when the patrol steps into a hex containing a
@@ -3182,8 +3240,7 @@ const spawnNewsFromPatrolBattle = (
   if (wantPatrolNews) {
     const id = `news-${today}-patrol-${patrolId}-${String(camp.id)}`;
     if (!world.newsCarriers.has(id)) {
-      const magnitude: ReputationMagnitude =
-        outcome === 'patrol_won' ? 'severe' : 'moderate';
+      const magnitude: ReputationMagnitude = outcome === 'patrol_won' ? 'severe' : 'moderate';
       const news = createNewsItem({
         id,
         perpetrator: camp.ownerActor as ReputationKey,
@@ -3378,10 +3435,7 @@ const pickInvestor = (world: WorldState, settlement: Settlement): Actor | undefi
   return best;
 };
 
-const scoreInvestmentCandidates = (
-  settlement: Settlement,
-  owner: Actor,
-): ScoredInvestment[] => {
+const scoreInvestmentCandidates = (settlement: Settlement, owner: Actor): ScoredInvestment[] => {
   const out: ScoredInvestment[] = [];
   // Local existing buildings by type — for "saturation" check.
   const existingByType = new Map<BuildingId, number>();
@@ -3441,7 +3495,9 @@ const scoreInvestmentCandidates = (
   }
 
   // Sort by profit / coinCost (descending).
-  out.sort((a, b) => b.profitPerDay / Math.max(1, b.coinCost) - a.profitPerDay / Math.max(1, a.coinCost));
+  out.sort(
+    (a, b) => b.profitPerDay / Math.max(1, b.coinCost) - a.profitPerDay / Math.max(1, a.coinCost),
+  );
   return out;
 };
 
