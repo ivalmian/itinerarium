@@ -378,6 +378,97 @@ backfill zero rows so all CSVs share the same row count.
 `src/burnin/instruments/timeSeriesCsv.ts`,
 `src/burnin/runner.ts`, `src/cli/burnin.ts`.
 
+## C19 — Bid-ask book per market (landed in progress)
+
+**Pre-v1.5 hack:** market clearing returned only a single
+`clearingPrice` per resource per settlement. The CDA actually produces
+a residual schedule on both sides (unsold asks, unmet bids), and that
+ladder is the visible "spread" any caravan would observe walking
+through a real forum. The viewer's settlement panel had a `bid-ask`
+column as a placeholder showing `—`.
+
+**Realistic (per docs/08 §"Bid-ask book"):** after clearing each
+day, derive a five-field book per (settlement, resource):
+
+```
+bestAsk, askDepth   ← residual SupplySource with availableToSell > 0
+bestBid, bidDepth   ← residual DemandSource with quantityAt > 0
+midPrice            ← clearing price if any, else mean(bestBid, bestAsk),
+                      else the single side
+spread              ← bestAsk - bestBid when both >0, else null
+```
+
+The book lives in `MarketSnapshot` (per resource) alongside
+`lastClearingPrice`, refreshed every tick. It does **not** persist as
+a limit order book — each tick re-derives it from current
+stockpiles / treasuries / recipe demand. Caravans and "internal
+needs" (workshops short on inputs, tax convoys assembling, off-map
+houses sweeping in cargo) cross the spread by bidding above bestAsk
+or asking below bestBid; the next clearing matches them against the
+remaining book.
+
+**Implementation:**
+
+1. `ClearingResult` returns `bestBid`, `bidDepth`, `bestAsk`,
+   `askDepth`, `midPrice`, `spread` based on residual sources.
+2. `Settlement.market` carries `bestBid`, `bestAsk`, `bidDepth`,
+   `askDepth`, `midPrice` per resource. Cleared on the same path
+   that prunes `lastClearingPrice` for dead markets.
+3. Viewer `settlementPopup` renders the spread column as
+   `bestBid – bestAsk` with depth annotations.
+
+**Acceptance:** at year 5 of a watchdog burn-in, every city
+shows a non-trivial spread on at least 30 different resources;
+goods with zero clearing volume for >30 days are flagged as
+dormant in the diagnostics and surfaced for triage. Tests cover
+the residual-book extraction (`clear.test.ts`), the schedule
+builder's bid-ask projection, and the viewer's spread rendering.
+
+**Cross-refs:** `docs/08-money-and-trade.md` §"Bid-ask book",
+`docs/10-scope-and-questions.md` Decision 32,
+`src/sim/market/clear.ts`, `src/sim/world/settlement.ts`,
+`viewer/ui/settlementPopup.ts`.
+
+## C20 — Cash circulation across owner kinds [TODO]
+
+**Diagnosed during the C19 burn-in audit:** a watchdog burn-in
+showed `patrician_family` average treasury of 2 coin (max 8) and
+`common_household` average treasury 0, against 14 `city_corporation`
+actors with up to ~320k treasury each. The bid-ask book correctly
+showed quoted asks on most goods but almost no crossings — buyers
+were broke. See docs/08 §"Cash circulation discipline" for the
+mechanism.
+
+**TODO mechanics:**
+
+1. **Patrician rents.** Tenant villages (`free_village` / patron-
+   client) deliver a fraction of harvest revenue in coin to their
+   patron family every quarter. The transfer is the in-game rent;
+   without it patricians cannot sustain wage payouts and their
+   estates spiral into in-kind wages + cashlessness.
+2. **City corporation dividends to patricians.** Council families
+   receive a share of city tax/sales revenue (cura annonae, civic
+   contracts) on a slow drip. The current model has all city revenue
+   sitting on the city corporation actor only.
+3. **Merchant-house residuals.** Off-map and long-haul houses pay
+   dividends back to their owning families when caravans complete a
+   profitable round trip.
+4. **Initial treasury seed by kind.** Patrician families seed with a
+   working-capital reserve (currently near zero post-burn-in start);
+   common households seed with enough cash to participate in a few
+   comfort markets without instantly equilibrating to zero.
+
+**Acceptance:** at year 5 the median patrician_family treasury is
+above some sane threshold (say 100 coin) and total clearing volume in
+comfort/status/capital markets is at least an order of magnitude
+above the dormant baseline. The bid-ask book stops showing
+"thousand-day untraded" asks on luxury textiles, furniture, carts,
+or pottery in cities.
+
+**Cross-refs:** `docs/08-money-and-trade.md` §"Cash circulation
+discipline", `docs/10-scope-and-questions.md` Decision 33,
+`docs/11-politics-and-ownership.md` §"Tax revenue is real".
+
 ## C16 — Cascading consequences of price explosion [TODO]
 
 **Current state:** prices are capped at a sane multiple of base

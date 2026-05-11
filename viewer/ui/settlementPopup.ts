@@ -428,6 +428,11 @@ interface StockRow {
   readonly resource: string;
   readonly quantity: number;
   readonly lastPrice: number | null;
+  readonly bestBid: number | null;
+  readonly bestAsk: number | null;
+  readonly bidDepth: number;
+  readonly askDepth: number;
+  readonly spread: number | null;
   readonly imp: number;
   readonly exp: number;
   readonly prod: number;
@@ -488,15 +493,26 @@ const renderStockpileSection = (
   const rows: StockRow[] = [];
   for (const r of seenResources) {
     const qty = totals.get(r) ?? 0;
-    const lp = s.market.lastClearingPrice.get(r as ResourceId);
-    const imp = s.market.recentImports.get(r as ResourceId) ?? 0;
-    const exp = s.market.recentExports.get(r as ResourceId) ?? 0;
-    const prod = s.market.recentProduction.get(r as ResourceId) ?? 0;
-    const cons = s.market.recentConsumption.get(r as ResourceId) ?? 0;
+    const resId = r as ResourceId;
+    const lp = s.market.lastClearingPrice.get(resId);
+    const imp = s.market.recentImports.get(resId) ?? 0;
+    const exp = s.market.recentExports.get(resId) ?? 0;
+    const prod = s.market.recentProduction.get(resId) ?? 0;
+    const cons = s.market.recentConsumption.get(resId) ?? 0;
+    const bidVal = s.market.bestBid.get(resId);
+    const askVal = s.market.bestAsk.get(resId);
+    const bidDepth = s.market.bidDepth.get(resId) ?? 0;
+    const askDepth = s.market.askDepth.get(resId) ?? 0;
+    const spreadVal = s.market.spread.get(resId);
     rows.push({
       resource: r,
       quantity: qty,
       lastPrice: lp ?? null,
+      bestBid: bidVal ?? null,
+      bestAsk: askVal ?? null,
+      bidDepth,
+      askDepth,
+      spread: spreadVal ?? null,
       imp,
       exp,
       prod,
@@ -516,10 +532,14 @@ const renderStockpileSection = (
   const thead = document.createElement('thead');
   // Flow columns reflect the ~30-day rolling window (exponential decay
   // factor exp(-1/30) per day in src/sim/tick.ts.ageRecentFlowsPhase).
+  // Bid/Ask are the residual book per docs/08 §"Bid-ask book".
   thead.innerHTML = `<tr>
     <th>Resource</th>
     <th class="num">Stock</th>
-    <th class="num">Last price</th>
+    <th class="num" title="Last clearing price">Last</th>
+    <th class="num" title="Highest standing bid (residual buyer WTP)">Bid</th>
+    <th class="num" title="Lowest standing ask (residual seller reservation)">Ask</th>
+    <th class="num" title="Bid-ask spread">Spread</th>
     <th class="num" title="Goods made here by recipes (~30d)">Produced</th>
     <th class="num" title="Goods used up here by recipes/population (~30d)">Consumed</th>
     <th class="num" title="Goods arriving from elsewhere (~30d)">Imported</th>
@@ -539,6 +559,39 @@ const renderStockpileSection = (
     const c3 = document.createElement('td');
     c3.className = 'num';
     c3.textContent = r.lastPrice === null ? '—' : r.lastPrice.toFixed(2);
+
+    const cBid = document.createElement('td');
+    cBid.className = 'num';
+    if (r.bestBid === null) {
+      cBid.textContent = '—';
+      cBid.style.color = 'var(--muted)';
+    } else {
+      cBid.textContent = r.bestBid.toFixed(2);
+      cBid.style.color = '#7e9ec8';
+      if (r.bidDepth > 0) cBid.title = `bid depth: ${fmtCompact(r.bidDepth)} units`;
+    }
+    const cAsk = document.createElement('td');
+    cAsk.className = 'num';
+    if (r.bestAsk === null) {
+      cAsk.textContent = '—';
+      cAsk.style.color = 'var(--muted)';
+    } else {
+      cAsk.textContent = r.bestAsk.toFixed(2);
+      cAsk.style.color = '#c89e7e';
+      if (r.askDepth > 0) cAsk.title = `ask depth: ${fmtCompact(r.askDepth)} units`;
+    }
+    const cSpread = document.createElement('td');
+    cSpread.className = 'num';
+    if (r.spread === null) {
+      cSpread.textContent = '—';
+      cSpread.style.color = 'var(--muted)';
+    } else {
+      cSpread.textContent = r.spread.toFixed(2);
+      // Highlight wide relative spreads.
+      const ref = r.lastPrice ?? (r.bestBid !== null && r.bestAsk !== null ? (r.bestBid + r.bestAsk) / 2 : 0);
+      if (ref > 0 && r.spread / ref > 0.3) cSpread.style.color = '#d8a86a';
+    }
+
     const cProd = document.createElement('td');
     cProd.className = 'num';
     cProd.textContent = r.prod === 0 ? '—' : fmtCompact(r.prod);
@@ -565,6 +618,9 @@ const renderStockpileSection = (
     tr.appendChild(c1);
     tr.appendChild(c2);
     tr.appendChild(c3);
+    tr.appendChild(cBid);
+    tr.appendChild(cAsk);
+    tr.appendChild(cSpread);
     tr.appendChild(cProd);
     tr.appendChild(cCons);
     tr.appendChild(cImp);

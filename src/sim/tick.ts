@@ -100,15 +100,19 @@ import { allRecipes } from './production/recipes.js';
 import type { Rng } from './rng.js';
 import {
   addBuilding,
+  clearMarketBook,
   computeStorageCapacity,
   recomputeCatchment,
   recordClearingPrice,
   recordConsumption,
   recordExport,
   recordImport,
+  recordLastClearedDay,
+  recordMarketBook,
   recordProduction,
   removeBuilding,
   shouldRecomputeCatchment,
+  type MarketBookEntry,
   type PendingBuilding,
   type PendingDemolition,
   type Settlement,
@@ -2906,6 +2910,36 @@ const deleteClearingPriceIfNoRecordedOutflow = (
 ): void => {
   if ((settlement.market.recentOutflows.get(resource) ?? 0) > 0) return;
   settlement.market.lastClearingPrice.delete(resource);
+  clearMarketBook(settlement, resource);
+};
+
+/**
+ * Surface the residual bid-ask book from a clearing result onto the
+ * settlement's MarketSnapshot. Per docs/08 §"Bid-ask book", the book is
+ * derived per-tick from the residual schedules; we just persist whatever
+ * the CDA emitted.
+ */
+const recordBookFromClearing = (
+  settlement: Settlement,
+  resource: ResourceId,
+  result: {
+    readonly bestAsk: number | null;
+    readonly askDepth: number;
+    readonly bestBid: number | null;
+    readonly bidDepth: number;
+    readonly midPrice: number | null;
+    readonly spread: number | null;
+  },
+): void => {
+  const entry: MarketBookEntry = {
+    bestAsk: result.bestAsk,
+    askDepth: result.askDepth,
+    bestBid: result.bestBid,
+    bidDepth: result.bidDepth,
+    midPrice: result.midPrice,
+    spread: result.spread,
+  };
+  recordMarketBook(settlement, resource, entry);
 };
 
 const tradePhase = (
@@ -3015,6 +3049,10 @@ const tradePhase = (
       const result = clearMarket(pair.demand, pair.supply, {
         maxPrice: marketMaxPriceForResource(resId, pair.supply.sources, seededPrices),
       });
+      // Record the residual bid-ask book regardless of whether anything cleared
+      // today. Caravans, viewer panels, and dormant-market diagnostics all read
+      // from it.
+      recordBookFromClearing(settlement, resId, result);
       if (result.totalTraded <= 0) {
         if (
           pair.demand.sources.length > 0 &&
@@ -3111,6 +3149,7 @@ const tradePhase = (
         continue;
       }
       recordClearingPrice(settlement, resId, result.clearingPrice);
+      recordLastClearedDay(settlement, resId, today);
       stats.marketsCleared += 1;
       events.push({
         type: 'market_cleared',
@@ -3615,13 +3654,11 @@ const pickDemandBackedLocalBuyer = (
   sources: readonly DemandSource[],
   price: number,
 ): LocalTradeBuyerIntent | null => {
-  let best:
-    | {
-        readonly source: DemandSource;
-        readonly actor: Actor;
-        readonly quantityDemanded: number;
-      }
-    | null = null;
+  let best: {
+    readonly source: DemandSource;
+    readonly actor: Actor;
+    readonly quantityDemanded: number;
+  } | null = null;
 
   for (const source of sources) {
     if (source.buyerActor === undefined || source.buyerDisposition === undefined) continue;
