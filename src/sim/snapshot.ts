@@ -87,6 +87,10 @@ interface SerializedHexTile {
 }
 
 interface SerializedMarketSnapshot {
+  readonly recentImports?: ReadonlyArray<readonly [string, number]>;
+  readonly recentExports?: ReadonlyArray<readonly [string, number]>;
+  readonly recentProduction?: ReadonlyArray<readonly [string, number]>;
+  readonly recentConsumption?: ReadonlyArray<readonly [string, number]>;
   readonly recentInflows: ReadonlyArray<readonly [string, number]>;
   readonly recentOutflows: ReadonlyArray<readonly [string, number]>;
   readonly lastClearingPrice: ReadonlyArray<readonly [string, number]>;
@@ -97,6 +101,7 @@ interface SerializedSettlementBuilding {
   readonly hex: SerializedHex;
   readonly ownerActor: string;
   readonly capacity: number;
+  readonly maxCapacity?: number;
   readonly daysSinceMaintained: number;
 }
 
@@ -283,11 +288,16 @@ const serializeSettlement = (s: Settlement): SerializedSettlement => {
       hex: serHex(b.hex),
       ownerActor: String(b.ownerActor),
       capacity: b.capacity,
+      ...(b.maxCapacity !== undefined ? { maxCapacity: b.maxCapacity } : {}),
       daysSinceMaintained: b.daysSinceMaintained,
     })),
     factions: s.factions.map(String),
     stockpileOwners: s.stockpileOwners.map(String),
     market: {
+      recentImports: stringMapToArray(s.market.recentImports),
+      recentExports: stringMapToArray(s.market.recentExports),
+      recentProduction: stringMapToArray(s.market.recentProduction),
+      recentConsumption: stringMapToArray(s.market.recentConsumption),
       recentInflows: stringMapToArray(s.market.recentInflows),
       recentOutflows: stringMapToArray(s.market.recentOutflows),
       lastClearingPrice: stringMapToArray(s.market.lastClearingPrice),
@@ -333,10 +343,25 @@ const deserializeSettlement = (s: SerializedSettlement): Settlement => {
       hex: deserHex(b.hex),
       ownerActor: actorId(b.ownerActor),
       capacity: b.capacity,
+      ...(b.maxCapacity !== undefined ? { maxCapacity: b.maxCapacity } : {}),
       daysSinceMaintained: b.daysSinceMaintained,
     });
   }
-  // Restore market maps.
+  // Restore market maps. Per-category fields are optional in older
+  // snapshots; when absent we recover them by leaving them empty (a
+  // few ticks of replay re-populates them from real flow events).
+  for (const [r, n] of s.market.recentImports ?? []) {
+    settlement.market.recentImports.set(resourceId(r), n);
+  }
+  for (const [r, n] of s.market.recentExports ?? []) {
+    settlement.market.recentExports.set(resourceId(r), n);
+  }
+  for (const [r, n] of s.market.recentProduction ?? []) {
+    settlement.market.recentProduction.set(resourceId(r), n);
+  }
+  for (const [r, n] of s.market.recentConsumption ?? []) {
+    settlement.market.recentConsumption.set(resourceId(r), n);
+  }
   for (const [r, n] of s.market.recentInflows) {
     settlement.market.recentInflows.set(resourceId(r), n);
   }

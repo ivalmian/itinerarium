@@ -61,16 +61,32 @@ export interface SettlementBuilding {
 
 export interface MarketSnapshot {
   /**
-   * Exponentially-decayed sum of recent market inflows per resource.
-   * The tick layer's `ageRecentFlowsPhase` multiplies every entry by
-   * `exp(-1/30) ≈ 0.967` once per day BEFORE new flows are recorded, so
-   * each value approximates the last ~30 days of inflow activity
-   * (steady-state ≈ 30 × daily-inflow-rate). Used by viewers, the tax
-   * assessor's "recent harvest" signal, and stale-clearing-price cleanup.
+   * Four exponentially-decayed flow counters per resource. All four are
+   * multiplied by `exp(-1/30) ≈ 0.967` once per day by the tick layer's
+   * `ageRecentFlowsPhase` BEFORE the day's new flows are recorded, so
+   * each value approximates the last ~30 days of activity (steady-state
+   * ≈ 30 × daily-rate). Categories:
+   *
+   *  - `recentImports`: goods arriving from elsewhere (caravan delivery,
+   *    off-map factor consignment, local-trade buyer side).
+   *  - `recentExports`: goods leaving the settlement to elsewhere
+   *    (caravan picking up cargo, local-trade seller side).
+   *  - `recentProduction`: goods made HERE by a recipe firing
+   *    (mill grinding flour, smithy making tools, farm yielding grain).
+   *  - `recentConsumption`: goods used UP HERE (recipe inputs drained,
+   *    population eating bread, subsistence-curve trades).
+   *
+   * `recentInflows` and `recentOutflows` are aggregates:
+   *   recentInflows  = recentImports  + recentProduction
+   *   recentOutflows = recentExports  + recentConsumption
+   * Kept on the schema as cached sums so existing consumers (tax
+   * assessor, viewer fallbacks, snapshot replay) keep working unchanged.
    */
+  recentImports: Map<ResourceId, number>;
+  recentExports: Map<ResourceId, number>;
+  recentProduction: Map<ResourceId, number>;
+  recentConsumption: Map<ResourceId, number>;
   recentInflows: Map<ResourceId, number>;
-  /** Same exponentially-decayed semantics as `recentInflows`, for sales /
-   *  exports out of the settlement. */
   recentOutflows: Map<ResourceId, number>;
   /** Last clearing price per resource (set by the market clearing tick). */
   lastClearingPrice: Map<ResourceId, number>;
@@ -226,6 +242,10 @@ export const createSettlement = (input: CreateSettlementInput): Settlement => {
     factions: input.factions ? [...input.factions] : [],
     stockpileOwners: input.stockpileOwners ? [...input.stockpileOwners] : [],
     market: {
+      recentImports: new Map(),
+      recentExports: new Map(),
+      recentProduction: new Map(),
+      recentConsumption: new Map(),
       recentInflows: new Map(),
       recentOutflows: new Map(),
       lastClearingPrice: new Map(),
@@ -374,14 +394,65 @@ const requirePositiveQty = (qty: number, label: string): void => {
   }
 };
 
-export const recordInflow = (s: Settlement, resource: ResourceId, qty: number): void => {
-  requirePositiveQty(qty, 'recordInflow qty');
-  s.market.recentInflows.set(resource, (s.market.recentInflows.get(resource) ?? 0) + qty);
+const bumpMap = (m: Map<ResourceId, number>, resource: ResourceId, qty: number): void => {
+  m.set(resource, (m.get(resource) ?? 0) + qty);
 };
 
+/** A trade delivery from outside arrived at this settlement (caravan
+ *  selling its cargo to the local market, off-map factor consignment,
+ *  buyer side of a local-trade pair). Aggregated into `recentInflows`. */
+export const recordImport = (s: Settlement, resource: ResourceId, qty: number): void => {
+  requirePositiveQty(qty, 'recordImport qty');
+  bumpMap(s.market.recentImports, resource, qty);
+  bumpMap(s.market.recentInflows, resource, qty);
+};
+
+/** A trade pickup left this settlement (caravan buying cargo, seller side
+ *  of a local-trade pair, fence outlet sale). Aggregated into
+ *  `recentOutflows`. */
+export const recordExport = (s: Settlement, resource: ResourceId, qty: number): void => {
+  requirePositiveQty(qty, 'recordExport qty');
+  bumpMap(s.market.recentExports, resource, qty);
+  bumpMap(s.market.recentOutflows, resource, qty);
+};
+
+/** A recipe firing in this settlement produced output (mill grinding,
+ *  smithy hammering, farm harvest). Aggregated into `recentInflows`. */
+export const recordProduction = (s: Settlement, resource: ResourceId, qty: number): void => {
+  requirePositiveQty(qty, 'recordProduction qty');
+  bumpMap(s.market.recentProduction, resource, qty);
+  bumpMap(s.market.recentInflows, resource, qty);
+};
+
+/** Goods were used up in this settlement (recipe inputs drained,
+ *  population eating, subsistence-curve trade where the buyer immediately
+ *  consumes). Aggregated into `recentOutflows`. */
+export const recordConsumption = (s: Settlement, resource: ResourceId, qty: number): void => {
+  requirePositiveQty(qty, 'recordConsumption qty');
+  bumpMap(s.market.recentConsumption, resource, qty);
+  bumpMap(s.market.recentOutflows, resource, qty);
+};
+
+/**
+ * Back-compat shim. Old callers used `recordInflow` for both imports and
+ * production without distinguishing; everything that came through here is
+ * routed to `recordImport`. New code should call `recordImport` /
+ * `recordProduction` directly.
+ * @deprecated prefer `recordImport` or `recordProduction`.
+ */
+export const recordInflow = (s: Settlement, resource: ResourceId, qty: number): void => {
+  recordImport(s, resource, qty);
+};
+
+/**
+ * Back-compat shim. Old callers used `recordOutflow` for both exports and
+ * local consumption. Everything that came through here is routed to
+ * `recordExport`. New code should call `recordExport` or
+ * `recordConsumption` directly.
+ * @deprecated prefer `recordExport` or `recordConsumption`.
+ */
 export const recordOutflow = (s: Settlement, resource: ResourceId, qty: number): void => {
-  requirePositiveQty(qty, 'recordOutflow qty');
-  s.market.recentOutflows.set(resource, (s.market.recentOutflows.get(resource) ?? 0) + qty);
+  recordExport(s, resource, qty);
 };
 
 export const recordClearingPrice = (s: Settlement, resource: ResourceId, price: number): void => {

@@ -103,8 +103,10 @@ import {
   computeStorageCapacity,
   recomputeCatchment,
   recordClearingPrice,
-  recordInflow,
-  recordOutflow,
+  recordConsumption,
+  recordExport,
+  recordImport,
+  recordProduction,
   removeBuilding,
   shouldRecomputeCatchment,
   type PendingBuilding,
@@ -659,11 +661,16 @@ const productionPhase = (
             // Apply the deltas to the owner's stockpile.
             for (const [resId, qty] of result.inputsConsumed) {
               decreaseStockpile(ownerActor, resId, qty);
+              // Recipe-input drain is local consumption: the resource was
+              // used UP in this settlement to make something else.
+              if (!isServiceResource(resId)) {
+                recordConsumption(settlement, resId, qty);
+              }
             }
             for (const [resId, qty] of result.outputsProduced) {
               if (isServiceResource(resId)) continue;
               receiveResourceOrCoin(ownerActor, resId, qty);
-              recordInflow(settlement, resId, qty);
+              recordProduction(settlement, resId, qty);
             }
             depleteMineDeposit(world, b, recipe, result);
             // Decrement the labor pool we estimated locally so subsequent
@@ -1282,7 +1289,9 @@ const consumptionPhase = (
     if (drawn > 0) {
       access.fulfilledModii += drawn;
       for (const [resource, market] of fallbackMarkets) {
-        recordOutflow(settlement, resource, market.quantity);
+        // Fallback rations: population eats from the owner's stockpile
+        // when subsistence isn't covered by normal trade. → consumption.
+        recordConsumption(settlement, resource, market.quantity);
         recordClearingPrice(settlement, resource, market.price);
         stats.marketsCleared += 1;
         events.push({
@@ -2686,19 +2695,27 @@ const countRoadNeighbors = (grid: WorldState['grid'], h: Hex): number => {
 const RECENT_FLOW_DECAY_FACTOR = Math.exp(-1 / 30);
 const RECENT_FLOW_PRUNE_BELOW = 0.5;
 
+const decayFlowMap = (m: Map<ResourceId, number>): void => {
+  for (const [r, v] of [...m]) {
+    const next = v * RECENT_FLOW_DECAY_FACTOR;
+    if (next < RECENT_FLOW_PRUNE_BELOW) m.delete(r);
+    else m.set(r, next);
+  }
+};
+
 const ageRecentFlowsPhase = (world: WorldState): void => {
   for (const settlement of world.settlements.values()) {
     const m = settlement.market;
-    for (const [r, v] of [...m.recentInflows]) {
-      const next = v * RECENT_FLOW_DECAY_FACTOR;
-      if (next < RECENT_FLOW_PRUNE_BELOW) m.recentInflows.delete(r);
-      else m.recentInflows.set(r, next);
-    }
-    for (const [r, v] of [...m.recentOutflows]) {
-      const next = v * RECENT_FLOW_DECAY_FACTOR;
-      if (next < RECENT_FLOW_PRUNE_BELOW) m.recentOutflows.delete(r);
-      else m.recentOutflows.set(r, next);
-    }
+    // Decay all six counters in lockstep so the aggregate identities
+    // `recentInflows == recentImports + recentProduction` and
+    // `recentOutflows == recentExports + recentConsumption` keep
+    // holding tick-to-tick (modulo float rounding).
+    decayFlowMap(m.recentImports);
+    decayFlowMap(m.recentExports);
+    decayFlowMap(m.recentProduction);
+    decayFlowMap(m.recentConsumption);
+    decayFlowMap(m.recentInflows);
+    decayFlowMap(m.recentOutflows);
   }
 };
 
@@ -3058,7 +3075,9 @@ const tradePhase = (
           increaseStockpile(concreteBuyer, resId, qty);
         }
         if (demandSource?.buyerDisposition !== 'stockpile') {
-          recordOutflow(settlement, resId, qty);
+          // Buyer is consuming immediately (not adding to stockpile),
+          // so this is local consumption, not an export of the settlement.
+          recordConsumption(settlement, resId, qty);
         }
         if (demandSource?.curve === 'subsistence') {
           const access = subsistenceAccess.get(settlement);
@@ -3497,10 +3516,13 @@ const tryLocalTrade = (
   }
   sellerActor.treasury = sellerActor.treasury + coinPaid;
   buyerActor.treasury = buyerActor.treasury - coinPaid;
-  recordOutflow(seller, resId, qty);
-  recordInflow(buyer, resId, qty);
+  // Local trade between two settlements: seller exports, buyer imports.
+  recordExport(seller, resId, qty);
+  recordImport(buyer, resId, qty);
   if (buyerIntent.disposition === 'consume') {
-    recordOutflow(buyer, resId, qty);
+    // Buyer's intent was to consume on arrival — record consumption
+    // (the goods went from one stockpile to immediate use).
+    recordConsumption(buyer, resId, qty);
     if (buyerIntent.curve === 'subsistence') {
       const access = subsistenceAccess.get(buyer);
       if (access !== undefined) {
@@ -4356,7 +4378,8 @@ const sellCaravanCargoAtLocalMarkets = (
     caravan.treasury += coin;
     buyer.actor.treasury -= coin;
     increaseStockpile(buyer.actor, resource, qty);
-    recordInflow(buyer.settlement, resource, qty);
+    // Caravan sold cargo to the settlement: import for the settlement.
+    recordImport(buyer.settlement, resource, qty);
     events.push({
       type: 'caravan_traded',
       caravan: caravan.id,
@@ -4398,7 +4421,8 @@ const buyPlannedCargoAtLocalMarkets = (
         caravan.treasury -= coin;
         seller.actor.treasury += coin;
       }
-      recordOutflow(seller.settlement, resource, qty);
+      // Caravan picked up cargo from this settlement: export.
+      recordExport(seller.settlement, resource, qty);
       remainingTarget -= qty;
       boughtUnits += qty;
       events.push({
@@ -4473,7 +4497,8 @@ const buyCaravanRationsAtLocalMarkets = (
       quote.seller.actor.treasury += coin;
     }
     recordClearingPrice(quote.seller.settlement, quote.resource, quote.seller.price);
-    recordOutflow(quote.seller.settlement, quote.resource, qty);
+    // Caravan loaded cargo at this settlement: export.
+    recordExport(quote.seller.settlement, quote.resource, qty);
     remainingKg -= qty * quote.weightKgPerUnit;
     boughtKg += qty * quote.weightKgPerUnit;
     events.push({
@@ -4649,7 +4674,9 @@ const completeTaxShipmentIfArrived = (
     for (const [resource, qty] of caravan.cargo) {
       receiveResourceOrCoin(owner, resource, qty);
       const settlement = settlements[0];
-      if (settlement !== undefined) recordInflow(settlement, resource, qty);
+      // Tax shipment unloaded its cargo at the capital: an import for
+      // the capital from the perspective of the receiving settlement.
+      if (settlement !== undefined) recordImport(settlement, resource, qty);
     }
   }
   world.caravans.delete(caravanId);
@@ -4691,7 +4718,8 @@ const consignOffMapImportCargo = (
     if (remaining > 1e-9) caravan.cargo.set(resource, remaining);
     else caravan.cargo.delete(resource);
     increaseStockpile(factor.actor, resource, qty);
-    recordInflow(factor.settlement, resource, qty);
+    // Off-map factor consignment lands at this settlement: import.
+    recordImport(factor.settlement, resource, qty);
     consigned += qty;
   }
   return consigned;

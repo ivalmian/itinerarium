@@ -428,8 +428,10 @@ interface StockRow {
   readonly resource: string;
   readonly quantity: number;
   readonly lastPrice: number | null;
-  readonly inflow30: number;
-  readonly outflow30: number;
+  readonly imp: number;
+  readonly exp: number;
+  readonly prod: number;
+  readonly cons: number;
   readonly priceSeries: readonly number[];
 }
 
@@ -454,8 +456,10 @@ const renderStockpileSection = (
   // stockpile (the market cleared them down to zero); include those too.
   const seenResources = new Set<string>(totals.keys());
   for (const r of s.market.lastClearingPrice.keys()) seenResources.add(String(r));
-  for (const r of s.market.recentInflows.keys()) seenResources.add(String(r));
-  for (const r of s.market.recentOutflows.keys()) seenResources.add(String(r));
+  for (const r of s.market.recentImports.keys()) seenResources.add(String(r));
+  for (const r of s.market.recentExports.keys()) seenResources.add(String(r));
+  for (const r of s.market.recentProduction.keys()) seenResources.add(String(r));
+  for (const r of s.market.recentConsumption.keys()) seenResources.add(String(r));
 
   if (seenResources.size === 0) {
     section.appendChild(popupEmpty('(no stockpile, no market activity)'));
@@ -485,14 +489,18 @@ const renderStockpileSection = (
   for (const r of seenResources) {
     const qty = totals.get(r) ?? 0;
     const lp = s.market.lastClearingPrice.get(r as ResourceId);
-    const inflow = s.market.recentInflows.get(r as ResourceId) ?? 0;
-    const outflow = s.market.recentOutflows.get(r as ResourceId) ?? 0;
+    const imp = s.market.recentImports.get(r as ResourceId) ?? 0;
+    const exp = s.market.recentExports.get(r as ResourceId) ?? 0;
+    const prod = s.market.recentProduction.get(r as ResourceId) ?? 0;
+    const cons = s.market.recentConsumption.get(r as ResourceId) ?? 0;
     rows.push({
       resource: r,
       quantity: qty,
       lastPrice: lp ?? null,
-      inflow30: inflow,
-      outflow30: outflow,
+      imp,
+      exp,
+      prod,
+      cons,
       priceSeries: seriesByResource.get(r) ?? [],
     });
   }
@@ -506,13 +514,16 @@ const renderStockpileSection = (
   const table = document.createElement('table');
   table.className = 'popup-table';
   const thead = document.createElement('thead');
+  // Flow columns reflect the ~30-day rolling window (exponential decay
+  // factor exp(-1/30) per day in src/sim/tick.ts.ageRecentFlowsPhase).
   thead.innerHTML = `<tr>
     <th>Resource</th>
     <th class="num">Stock</th>
     <th class="num">Last price</th>
-    <th>Bid-ask</th>
-    <th class="num">Inflow (recent)</th>
-    <th class="num">Outflow (recent)</th>
+    <th class="num" title="Goods made here by recipes (~30d)">Produced</th>
+    <th class="num" title="Goods used up here by recipes/population (~30d)">Consumed</th>
+    <th class="num" title="Goods arriving from elsewhere (~30d)">Imported</th>
+    <th class="num" title="Goods sent elsewhere (~30d)">Exported</th>
     <th>Price (60d)</th>
   </tr>`;
   table.appendChild(thead);
@@ -528,33 +539,37 @@ const renderStockpileSection = (
     const c3 = document.createElement('td');
     c3.className = 'num';
     c3.textContent = r.lastPrice === null ? '—' : r.lastPrice.toFixed(2);
-    const c4 = document.createElement('td');
-    // Bid-ask spread: max-bid vs min-ask in the last clearing is not yet
-    // surfaced on MarketSnapshot. Render an em-dash with a tooltip so the
-    // user knows it's intentionally absent rather than a render bug.
-    c4.textContent = '—';
-    c4.title = 'Bid-ask spread not tracked yet on settlement.market';
-    c4.style.color = 'var(--muted)';
-    const c5 = document.createElement('td');
-    c5.className = 'num';
-    c5.textContent = r.inflow30 === 0 ? '—' : fmtCompact(r.inflow30);
-    const c6 = document.createElement('td');
-    c6.className = 'num';
-    c6.textContent = r.outflow30 === 0 ? '—' : fmtCompact(r.outflow30);
-    const c7 = document.createElement('td');
+    const cProd = document.createElement('td');
+    cProd.className = 'num';
+    cProd.textContent = r.prod === 0 ? '—' : fmtCompact(r.prod);
+    if (r.prod > 0) cProd.style.color = '#7eb87e';
+    const cCons = document.createElement('td');
+    cCons.className = 'num';
+    cCons.textContent = r.cons === 0 ? '—' : fmtCompact(r.cons);
+    if (r.cons > 0) cCons.style.color = '#d89a6a';
+    const cImp = document.createElement('td');
+    cImp.className = 'num';
+    cImp.textContent = r.imp === 0 ? '—' : fmtCompact(r.imp);
+    if (r.imp > 0) cImp.style.color = '#7e9ec8';
+    const cExp = document.createElement('td');
+    cExp.className = 'num';
+    cExp.textContent = r.exp === 0 ? '—' : fmtCompact(r.exp);
+    if (r.exp > 0) cExp.style.color = '#c89e7e';
+    const cSpark = document.createElement('td');
     if (r.priceSeries.length >= 2) {
-      c7.appendChild(createSparkline(r.priceSeries, { width: 100, height: 16 }));
+      cSpark.appendChild(createSparkline(r.priceSeries, { width: 100, height: 16 }));
     } else {
-      c7.textContent = '—';
-      c7.style.color = 'var(--muted)';
+      cSpark.textContent = '—';
+      cSpark.style.color = 'var(--muted)';
     }
     tr.appendChild(c1);
     tr.appendChild(c2);
     tr.appendChild(c3);
-    tr.appendChild(c4);
-    tr.appendChild(c5);
-    tr.appendChild(c6);
-    tr.appendChild(c7);
+    tr.appendChild(cProd);
+    tr.appendChild(cCons);
+    tr.appendChild(cImp);
+    tr.appendChild(cExp);
+    tr.appendChild(cSpark);
     tbody.appendChild(tr);
   }
   table.appendChild(tbody);
