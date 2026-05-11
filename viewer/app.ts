@@ -92,7 +92,9 @@ export interface BootOpts {
   readonly preBuiltWorld?: WorldState;
 }
 
-export const VIEWER_DEFAULTS: Required<Omit<BootOpts, 'seed' | 'mapHostId' | 'sidebarHostId' | 'preBuiltWorld'>> & {
+export const VIEWER_DEFAULTS: Required<
+  Omit<BootOpts, 'seed' | 'mapHostId' | 'sidebarHostId' | 'preBuiltWorld'>
+> & {
   seed: string;
   mapHostId: string;
   sidebarHostId: string;
@@ -169,6 +171,14 @@ const buildWorldFromOpts = (
   return { world };
 };
 
+const caravanVisualDurationMs = (state: ViewerState): number => {
+  const tickIntervalMs =
+    !state.paused && state.speed > 0 ? 1000 / speedToTicksPerSecond(state.speed) : 0;
+  return tickIntervalMs > 0
+    ? Math.max(CARAVAN_MIN_VISUAL_TICK_MS, tickIntervalMs)
+    : CARAVAN_MIN_VISUAL_TICK_MS;
+};
+
 const buildLayers = (
   app: Application,
   world: WorldState,
@@ -227,8 +237,8 @@ const buildLayers = (
   catchmentLayer.rebuild(world, hexSize);
   buildingsLayer.rebuild(world, hexSize);
   settlementsLayer.sync(world, hexSize);
-  caravansLayer.syncTick(world, undefined, hexSize);
-  caravansLayer.setInterpolationT(world, 1, hexSize);
+  caravansLayer.syncTick(world, undefined, hexSize, caravanVisualDurationMs(state));
+  caravansLayer.advanceVisual(world, 0, hexSize);
   banditCampsLayer.sync(world, hexSize);
 
   // Center the world initially.
@@ -382,7 +392,7 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
 
   // Scheduler clocks are reset together when the world is re-seeded.
   let lastTickWallMs = performance.now();
-  let lastCaravanVisualSyncMs = lastTickWallMs;
+  let lastCaravanVisualFrameMs = lastTickWallMs;
 
   const reset = (): void => {
     // Tear down old layers.
@@ -395,7 +405,7 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     clearHistory(history);
     setSelection(state, { kind: 'none' });
     lastTickWallMs = performance.now();
-    lastCaravanVisualSyncMs = lastTickWallMs;
+    lastCaravanVisualFrameMs = lastTickWallMs;
   };
 
   sidebar = createSidebar({
@@ -590,6 +600,7 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
         readonly { q: number; r: number }[]
       >,
       hexSize,
+      caravanVisualDurationMs(state),
     );
 
     // Aggregate recipe outputs from the events for the resource panel.
@@ -649,7 +660,6 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     if (detailPopup.isOpen) refreshDetailPopup();
 
     lastTickWallMs = performance.now();
-    lastCaravanVisualSyncMs = lastTickWallMs;
     return result.events;
   };
 
@@ -681,12 +691,9 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     const now = performance.now();
     const tickIntervalMs =
       !state.paused && state.speed > 0 ? 1000 / speedToTicksPerSecond(state.speed) : 0;
-    const visualDurationMs =
-      tickIntervalMs > 0
-        ? Math.max(CARAVAN_MIN_VISUAL_TICK_MS, tickIntervalMs)
-        : CARAVAN_MIN_VISUAL_TICK_MS;
-    const visualT = Math.max(0, Math.min(1, (now - lastCaravanVisualSyncMs) / visualDurationMs));
-    layers.caravansLayer.setInterpolationT(world, visualT, hexSize);
+    const visualDeltaMs = Math.max(0, now - lastCaravanVisualFrameMs);
+    lastCaravanVisualFrameMs = now;
+    layers.caravansLayer.advanceVisual(world, visualDeltaMs, hexSize);
     if (!state.paused && state.speed > 0) {
       // Draw interpolation before advancing the sim. At high speeds, visual
       // interpolation is deliberately slower than sim time; the caravan layer

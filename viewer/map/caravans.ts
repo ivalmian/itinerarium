@@ -8,10 +8,9 @@
  * is too small to inspect at low zoom).
  *
  * docs/16-viewer §"Caravan rendering": each tick the caravan's `position`
- * may change. We interpolate the on-screen position between the previous
- * and current hex over the tick interval so units glide rather than jump.
- * The interpolation factor is driven by the app's ticker via
- * setInterpolationT().
+ * may change by several hexes. We append the emitted movement path to a
+ * per-sprite visual queue and drain that queue from the app ticker so units
+ * glide rather than jump.
  */
 
 import { Container, FederatedPointerEvent, Graphics, Sprite } from 'pixi.js';
@@ -22,6 +21,10 @@ import { hexToPixel } from './coords.js';
 import type { ArtRegistry } from '../art/index.js';
 
 const SPRITE_PX = 20;
+const POINT_EPSILON = 1e-6;
+const MAX_VISUAL_PATH_POINTS = 320;
+const MAX_VISUAL_HEX_ADVANCE_PER_FRAME = 2;
+const DEFAULT_VISUAL_DURATION_MS = 160;
 
 export interface CaravansLayer {
   readonly container: Container;
@@ -29,9 +32,11 @@ export interface CaravansLayer {
   syncTick(
     world: WorldState,
     pathPerCaravan?: ReadonlyMap<CaravanId, readonly { q: number; r: number }[]>,
+    hexSize?: number,
+    visualDurationMs?: number,
   ): void;
-  /** Update interpolated screen positions. t in [0, 1]. */
-  setInterpolationT(world: WorldState, t: number, hexSize: number): void;
+  /** Advance queued visual paths by elapsed wall-clock time. */
+  advanceVisual(world: WorldState, deltaMs: number, hexSize: number): void;
   setHighlight(id: CaravanId | null): void;
 }
 
@@ -40,13 +45,164 @@ interface Entry {
   readonly sprite: Sprite;
   readonly badge: Graphics;
   readonly halo: Graphics;
+  displayQ: number;
+  displayR: number;
   prevQ: number;
   prevR: number;
   curQ: number;
   curR: number;
   ownerColor: number;
+  visualHexesPerMs: number;
   path?: { q: number; r: number }[];
 }
+
+interface Point {
+  readonly q: number;
+  readonly r: number;
+}
+
+const samePoint = (a: Point, b: Point): boolean =>
+  Math.abs(a.q - b.q) < POINT_EPSILON && Math.abs(a.r - b.r) < POINT_EPSILON;
+
+const distanceSq = (a: Point, b: Point): number => {
+  const dq = a.q - b.q;
+  const dr = a.r - b.r;
+  return dq * dq + dr * dr;
+};
+
+const hexDistanceFloat = (a: Point, b: Point): number => {
+  const dq = b.q - a.q;
+  const dr = b.r - a.r;
+  return Math.max(Math.abs(dq), Math.abs(dr), Math.abs(dq + dr));
+};
+
+const pathDistance = (path: readonly Point[] | undefined): number => {
+  if (path === undefined || path.length < 2) return 0;
+  let total = 0;
+  for (let i = 0; i < path.length - 1; i++) {
+    total += hexDistanceFloat(path[i] as Point, path[i + 1] as Point);
+  }
+  return total;
+};
+
+const distanceToSegmentSq = (p: Point, a: Point, b: Point): number => {
+  const dq = b.q - a.q;
+  const dr = b.r - a.r;
+  const lenSq = dq * dq + dr * dr;
+  if (lenSq <= POINT_EPSILON) return distanceSq(p, a);
+  const rawT = ((p.q - a.q) * dq + (p.r - a.r) * dr) / lenSq;
+  const t = Math.max(0, Math.min(1, rawT));
+  return distanceSq(p, { q: a.q + dq * t, r: a.r + dr * t });
+};
+
+const appendPoint = (path: Point[], point: Point): void => {
+  const last = path[path.length - 1];
+  if (last !== undefined && samePoint(last, point)) return;
+  path.push({ q: point.q, r: point.r });
+};
+
+const remainingPathFromDisplay = (
+  display: Point,
+  currentPath: readonly Point[] | undefined,
+): Point[] => {
+  if (currentPath === undefined || currentPath.length < 2) {
+    return [{ q: display.q, r: display.r }];
+  }
+
+  let bestSegment = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < currentPath.length - 1; i++) {
+    const a = currentPath[i] as Point;
+    const b = currentPath[i + 1] as Point;
+    const d = distanceToSegmentSq(display, a, b);
+    if (d < bestDistance) {
+      bestDistance = d;
+      bestSegment = i;
+    }
+  }
+
+  const out: Point[] = [{ q: display.q, r: display.r }];
+  for (let i = bestSegment + 1; i < currentPath.length; i++) {
+    appendPoint(out, currentPath[i] as Point);
+  }
+  return out;
+};
+
+const clampVisualPath = (path: Point[]): Point[] => {
+  if (path.length <= MAX_VISUAL_PATH_POINTS) return path;
+  // Preserve both the current display point and the authoritative sim tail.
+  // Dropping the head makes sprites pop to far-future route points at high
+  // sim speeds; sampling keeps the catch-up path continuous.
+  const out: Point[] = [];
+  const lastIndex = path.length - 1;
+  const maxIndex = MAX_VISUAL_PATH_POINTS - 1;
+  for (let i = 0; i < MAX_VISUAL_PATH_POINTS; i++) {
+    const sourceIndex = i === maxIndex ? lastIndex : Math.floor((i * lastIndex) / maxIndex);
+    appendPoint(out, path[sourceIndex] as Point);
+  }
+  return out;
+};
+
+const advancePath = (
+  path: readonly Point[] | undefined,
+  maxHexes: number,
+): { readonly point: Point; readonly path: Point[] } | null => {
+  if (path === undefined || path.length === 0) return null;
+  const start = path[0] as Point;
+  if (path.length < 2 || maxHexes <= POINT_EPSILON) {
+    return {
+      point: { q: start.q, r: start.r },
+      path: path.map((p) => ({ q: p.q, r: p.r })),
+    };
+  }
+
+  let cursor: Point = { q: start.q, r: start.r };
+  let remaining = maxHexes;
+  for (let i = 1; i < path.length; i++) {
+    const next = path[i] as Point;
+    const segment = hexDistanceFloat(cursor, next);
+    if (segment <= POINT_EPSILON) {
+      cursor = { q: next.q, r: next.r };
+      continue;
+    }
+    if (remaining + POINT_EPSILON < segment) {
+      const t = remaining / segment;
+      const point = {
+        q: cursor.q + (next.q - cursor.q) * t,
+        r: cursor.r + (next.r - cursor.r) * t,
+      };
+      return {
+        point,
+        path: [{ q: point.q, r: point.r }, ...path.slice(i).map((p) => ({ q: p.q, r: p.r }))],
+      };
+    }
+    remaining -= segment;
+    cursor = { q: next.q, r: next.r };
+  }
+
+  return {
+    point: cursor,
+    path: [
+      { q: cursor.q, r: cursor.r },
+      { q: cursor.q, r: cursor.r },
+    ],
+  };
+};
+
+const extendVisualPath = (
+  display: Point,
+  currentPath: readonly Point[] | undefined,
+  nextPath: readonly Point[] | undefined,
+  fallbackDestination: Point,
+): Point[] => {
+  const out = remainingPathFromDisplay(display, currentPath);
+  if (nextPath !== undefined && nextPath.length >= 2) {
+    for (const point of nextPath) appendPoint(out, point);
+  } else {
+    appendPoint(out, fallbackDestination);
+  }
+  return clampVisualPath(out);
+};
 
 const factionColor = (owner: ActorId): number => {
   const s = String(owner);
@@ -87,9 +243,7 @@ const hslToHex = (h: number, s: number, l: number): number => {
   }
   const m = l - c / 2;
   return (
-    (Math.round((r + m) * 255) << 16) |
-    (Math.round((g + m) * 255) << 8) |
-    Math.round((b + m) * 255)
+    (Math.round((r + m) * 255) << 16) | (Math.round((g + m) * 255) << 8) | Math.round((b + m) * 255)
   );
 };
 
@@ -133,35 +287,74 @@ export const createCaravansLayer = (
         prevR: c.position.r,
         curQ: c.position.q,
         curR: c.position.r,
+        displayQ: c.position.q,
+        displayR: c.position.r,
         ownerColor: factionColor(c.ownerActor),
+        visualHexesPerMs: 0,
       };
       entries.set(c.id, e);
     }
     return e;
   };
 
+  const drawEntryAt = (e: Entry, q: number, r: number, hexSize: number): void => {
+    e.displayQ = q;
+    e.displayR = r;
+    const px = hexToPixel({ q, r }, hexSize);
+    e.sprite.position.set(px.x, px.y);
+    // Owner-color badge sits just above the caravan (small disc that
+    // reads at every zoom level).
+    e.badge.clear();
+    e.badge
+      .circle(0, -SPRITE_PX * 0.55, 2.2)
+      .fill({ color: e.ownerColor })
+      .stroke({ color: 0x111111, width: 0.4 });
+    e.badge.position.set(px.x, px.y);
+    const isHi = e.id === highlightedId;
+    e.halo.visible = isHi;
+    if (isHi) {
+      e.halo.clear();
+      e.halo.circle(0, 0, SPRITE_PX * 0.7).stroke({ color: 0xffffff, width: 1.5, alpha: 0.95 });
+      e.halo.position.set(px.x, px.y);
+    }
+  };
+
   const syncTick = (
     world: WorldState,
     pathPerCaravan?: ReadonlyMap<CaravanId, readonly { q: number; r: number }[]>,
+    hexSize?: number,
+    visualDurationMs = DEFAULT_VISUAL_DURATION_MS,
   ): void => {
     const seen = new Set<CaravanId>();
     for (const c of world.caravans.values()) {
       seen.add(c.id);
+      const isNew = !entries.has(c.id);
       const e = ensureEntry(c);
       const sourcePath = pathPerCaravan?.get(c.id);
-      if (sourcePath !== undefined && sourcePath.length > 0) {
-        e.path = sourcePath.map((h) => ({ q: h.q, r: h.r }));
-      } else {
+      const sourceDistance =
+        sourcePath !== undefined && sourcePath.length >= 2
+          ? pathDistance(sourcePath)
+          : hexDistanceFloat({ q: e.curQ, r: e.curR }, c.position);
+      if (isNew) {
         e.path = [
-          { q: e.curQ, r: e.curR },
+          { q: c.position.q, r: c.position.r },
           { q: c.position.q, r: c.position.r },
         ];
+        e.visualHexesPerMs = 0;
+      } else {
+        e.path = extendVisualPath({ q: e.displayQ, r: e.displayR }, e.path, sourcePath, c.position);
+        if (sourceDistance > POINT_EPSILON) {
+          e.visualHexesPerMs = sourceDistance / Math.max(1, visualDurationMs);
+        }
       }
       e.prevQ = e.curQ;
       e.prevR = e.curR;
       e.curQ = c.position.q;
       e.curR = c.position.r;
       e.ownerColor = factionColor(c.ownerActor);
+      if (isNew && hexSize !== undefined) {
+        drawEntryAt(e, c.position.q, c.position.r, hexSize);
+      }
     }
     for (const [id, e] of entries) {
       if (!seen.has(id)) {
@@ -176,38 +369,36 @@ export const createCaravansLayer = (
     }
   };
 
-  const setInterpolationT = (world: WorldState, t: number, hexSize: number): void => {
-    const tt = Math.max(0, Math.min(1, t));
+  const advanceVisual = (world: WorldState, deltaMs: number, hexSize: number): void => {
+    const elapsed = Math.max(0, deltaMs);
     for (const c of world.caravans.values()) {
       const e = entries.get(c.id);
       if (e === undefined) continue;
-      let q = e.curQ;
-      let r = e.curR;
-      const path = e.path;
-      if (path !== undefined && path.length >= 2) {
-        const segments = path.length - 1;
-        const local = tt * segments;
-        const i = Math.min(segments - 1, Math.floor(local));
-        const segT = local - i;
-        const a = path[i] as { q: number; r: number };
-        const b = path[i + 1] as { q: number; r: number };
-        q = a.q + (b.q - a.q) * segT;
-        r = a.r + (b.r - a.r) * segT;
+      let q = e.displayQ;
+      let r = e.displayR;
+      const remaining = pathDistance(e.path);
+      if (remaining > POINT_EPSILON && e.visualHexesPerMs > 0) {
+        const maxAdvance = Math.min(
+          remaining,
+          MAX_VISUAL_HEX_ADVANCE_PER_FRAME,
+          e.visualHexesPerMs * elapsed,
+        );
+        const advanced = advancePath(e.path, maxAdvance);
+        if (advanced !== null) {
+          q = advanced.point.q;
+          r = advanced.point.r;
+          e.path = advanced.path;
+        }
+      } else {
+        q = e.curQ;
+        r = e.curR;
+        e.path = [
+          { q, r },
+          { q, r },
+        ];
+        e.visualHexesPerMs = 0;
       }
-      const px = hexToPixel({ q, r }, hexSize);
-      e.sprite.position.set(px.x, px.y);
-      // Owner-color badge sits just above the caravan (small disc that
-      // reads at every zoom level).
-      e.badge.clear();
-      e.badge.circle(0, -SPRITE_PX * 0.55, 2.2).fill({ color: e.ownerColor }).stroke({ color: 0x111111, width: 0.4 });
-      e.badge.position.set(px.x, px.y);
-      const isHi = e.id === highlightedId;
-      e.halo.visible = isHi;
-      if (isHi) {
-        e.halo.clear();
-        e.halo.circle(0, 0, SPRITE_PX * 0.7).stroke({ color: 0xffffff, width: 1.5, alpha: 0.95 });
-        e.halo.position.set(px.x, px.y);
-      }
+      drawEntryAt(e, q, r, hexSize);
     }
   };
 
@@ -215,5 +406,5 @@ export const createCaravansLayer = (
     highlightedId = id;
   };
 
-  return { container, syncTick, setInterpolationT, setHighlight };
+  return { container, syncTick, advanceVisual, setHighlight };
 };
