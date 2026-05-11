@@ -1,8 +1,14 @@
-# Ecogame
+# Itinerarium
 
 A Roman-era trading & caravan game with a fully simulated economy.
 Browser-first TypeScript, hexagonal grid (1 km hexes), turn-based with
 daily ticks and a Vagrus-style player turn UX.
+
+**Live deployment:** <https://d2ylg6blq1xcs7.cloudfront.net/> — auto-deploys
+on every push to `main` via the GitHub Actions workflow at
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml). AWS
+infrastructure (S3 + CloudFront + GitHub-OIDC deploy role) lives in
+[`infra/aws/`](infra/aws/README.md).
 
 **Design docs are the source of truth.** Start at
 [`docs/README.md`](docs/README.md). Project guidance for AI sessions
