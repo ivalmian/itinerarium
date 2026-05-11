@@ -1,20 +1,27 @@
 /**
- * Caravan sprite layer.
+ * Caravan sprite layer — SVG-driven.
  *
- * One small circle per caravan. Color is derived from the owner ActorId via
- * a stable hash so each family / merchant house keeps its color across ticks.
+ * Each caravan renders as a Sprite of viewer/art/units/caravan.svg (trade
+ * caravan: merchant + pack mules + amphora). A small faction-colored dot
+ * sits underneath the sprite so different merchant houses are still
+ * distinguishable at a glance (the dot reads even when the sprite itself
+ * is too small to inspect at low zoom).
  *
- * docs/16-viewer §"Caravan rendering": each tick, the caravan's `position`
- * may change. We interpolate the on-screen position between the previous and
- * current hex over the tick interval so dots glide rather than jump. The
- * interpolation factor is driven by the app's ticker via setInterpolationT().
+ * docs/16-viewer §"Caravan rendering": each tick the caravan's `position`
+ * may change. We interpolate the on-screen position between the previous
+ * and current hex over the tick interval so units glide rather than jump.
+ * The interpolation factor is driven by the app's ticker via
+ * setInterpolationT().
  */
 
-import { Container, FederatedPointerEvent, Graphics } from 'pixi.js';
+import { Container, FederatedPointerEvent, Graphics, Sprite } from 'pixi.js';
 import type { CaravanId, ActorId } from '../../src/sim/types.js';
 import type { Caravan } from '../../src/sim/caravan/caravan.js';
 import type { WorldState } from '../../src/procgen/seed.js';
 import { hexToPixel } from './coords.js';
+import type { ArtRegistry } from '../art/index.js';
+
+const SPRITE_PX = 20;
 
 export interface CaravansLayer {
   readonly container: Container;
@@ -30,28 +37,24 @@ export interface CaravansLayer {
 
 interface Entry {
   readonly id: CaravanId;
-  readonly graphic: Graphics;
+  readonly sprite: Sprite;
+  readonly badge: Graphics;
+  readonly halo: Graphics;
   prevQ: number;
   prevR: number;
   curQ: number;
   curR: number;
   ownerColor: number;
-  /** Polyline of hex coords this caravan walked during the latest tick.
-   *  Used by setInterpolationT to follow the actual hex path instead of
-   *  cutting straight-line through impassable terrain. */
   path?: { q: number; r: number }[];
 }
 
 const factionColor = (owner: ActorId): number => {
-  // FNV-1a-ish hash so identically-prefixed owner ids fan out across the
-  // hue wheel.
   const s = String(owner);
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
-  // Shape into HSL → RGB. Saturated mid-light hue.
   const hue = (h >>> 0) % 360;
   return hslToHex(hue, 0.55, 0.55);
 };
@@ -91,6 +94,7 @@ const hslToHex = (h: number, s: number, l: number): number => {
 };
 
 export const createCaravansLayer = (
+  art: ArtRegistry,
   onSelect: (id: CaravanId) => void,
 ): CaravansLayer => {
   const container = new Container();
@@ -101,18 +105,30 @@ export const createCaravansLayer = (
   const ensureEntry = (c: Caravan): Entry => {
     let e = entries.get(c.id);
     if (e === undefined) {
-      const g = new Graphics();
-      g.eventMode = 'static';
-      g.cursor = 'pointer';
-      g.on('pointerdown', (ev: FederatedPointerEvent) => {
+      const halo = new Graphics();
+      halo.eventMode = 'none';
+      halo.visible = false;
+      container.addChild(halo);
+      const badge = new Graphics();
+      badge.eventMode = 'none';
+      container.addChild(badge);
+      const sprite = new Sprite(art.unit('caravan'));
+      sprite.anchor.set(0.5, 0.5);
+      sprite.width = SPRITE_PX;
+      sprite.height = SPRITE_PX;
+      sprite.eventMode = 'static';
+      sprite.cursor = 'pointer';
+      sprite.on('pointerdown', (ev: FederatedPointerEvent) => {
         ev.stopPropagation();
         onSelect(c.id);
       });
-      g.hitArea = { contains: (x: number, y: number) => x * x + y * y <= 64 };
-      container.addChild(g);
+      sprite.hitArea = { contains: (x: number, y: number) => x * x + y * y <= 100 };
+      container.addChild(sprite);
       e = {
         id: c.id,
-        graphic: g,
+        sprite,
+        badge,
+        halo,
         prevQ: c.position.q,
         prevR: c.position.r,
         curQ: c.position.q,
@@ -132,10 +148,6 @@ export const createCaravansLayer = (
     for (const c of world.caravans.values()) {
       seen.add(c.id);
       const e = ensureEntry(c);
-      // The path is [prevPos, ...stepsTaken, curPos]. We use this for
-      // polyline interpolation so caravans visually walk along their
-      // actual hex path instead of cutting straight through lakes
-      // and mountains.
       const sourcePath = pathPerCaravan?.get(c.id);
       if (sourcePath !== undefined && sourcePath.length > 0) {
         e.path = sourcePath.map((h) => ({ q: h.q, r: h.r }));
@@ -153,8 +165,12 @@ export const createCaravansLayer = (
     }
     for (const [id, e] of entries) {
       if (!seen.has(id)) {
-        container.removeChild(e.graphic);
-        e.graphic.destroy();
+        container.removeChild(e.sprite);
+        container.removeChild(e.badge);
+        container.removeChild(e.halo);
+        e.sprite.destroy();
+        e.badge.destroy();
+        e.halo.destroy();
         entries.delete(id);
       }
     }
@@ -165,9 +181,6 @@ export const createCaravansLayer = (
     for (const c of world.caravans.values()) {
       const e = entries.get(c.id);
       if (e === undefined) continue;
-      // Interpolate along the polyline (e.path). t scales the total
-      // arc-length traveled; we walk the segments until we've consumed
-      // enough fraction.
       let q = e.curQ;
       let r = e.curR;
       const path = e.path;
@@ -182,8 +195,19 @@ export const createCaravansLayer = (
         r = a.r + (b.r - a.r) * segT;
       }
       const px = hexToPixel({ q, r }, hexSize);
-      e.graphic.position.set(px.x, px.y);
-      drawCaravan(e.graphic, e.ownerColor, e.id === highlightedId);
+      e.sprite.position.set(px.x, px.y);
+      // Owner-color badge sits just above the caravan (small disc that
+      // reads at every zoom level).
+      e.badge.clear();
+      e.badge.circle(0, -SPRITE_PX * 0.55, 2.2).fill({ color: e.ownerColor }).stroke({ color: 0x111111, width: 0.4 });
+      e.badge.position.set(px.x, px.y);
+      const isHi = e.id === highlightedId;
+      e.halo.visible = isHi;
+      if (isHi) {
+        e.halo.clear();
+        e.halo.circle(0, 0, SPRITE_PX * 0.7).stroke({ color: 0xffffff, width: 1.5, alpha: 0.95 });
+        e.halo.position.set(px.x, px.y);
+      }
     }
   };
 
@@ -192,12 +216,4 @@ export const createCaravansLayer = (
   };
 
   return { container, syncTick, setInterpolationT, setHighlight };
-};
-
-const drawCaravan = (g: Graphics, color: number, highlighted: boolean): void => {
-  g.clear();
-  g.circle(0, 0, 4).fill({ color }).stroke({ color: 0x000000, width: 0.6 });
-  if (highlighted) {
-    g.circle(0, 0, 6).stroke({ color: 0xffffff, width: 1.5 });
-  }
 };

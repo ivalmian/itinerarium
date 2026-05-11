@@ -145,7 +145,7 @@ const buildLayers = (
   worldRoot.eventMode = 'static';
   app.stage.addChild(worldRoot);
 
-  const hexMap = createHexMap(world.grid, hexSize);
+  const hexMap = createHexMap(world.grid, hexSize, art, world.settlements.values());
   worldRoot.addChild(hexMap.container);
 
   // Catchment shading sits just above terrain, below all line-art (rivers,
@@ -159,12 +159,12 @@ const buildLayers = (
 
   // Rivers draw above terrain + biome-edges, but BELOW roads so a future
   // bridge tile can sit on top of the river crossing (docs/16-viewer).
-  const riverLayer = createRiverLayer(world.grid, hexSize);
+  const riverLayer = createRiverLayer(world.grid, hexSize, art);
   worldRoot.addChild(riverLayer.container);
 
   // Roads sit between rivers and entities — visible over the hex fill,
   // but caravans / settlements / camps draw on top.
-  const roadLayer = createRoadLayer(world.grid, hexSize);
+  const roadLayer = createRoadLayer(world.grid, hexSize, art);
   worldRoot.addChild(roadLayer.container);
 
   // Sub-hex building markers — between roads and settlement glyphs so the
@@ -177,7 +177,7 @@ const buildLayers = (
   });
   worldRoot.addChild(settlementsLayer.container);
 
-  const caravansLayer = createCaravansLayer((id) => {
+  const caravansLayer = createCaravansLayer(art, (id) => {
     setSelection(state, { kind: 'caravan', id });
   });
   worldRoot.addChild(caravansLayer.container);
