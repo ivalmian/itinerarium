@@ -368,14 +368,14 @@ const seedPopulation = (settlement: Settlement, total: number): void => {
 const GRAIN_KG_PER_DAY = 0.4; // docs/04 §"Consumption per adult per day"
 const KG_PER_MODIUS = 6.7; // see resources/catalog.ts food.grain
 // 180-day reserve. Per docs/15 §C5 we aim for 30 ultimately, but C6
-// 90 days of grain reserve. C4 (dynamic investment) and C6 (worker
-// reallocation) are now both landed, so the reserve doesn't have to
-// cover a whole half-year of worker-misallocation lag. 90 days = one
-// season — enough to cover the spring→summer transition before the
-// next harvest spikes inflows. Verified at 90% pop retention over 6y
-// burn-in. Per docs/15 §C5 — full 30-day target still gated on a
-// faster C6 reallocation (or smarter procgen worker distribution).
-const GRAIN_DAYS_OF_RESERVE = 90;
+// 30 days of grain reserve. The full v1.5 §C5 target. Reachable now
+// that C4 (dynamic investment) builds new buildings mid-burn,
+// C6 (worker reallocation) shifts roles toward bottlenecks,
+// C10 (storage capacity discipline) prevents stockpile sprawl,
+// C16 (civil unrest cascade) caps prices via edicts before runaway,
+// C17 (merchant guilds) coordinates trade flows, and C18 (goal
+// stacks) gives caravans persistent multi-leg intents.
+const GRAIN_DAYS_OF_RESERVE = 30;
 
 const grainModiiForPopulation = (totalPop: number, days: number): number => {
   const kg = totalPop * GRAIN_KG_PER_DAY * days;
