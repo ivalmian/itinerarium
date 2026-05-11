@@ -265,7 +265,7 @@ describe('generateTerrain — deposits', () => {
       if (t.deposit !== undefined) {
         depositCount++;
         expect(['mountains', 'hills']).toContain(t.terrain);
-        expect(t.deposit.remaining).toBeGreaterThan(0);
+        expect(t.deposit.remaining).toBeGreaterThanOrEqual(500_000);
       }
     }
     expect(depositCount).toBeGreaterThan(0);

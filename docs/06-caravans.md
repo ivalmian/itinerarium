@@ -192,6 +192,10 @@ total difficulty × distance, not raw distance.
 - Animal fodder: pack animals graze where pasture or roadside
   vegetation exists; supplemented from cargo. Draft animals on heavy
   wagons can't graze enough on the move and need carried feed.
+  In v1.5, carried feed is represented by `food.grain` and
+  `food.legumes` in the caravan cargo. Terrain and season determine how
+  much grazing offsets that need; urban, desert, winter, and long detour
+  days therefore consume real cargo or damage caravan health.
 - Wear: carts and equipment depreciate per day of use.
 
 A 50-mule caravan with 12 crew & guards over a 30-day journey burns
@@ -282,19 +286,19 @@ counter (integer, 0 at procgen for un-roaded hexes). Every day:
 
 These are first-pass; numbers will move during burn-in:
 
-| Constant                        | Default | Meaning                                            |
-| ------------------------------- | ------- | -------------------------------------------------- |
-| `WEAR_PER_PACK_ANIMAL`          | 0.2     | per hex entered                                    |
-| `WEAR_PER_CREW`                 | 0.05    | per hex entered                                    |
-| `WEAR_PER_NEWS_CARRIER`         | 0.2     | per hex entered                                    |
-| `WEAR_PER_PATROL_SOLDIER`       | 0.5     | per hex entered                                    |
-| `WEAR_DECAY_PER_DAY`            | 1.0     | per hex with wear > 0                              |
+| Constant                        | Default | Meaning                                                                             |
+| ------------------------------- | ------- | ----------------------------------------------------------------------------------- |
+| `WEAR_PER_PACK_ANIMAL`          | 0.2     | per hex entered                                                                     |
+| `WEAR_PER_CREW`                 | 0.05    | per hex entered                                                                     |
+| `WEAR_PER_NEWS_CARRIER`         | 0.2     | per hex entered                                                                     |
+| `WEAR_PER_PATROL_SOLDIER`       | 0.5     | per hex entered                                                                     |
+| `WEAR_DECAY_PER_DAY`            | 1.0     | per hex with wear > 0                                                               |
 | `DIRT_ROAD_DECAY_PER_DAY`       | 0.75    | per dirt-road hex with wear > 0 (baseline; scales 2^(n−2) with road-neighbor count) |
-| `DIRT_UPGRADE_THRESHOLD`        | 100     | wear needed to upgrade `none` → `dirt`             |
-| `DIRT_DOWNGRADE_THRESHOLD`      | 20      | wear floor below which `dirt` → `none`             |
-| `MAX_ROAD_WEAR`                 | 200     | maximum stored wear on a non-Roman hex             |
-| `MAX_ROAD_WEAR_ADDED_PER_ENTRY` | 10      | maximum one moving unit adds to one hex in one day |
-| `ROMAN_WEARS`                   | false   | Roman roads don't accrue wear or decay             |
+| `DIRT_UPGRADE_THRESHOLD`        | 100     | wear needed to upgrade `none` → `dirt`                                              |
+| `DIRT_DOWNGRADE_THRESHOLD`      | 20      | wear floor below which `dirt` → `none`                                              |
+| `MAX_ROAD_WEAR`                 | 200     | maximum stored wear on a non-Roman hex                                              |
+| `MAX_ROAD_WEAR_ADDED_PER_ENTRY` | 10      | maximum one moving unit adds to one hex in one day                                  |
+| `ROMAN_WEARS`                   | false   | Roman roads don't accrue wear or decay                                              |
 
 A medium caravan (~10 mules, ~5 crew) puts down ~2.25 wear per
 hex crossed. So a single caravan transit helps, but does not build
@@ -465,14 +469,23 @@ expected_profit =
 
 …weighted by their own risk appetite, capital, and information. They
 choose routes that maximize this; ties broken by familiarity.
+The `travel_cost_in_rations_and_wear` term uses the same 1.5
+provisioning convention as movement: full crew rations plus the carried
+fodder reserve share, not full theoretical animal fodder, because pack
+animals graze where terrain and season allow. Otherwise the planner
+would reject routes that are profitable under the actual movement model.
 
 Cargo planning is not an unconstrained "fill the cart" rule. It is a
 microeconomic feasible-set problem: the merchant ranks goods by
 expected margin per kg, then caps the load by carrying capacity
 already occupied, missing ration-reserve capacity, cash available
 after survival reserves, and stock actually available in the origin
-market. This keeps planned demand consistent with the local market
-the caravan can really buy from.
+market. Fresh perishables are only planned for routes whose estimated
+travel time fits inside their shelf life; milk, fresh fish, and game
+therefore remain local/nearby flows while cheese, salted foods, wine,
+oil, metals, and exotics can support longer hauls. This keeps planned
+demand consistent with the local market the caravan can really buy
+from.
 
 When the expected-profit calculation returns no plan, scouting is still
 economic behavior rather than Brownian motion. The caravan is buying
@@ -561,13 +574,20 @@ the two settlements are within the resource's local cartage range
 AND travel between them is feasible (not blocked by impassable terrain
 in the current season):
 
-1. Look at every tradable resource. Find the spread:
+1. Look at every physical tradable resource with observed local
+   prices. Services are not cargo, people use separate population/cargo
+   systems, and coin is the settlement rail rather than a commodity in
+   this pass. Find the spread:
    `spread = buyer.lastPrice - seller.lastPrice − transportCost`
 2. If the spread is positive, a petty merchant moves a resource-
    appropriate quantity from a seller actor's stockpile in
    `sellerSettlement` to a buyer actor's stockpile in
    `buyerSettlement`. Household goods are capped at ~50 kg per
-   pair per day. Strategic workshop goods (tools, weapons, armor,
+   pair per day, including perishables like raw milk, fresh fish,
+   and game that can only plausibly move nearby. Herd capital
+   (sheep/cattle/pigs/equines) walks rather than riding in a basket:
+   nearby markets can move about a tenth of a herd unit per pair per
+   day. Strategic workshop goods (tools, weapons, armor,
    shields, carts) use pickup-wagon lots capped around ~500 kg per
    pair per day, so smith output can reach nearby farms, workshops,
    and barracks without pretending it teleports. Bulky industrial

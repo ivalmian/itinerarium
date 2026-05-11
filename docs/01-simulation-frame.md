@@ -11,9 +11,12 @@ hands" is operationalized.
   today, not last week's aggregate.
 - Every turn has sub-phases (in fixed order, all visible):
   1. Production (workers do work, output goes to owner stockpiles)
-  2. Consumption (population eats, equipment wears)
+  2. Construction / upkeep bookkeeping (pending builds, demolition,
+     equipment and storage wear)
   3. Movement (caravans, armies, migrants, couriers resolve travel)
-  4. Trade (market clearing at each settlement; caravans buy/sell)
+  4. Trade + consumption (market clearing at each settlement;
+     caravans buy/sell; market-cleared subsistence plus remaining
+     ration stockpiles determine famine pressure)
   5. Demographics (births, deaths, migration decisions, disease spread)
   6. Politics (taxation, conscription, edicts, governor / family
      decisions — see [11 — Politics & Ownership](11-politics-and-ownership.md))

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { BUILDINGS } from '../buildings/catalog.js';
 import { JOBS } from '../jobs/catalog.js';
 import { RESOURCES } from '../resources/catalog.js';
-import { recipeId, resourceId } from '../types.js';
+import { jobId, recipeId, resourceId } from '../types.js';
 import {
   RECIPES,
   allRecipes,
@@ -30,6 +30,8 @@ const PASTORAL = [
   'shear_wool',
   'milk_dairy',
   'slaughter_for_meat_and_hides',
+  'slaughter_sheep_for_meat_and_hides',
+  'slaughter_pigs_for_meat_and_hides',
 ] as const;
 
 const EXTRACTION = [
@@ -77,6 +79,7 @@ const REFINING = [
 
 const MANUFACTURE = [
   'weave_cloth',
+  'weave_linen_cloth',
   'tailor_clothing',
   'forge_tools',
   'forge_weapons',
@@ -153,8 +156,9 @@ describe('recipe registry', () => {
   });
 
   describe('structural invariants', () => {
-    it('every recipe has at least one output', () => {
+    it('every recipe except explicit upkeep passes has at least one output', () => {
       for (const r of allRecipes()) {
+        if (r.id === recipeId('sow_grain')) continue;
         expect(r.outputs.size).toBeGreaterThan(0);
       }
     });
@@ -212,12 +216,28 @@ describe('recipe registry', () => {
       expect(r.outputs.get(resourceId('metal.iron'))).toBe(15);
     });
 
-    it('forge_tools: 5 iron + 2 lumber + 3 charcoal → 15 tools with 1 smith', () => {
+    it('burn_charcoal: 1 cord wood → 5 sacks charcoal with 1 collier', () => {
+      const r = getRecipe(recipeId('burn_charcoal'));
+      // material.wood is a 700 kg cord; material.charcoal is a 30 kg sack.
+      // 1 cord ~= 700 kg wood -> five 30 kg sacks keeps the 4-5:1
+      // wood-to-charcoal mass yield while treating a clamp as a batch.
+      expect(r.inputs.get(resourceId('material.wood'))).toBe(1);
+      expect(r.outputs.get(resourceId('material.charcoal'))).toBe(5);
+    });
+
+    it('forge_tools: 5 iron + 0.08 lumber + 3 charcoal → 15 tools with 1 smith', () => {
       const r = getRecipe(recipeId('forge_tools'));
       expect(r.inputs.get(resourceId('metal.iron'))).toBe(5);
-      expect(r.inputs.get(resourceId('material.lumber'))).toBe(2);
+      expect(r.inputs.get(resourceId('material.lumber'))).toBe(0.08);
       expect(r.inputs.get(resourceId('material.charcoal'))).toBe(3);
       expect(r.outputs.get(resourceId('goods.tools'))).toBe(15);
+    });
+
+    it('weave_linen_cloth: 4 linen fiber → 1 cloth with 1 weaver', () => {
+      const r = getRecipe(recipeId('weave_linen_cloth'));
+      expect(r.inputs.get(resourceId('material.linen_fiber'))).toBe(4);
+      expect(r.outputs.get(resourceId('goods.cloth'))).toBe(1);
+      expect(r.labor.get(jobId('weaver'))).toBe(1);
     });
 
     it('press_olives: 300 olives + 5 amphora → 60 oil with 1 presser, autumn-only', () => {
@@ -247,6 +267,24 @@ describe('recipe registry', () => {
       const r = getRecipe(recipeId('sow_grain'));
       expect(r.seasonalMultiplier).toBeDefined();
       expect(r.seasonalMultiplier?.spring).toBeGreaterThan(0);
+    });
+
+    it('sow_grain does not create symbolic public works output', () => {
+      const r = getRecipe(recipeId('sow_grain'));
+      expect(r.outputs.size).toBe(0);
+      expect(r.outputs.has(resourceId('service.public_works'))).toBe(false);
+    });
+
+    it('olive and grape harvest recipes run only in autumn', () => {
+      for (const id of ['tend_olive_grove', 'tend_vineyard'] as const) {
+        const r = getRecipe(recipeId(id));
+        expect(r.seasonalMultiplier).toEqual({
+          spring: 0,
+          summer: 0,
+          autumn: 1,
+          winter: 0,
+        });
+      }
     });
 
     it('non-seasonal recipes (e.g., bake_bread) have no seasonal multiplier or are 1 everywhere', () => {
@@ -314,6 +352,16 @@ describe('recipe registry', () => {
       const r = getRecipe(recipeId('slaughter_for_meat_and_hides'));
       expect(r.inputs.get(resourceId('livestock.cattle'))).toBe(0.02);
       expect(r.requires.has(resourceId('livestock.cattle'))).toBe(false);
+    });
+
+    it('sheep and pig slaughter consume herd stock instead of requiring it passively', () => {
+      const sheep = getRecipe(recipeId('slaughter_sheep_for_meat_and_hides'));
+      const pigs = getRecipe(recipeId('slaughter_pigs_for_meat_and_hides'));
+
+      expect(sheep.inputs.get(resourceId('livestock.sheep'))).toBe(0.03);
+      expect(sheep.requires.has(resourceId('livestock.sheep'))).toBe(false);
+      expect(pigs.inputs.get(resourceId('livestock.pigs'))).toBe(0.05);
+      expect(pigs.requires.has(resourceId('livestock.pigs'))).toBe(false);
     });
 
     it('every recipe has a requires map (defaults to empty)', () => {

@@ -298,6 +298,16 @@ export const dailyAnimalFodderKg = (c: Caravan): number => {
   return kg;
 };
 
+/**
+ * Carried feed reserve for route planning/provisioning. Animals still graze
+ * when the terrain allows it; this is the portion a prudent caravan carries
+ * as grain/legumes for poor forage days, urban stops, winter, and detours.
+ */
+export const CARRIED_FODDER_RESERVE_SHARE = 0.35;
+
+export const dailyCarriedFoodReserveKg = (c: Caravan): number =>
+  dailyCrewRationKg(c) + dailyAnimalFodderKg(c) * CARRIED_FODDER_RESERVE_SHARE;
+
 // --- Movement --------------------------------------------------------------
 
 /**

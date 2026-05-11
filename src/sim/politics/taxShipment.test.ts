@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { createCaravan, totalCarryKg, totalCargoWeightKg } from '../caravan/caravan.js';
+import {
+  createCaravan,
+  dailyCarriedFoodReserveKg,
+  totalCarryKg,
+  totalCargoWeightKg,
+} from '../caravan/caravan.js';
 import { getResource } from '../resources/index.js';
 import { createRng } from '../rng.js';
 import {
@@ -339,7 +344,7 @@ describe('createTaxShipmentCaravan', () => {
       rng: createRng('tax-1'),
     });
     expect(caravan.ownerActor).toBe(governorId);
-    expect(caravan.cargo.get(grain)).toBe(50);
+    expect(caravan.cargo.get(grain) ?? 0).toBeGreaterThan(50);
     expect(caravan.position.q).toBe(0);
     expect(caravan.destination?.q).toBe(30);
   });
@@ -455,7 +460,10 @@ describe('createTaxShipmentCaravan', () => {
       governorActor: governorId,
       rng: createRng('w'),
     });
-    expect(totalCargoWeightKg(caravan)).toBeCloseTo(10 * getResource(grain).weightKgPerUnit, 6);
+    expect(totalCargoWeightKg(caravan)).toBeCloseTo(
+      10 * getResource(grain).weightKgPerUnit + dailyCarriedFoodReserveKg(caravan) * 21,
+      6,
+    );
   });
 });
 

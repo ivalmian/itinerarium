@@ -11,10 +11,16 @@ import {
 } from '../types.js';
 import { hex, hexKey } from '../world/hex.js';
 import { expectedRisk, planCaravanRoute, travelCost, type PlanCaravanRouteInputs } from './ai.js';
-import { createCaravan, type Caravan, type PriceObservation } from './caravan.js';
+import {
+  createCaravan,
+  dailyCarriedFoodReserveKg,
+  type Caravan,
+  type PriceObservation,
+} from './caravan.js';
 
 const grain = resourceId('food.grain');
 const wine = resourceId('food.wine');
+const milk = resourceId('food.milk');
 const silver = resourceId('metal.silver');
 const cattle = resourceId('livestock.cattle');
 
@@ -92,6 +98,16 @@ describe('travelCost', () => {
 
   it('returns 0 for zero hex distance', () => {
     expect(travelCost(baseCaravan(), 0)).toBe(0);
+  });
+
+  it('prices animal feed using the carried fodder reserve, not full daily fodder', () => {
+    const c = baseCaravan();
+    const roundTripDaysForSixHexes = 2;
+    const wearForTwoDays = 1;
+    expect(travelCost(c, 6)).toBeCloseTo(
+      dailyCarriedFoodReserveKg(c) * roundTripDaysForSixHexes + wearForTwoDays,
+      6,
+    );
   });
 });
 
@@ -193,6 +209,28 @@ describe('planCaravanRoute', () => {
     expect(plan?.cargoToCarry.get(grain)).toBeCloseTo(5, 5);
   });
 
+  it('can reserve trip operating cash before buying speculative cargo', () => {
+    const c = baseCaravan();
+    const nearby = { id: settlementId('nearby'), hex: hex(6, 0), tier: 'village' as const };
+    const spendCoin = 500;
+    observePrice(c, grain, homeHex, 2);
+    observePrice(c, grain, nearby.hex, 500);
+
+    const plan = planCaravanRoute(
+      baseInputs(c, {
+        candidateSettlements: [nearby],
+        cargoConstraints: {
+          maxSpendCoin: spendCoin,
+          reserveTripOperatingCost: true,
+        },
+      }),
+    );
+
+    expect(plan).not.toBeNull();
+    const expectedSpend = Math.max(0, spendCoin - travelCost(c, 6));
+    expect(plan?.cargoToCarry.get(grain)).toBeCloseTo(expectedSpend / 2, 5);
+  });
+
   it('caps cargo by stock actually available at the origin market', () => {
     const c = baseCaravan();
     observePrice(c, grain, homeHex, 1);
@@ -225,6 +263,25 @@ describe('planCaravanRoute', () => {
     const qty = plan?.cargoToCarry.get(cattle) ?? 0;
     expect(qty).toBeGreaterThan(0);
     expect(qty).toBeLessThan(1);
+  });
+
+  it('does not plan perishable cargo for routes longer than its shelf life', () => {
+    const c = baseCaravan();
+    const nearbyDairyTown = {
+      id: settlementId('nearby-dairy-town'),
+      hex: hex(6, 0),
+      tier: 'town' as const,
+    };
+    observePrice(c, milk, homeHex, 1);
+    observePrice(c, milk, nearbyDairyTown.hex, 100);
+    observePrice(c, milk, candRavenna.hex, 1000);
+
+    const nearbyPlan = planCaravanRoute(baseInputs(c, { candidateSettlements: [nearbyDairyTown] }));
+    expect(nearbyPlan).not.toBeNull();
+    expect(nearbyPlan?.cargoToCarry.has(milk)).toBe(true);
+
+    const farPlan = planCaravanRoute(baseInputs(c, { candidateSettlements: [candRavenna] }));
+    expect(farPlan).toBeNull();
   });
 
   it('high bandit risk reduces expected profit and may zero the plan', () => {

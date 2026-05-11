@@ -70,6 +70,8 @@ const RATION_SOURCES: readonly ResourceId[] = [
   'food.cheese',
 ] as ResourceId[];
 
+const FODDER_SOURCES: readonly ResourceId[] = ['food.legumes', 'food.grain'] as ResourceId[];
+
 const RATION_DAILY_BASE_WEAR = 0.001; // 0.1% per day baseline (docs/06)
 
 /** A MovementProfile that turns the caravan's daily MP allowance into per-hex cost. */
@@ -83,14 +85,10 @@ const profileForCaravan = (stats: CaravanMovementStats): MovementProfile => ({
   },
 });
 
-/**
- * Drain `kg` of rations from cargo, drawing from RATION_SOURCES in order.
- * Returns the kg actually consumed (may be < kg if cargo runs out).
- */
-const drawRations = (c: Caravan, kg: number): number => {
+const drawCargoFoodKg = (c: Caravan, kg: number, sources: readonly ResourceId[]): number => {
   if (kg <= 0) return 0;
   let remaining = kg;
-  for (const id of RATION_SOURCES) {
+  for (const id of sources) {
     if (remaining <= 0) break;
     const have = c.cargo.get(id) ?? 0;
     if (have <= 0) continue;
@@ -108,6 +106,14 @@ const drawRations = (c: Caravan, kg: number): number => {
   }
   return kg - Math.max(0, remaining);
 };
+
+/**
+ * Drain `kg` of rations from cargo, drawing from RATION_SOURCES in order.
+ * Returns the kg actually consumed (may be < kg if cargo runs out).
+ */
+const drawRations = (c: Caravan, kg: number): number => drawCargoFoodKg(c, kg, RATION_SOURCES);
+
+const drawFodder = (c: Caravan, kg: number): number => drawCargoFoodKg(c, kg, FODDER_SOURCES);
 
 /**
  * Walk the path one hex at a time, deducting per-hex MP from the caravan's
@@ -179,6 +185,84 @@ const wearForToday = (terrain: Terrain, road: RoadGrade, season: Season): number
   return RATION_DAILY_BASE_WEAR * mult;
 };
 
+const forageRationsKg = (terrain: Terrain, season: Season, rationNeedKg: number): number => {
+  if (rationNeedKg <= 0) return 0;
+  let kgPerCrewEquivalent = 0;
+  switch (terrain) {
+    case 'fertile_valley':
+      kgPerCrewEquivalent = 0.32;
+      break;
+    case 'plains':
+    case 'forest':
+    case 'steppe':
+    case 'river':
+      kgPerCrewEquivalent = 0.24;
+      break;
+    case 'hills':
+    case 'dense_forest':
+    case 'marsh':
+      kgPerCrewEquivalent = 0.16;
+      break;
+    case 'urban':
+    case 'ruin':
+      kgPerCrewEquivalent = 0.12;
+      break;
+    case 'mountains':
+      kgPerCrewEquivalent = 0.05;
+      break;
+    case 'desert':
+    case 'lake':
+      kgPerCrewEquivalent = 0;
+      break;
+  }
+  const seasonMult = season === 'winter' ? 0.35 : season === 'spring' ? 0.75 : 1;
+  const crewEquivalent = rationNeedKg / 0.4;
+  const forageKg = kgPerCrewEquivalent * crewEquivalent * seasonMult;
+  const maxShare = season === 'winter' ? 0.25 : 0.8;
+  return Math.min(rationNeedKg * maxShare, Math.max(0, forageKg));
+};
+
+const forageFodderKg = (
+  terrain: Terrain,
+  road: RoadGrade,
+  season: Season,
+  fodderNeedKg: number,
+): number => {
+  if (fodderNeedKg <= 0) return 0;
+  let share = 0;
+  switch (terrain) {
+    case 'fertile_valley':
+    case 'plains':
+    case 'steppe':
+    case 'river':
+      share = 0.85;
+      break;
+    case 'forest':
+    case 'hills':
+      share = 0.65;
+      break;
+    case 'dense_forest':
+    case 'marsh':
+      share = 0.45;
+      break;
+    case 'mountains':
+      share = 0.25;
+      break;
+    case 'desert':
+      share = 0.08;
+      break;
+    case 'urban':
+    case 'ruin':
+    case 'lake':
+      share = 0;
+      break;
+  }
+  if (road !== 'none' && share > 0) share = Math.min(0.9, share + 0.05);
+  const seasonMult =
+    season === 'winter' ? 0.2 : season === 'spring' ? 0.75 : season === 'autumn' ? 0.8 : 1;
+  return fodderNeedKg * Math.max(0, Math.min(0.9, share * seasonMult));
+};
+
 export const tickCaravanMovement = (inputs: CaravanTickInputs): CaravanTickResult => {
   const { caravan: c, grid, season } = inputs;
   const events: CaravanTickEvent[] = [];
@@ -239,25 +323,48 @@ export const tickCaravanMovement = (inputs: CaravanTickInputs): CaravanTickResul
     events.push({ type: 'arrived', at: c.position });
   }
 
+  const finalTile = grid.get(c.position);
+
   // ---------- Daily costs ---------------------------------------------
   const rationsNeeded = dailyCrewRationKg(c);
-  const rationsConsumed = drawRations(c, rationsNeeded);
-  if (rationsConsumed + 1e-9 < rationsNeeded) {
-    events.push({ type: 'starvation_threshold' });
-    // Health drop scales with the shortfall.
-    const shortfall = rationsNeeded - rationsConsumed;
-    const drop = Math.min(0.05, (shortfall / Math.max(1, rationsNeeded)) * 0.05);
-    c.health = Math.max(0, c.health - drop);
-  }
+  const cargoRationsConsumed = drawRations(c, rationsNeeded);
+  const forageConsumed =
+    cargoRationsConsumed < rationsNeeded && finalTile !== undefined
+      ? Math.min(
+          rationsNeeded - cargoRationsConsumed,
+          forageRationsKg(finalTile.terrain, season, rationsNeeded),
+        )
+      : 0;
+  const rationsConsumed = cargoRationsConsumed + forageConsumed;
 
-  const fodderConsumed = dailyAnimalFodderKg(c);
-  // Fodder consumption is reported but not deducted from cargo: animals graze
-  // on roadside vegetation by default (docs/06). When the route lacks pasture,
-  // a follow-up system can deduct from a 'fodder' cargo line.
+  const fodderNeeded = dailyAnimalFodderKg(c);
+  const forageFodder =
+    fodderNeeded > 0 && finalTile !== undefined
+      ? forageFodderKg(finalTile.terrain, finalTile.road, season, fodderNeeded)
+      : 0;
+  const cargoFodderConsumed = drawFodder(c, Math.max(0, fodderNeeded - forageFodder));
+  const fodderConsumed = forageFodder + cargoFodderConsumed;
+
+  const rationShortfall = Math.max(0, rationsNeeded - rationsConsumed);
+  const fodderShortfall = Math.max(0, fodderNeeded - fodderConsumed);
+  if (rationShortfall > 1e-9 || fodderShortfall > 1e-9) {
+    events.push({ type: 'starvation_threshold' });
+    // Health drop scales with crew hunger and animal-feed shortfall.
+    const rationDrop =
+      rationsNeeded > 0 ? (rationShortfall / Math.max(1, rationsNeeded)) * 0.05 : 0;
+    const fodderDrop = fodderNeeded > 0 ? (fodderShortfall / Math.max(1, fodderNeeded)) * 0.03 : 0;
+    const drop = Math.min(0.08, rationDrop + fodderDrop);
+    c.health = Math.max(0, c.health - drop);
+  } else if ((rationsNeeded > 0 || fodderNeeded > 0) && c.health < 1) {
+    // A caravan that has enough food and a functioning camp routine should
+    // slowly recover from prior hunger/fatigue instead of carrying that damage
+    // forever. Recovery is deliberately slow: a badly depleted caravan needs
+    // weeks of adequately supplied travel or rest to return to full health.
+    c.health = Math.min(1, c.health + 0.01);
+  }
 
   // Vehicle wear: based on the *current* tile (post-movement) since that's
   // where the caravan finishes the day.
-  const finalTile = grid.get(c.position);
   const wearAccrued =
     finalTile !== undefined
       ? wearForToday(finalTile.terrain, finalTile.road, season)

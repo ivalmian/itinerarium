@@ -5,7 +5,13 @@ import { siteSettlements, type SettlementSite } from './settlements.js';
 import { seedCaravans } from './seedCaravans.js';
 import { createReputationTable } from '../sim/reputation/table.js';
 import { createGrid } from '../sim/world/grid.js';
-import { type Day } from '../sim/types.js';
+import { createSettlement } from '../sim/world/settlement.js';
+import { createActor } from '../sim/politics/actor.js';
+import { hex } from '../sim/world/hex.js';
+import { actorId, resourceId, settlementId, type Day } from '../sim/types.js';
+import { dailyCrewRationKg, totalCargoWeightKg, totalCarryKg } from '../sim/caravan/caravan.js';
+import { MAX_ACTIVE_WORLD_CARAVANS } from '../sim/caravan/limits.js';
+import { getResource } from '../sim/resources/catalog.js';
 
 const buildWorld = (worldSeed: string, terrainSeed = 'world-terrain'): WorldState => {
   const grid = generateTerrain({
@@ -54,15 +60,16 @@ describe('seedCaravans — empty world', () => {
 });
 
 describe('seedCaravans — basic seeding', () => {
-  it('creates roughly one caravan per settlement by default', () => {
+  it('creates a bounded standing fleet by default', () => {
     const w = buildWorld('basic');
     const settlementCount = w.settlements.size;
     expect(settlementCount).toBeGreaterThan(0);
     seedCaravans({ seed: 'basic-cs', world: w });
-    // Default is ~1 per settlement, but we cap per-owner at 3 and need
-    // suitable owners — so accept a wide band rather than equality.
+    // The default warm-start is a province-scale standing fleet, not one
+    // random caravan per generated settlement.
     expect(w.caravans.size).toBeGreaterThan(0);
-    expect(w.caravans.size).toBeLessThanOrEqual(settlementCount);
+    expect(w.caravans.size).toBeLessThanOrEqual(80);
+    expect(w.caravans.size).toBeLessThan(settlementCount);
   });
 
   it('honors totalCaravans', () => {
@@ -70,6 +77,69 @@ describe('seedCaravans — basic seeding', () => {
     seedCaravans({ seed: 'total-cs', world: w, totalCaravans: 4 });
     expect(w.caravans.size).toBeLessThanOrEqual(4);
     expect(w.caravans.size).toBeGreaterThan(0);
+  });
+
+  it('caps explicit top-ups at the province active-caravan ceiling', () => {
+    const w = buildEmptyWorld();
+    for (let i = 0; i < 140; i++) {
+      const sId = settlementId(`cap-settlement-${i}`);
+      const ownerId = actorId(`cap-family-${i}`);
+      const h = hex(i, 0);
+      const s = createSettlement({
+        id: sId,
+        tier: i % 12 === 0 ? 'small_city' : 'village',
+        name: `Cap Settlement ${i}`,
+        anchor: h,
+        urbanHexes: [h],
+        catchmentHexes: [],
+      });
+      s.stockpileOwners.push(ownerId);
+      const owner = createActor({
+        id: ownerId,
+        kind: 'patrician_family',
+        name: `Cap Family ${i}`,
+        homeSettlement: sId,
+        treasury: 5_000,
+      });
+      w.settlements.set(sId, s);
+      w.actors.set(ownerId, owner);
+    }
+
+    seedCaravans({
+      seed: 'explicit-cap-cs',
+      world: w,
+      totalCaravans: 500,
+      shareOwnedByFamilies: 1,
+      shareOwnedByMerchantHouses: 0,
+      shareOwnedByGovernor: 0,
+    });
+
+    expect(w.caravans.size).toBe(MAX_ACTIVE_WORLD_CARAVANS);
+  });
+
+  it('fills up to the requested total instead of appending another warm-start batch', () => {
+    const w = buildWorld('reentry');
+    seedCaravans({ seed: 'reentry-cs', world: w, totalCaravans: 8 });
+    expect(w.caravans.size).toBeGreaterThan(0);
+    expect(w.caravans.size).toBeLessThanOrEqual(8);
+
+    const firstIds = Array.from(w.caravans.keys()).map(String).sort();
+    const firstSize = w.caravans.size;
+    seedCaravans({ seed: 'reentry-cs', world: w, totalCaravans: firstSize });
+
+    expect(w.caravans.size).toBe(firstSize);
+    expect(Array.from(w.caravans.keys()).map(String).sort()).toEqual(firstIds);
+  });
+
+  it('does not re-run the default warm-start on a world that already has caravans', () => {
+    const w = buildWorld('default-reentry');
+    seedCaravans({ seed: 'default-reentry-cs', world: w });
+    expect(w.caravans.size).toBeGreaterThan(0);
+
+    const firstIds = Array.from(w.caravans.keys()).map(String).sort();
+    seedCaravans({ seed: 'default-reentry-cs', world: w });
+
+    expect(Array.from(w.caravans.keys()).map(String).sort()).toEqual(firstIds);
   });
 });
 
@@ -114,6 +184,21 @@ describe('seedCaravans — caravan validity', () => {
       }
       expect(animalCount).toBeGreaterThan(0);
       expect(c.cargo.size).toBeGreaterThan(0);
+    }
+  });
+
+  it('seeds enough grain for the initial 21-day ration reserve when capacity allows', () => {
+    const w = buildWorld('rations');
+    seedCaravans({ seed: 'rations-cs', world: w });
+    const grain = resourceId('food.grain');
+    const grainWeightKg = getResource(grain).weightKgPerUnit;
+    for (const c of w.caravans.values()) {
+      expect(totalCargoWeightKg(c)).toBeLessThanOrEqual(totalCarryKg(c) + 1e-9);
+      const grainKg = (c.cargo.get(grain) ?? 0) * grainWeightKg;
+      const targetKg = dailyCrewRationKg(c) * 21;
+      if (targetKg <= totalCarryKg(c)) {
+        expect(grainKg).toBeGreaterThanOrEqual(targetKg - 1e-9);
+      }
     }
   });
 
@@ -185,6 +270,34 @@ describe('seedCaravans — owner mix', () => {
     }
     expect(houses).toBeGreaterThan(0);
   });
+
+  it('registers city-based merchant houses as stockpile owners at their home market', () => {
+    const w = buildWorld('house-stockpile-owner');
+    seedCaravans({
+      seed: 'house-stockpile-owner-cs',
+      world: w,
+      totalCaravans: 12,
+      shareOwnedByFamilies: 0,
+      shareOwnedByMerchantHouses: 1,
+      shareOwnedByGovernor: 0,
+    });
+
+    const merchantHouseIds = new Set(
+      Array.from(w.caravans.values())
+        .map((c) => c.ownerActor)
+        .filter((ownerId) => w.actors.get(ownerId)?.kind === 'off_map_house'),
+    );
+
+    expect(merchantHouseIds.size).toBeGreaterThan(0);
+    for (const ownerId of merchantHouseIds) {
+      const owner = w.actors.get(ownerId);
+      expect(owner?.homeSettlement).toBeDefined();
+      const home =
+        owner?.homeSettlement === undefined ? undefined : w.settlements.get(owner.homeSettlement);
+      expect(home).toBeDefined();
+      expect(home?.stockpileOwners).toContain(ownerId);
+    }
+  });
 });
 
 describe('seedCaravans — per-owner cap', () => {
@@ -199,6 +312,32 @@ describe('seedCaravans — per-owner cap', () => {
     for (const n of byOwner.values()) {
       expect(n).toBeLessThanOrEqual(3);
     }
+  });
+
+  it('counts already-seeded caravans toward the per-owner cap on top-up calls', () => {
+    const w = buildWorld('cap-reentry');
+    seedCaravans({
+      seed: 'cap-reentry-cs',
+      world: w,
+      totalCaravans: 3,
+      shareOwnedByFamilies: 0,
+      shareOwnedByMerchantHouses: 0,
+      shareOwnedByGovernor: 1,
+    });
+    const firstSize = w.caravans.size;
+    expect(firstSize).toBeGreaterThan(0);
+    expect(firstSize).toBeLessThanOrEqual(3);
+
+    seedCaravans({
+      seed: 'cap-reentry-cs',
+      world: w,
+      totalCaravans: 10,
+      shareOwnedByFamilies: 0,
+      shareOwnedByMerchantHouses: 0,
+      shareOwnedByGovernor: 1,
+    });
+
+    expect(w.caravans.size).toBe(firstSize);
   });
 });
 

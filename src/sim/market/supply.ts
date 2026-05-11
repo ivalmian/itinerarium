@@ -3,25 +3,27 @@
  * SupplySource — a step function with quantity 0 below the reservation
  * price and `availableToSell` at or above it.
  *
- * Source: docs/08-money-and-trade.md "Supply: how it forms".
+ * Source: docs/08-money-and-trade.md "Modern microeconomic pricing" and
+ * "Supply: how it forms".
  *
  * Reservation price (locked):
  *
  *   raw = max(productionCost, expectedFuturePrice)
- *   reservation = raw / (1 + ownerUrgencyFactor + spoilagePressure)
+ *   urgencyAdjusted = raw / (1 + ownerUrgencyFactor + spoilagePressure)
+ *   reservation = max(productionCost, minimumReservationPrice, urgencyAdjusted)
  *
  *   spoilagePressure (perishables only):
  *     when spoilageDaysRemaining < storageHoldingDays:
  *       1 - spoilageDaysRemaining / storageHoldingDays   ∈ (0, 1]
  *     otherwise: 0
  *
- * The doc writes spoilage as a discount on the future-price term and
- * urgency as a divisor; here we fold spoilage into the urgency divisor
- * because both have the same emergent meaning ("dump it cheaper, fast")
- * and folding keeps the formula uniform. The two formulations agree at
- * the limits (no spoilage / full spoilage) and the docs are explicit
- * that the structural property — "near-spoilage lowers reservation" —
- * matters more than the exact algebra.
+ * In modern terms, this is an owner-specific ask price: productionCost is
+ * the marginal-cost floor, expectedFuturePrice is the opportunity cost of
+ * holding inventory, and the divisor models liquidity pressure and spoilage
+ * pressure lowering the owner's ask. The floor prevents a desperate
+ * non-perishable seller from destroying the local price signal by selling
+ * below marginal/salvage value; urgency discounts the opportunity premium,
+ * not the physical cost floor.
  *
  * "Patrician hoarder" emerges naturally: ownerUrgencyFactor=0 and a
  * high expectedFuturePrice keeps the reservation high; "poor seller"
@@ -44,6 +46,7 @@ export interface OwnerSupplyOpts {
   readonly stockpile: number;
   readonly reservedForOwnUse: number;
   readonly productionCost: number;
+  readonly minimumReservationPrice?: number;
   readonly expectedFuturePrice: number;
   /**
    * Days of spoilage remaining for the stockpile, only meaningful for
@@ -91,7 +94,9 @@ export const ownerSupply = (opts: OwnerSupplyOpts): SupplySource => {
     opts.storageHoldingDays,
   );
   const divisor = 1 + Math.max(0, opts.ownerUrgencyFactor) + spoilagePressure;
-  const reservationPrice = divisor > 0 ? raw / divisor : raw;
+  const urgencyAdjusted = divisor > 0 ? raw / divisor : raw;
+  const floor = Math.max(0, opts.productionCost, opts.minimumReservationPrice ?? 0);
+  const reservationPrice = Math.max(floor, urgencyAdjusted);
   return {
     id,
     ownerActor: opts.ownerActor,

@@ -125,7 +125,10 @@ viewer keeps the unfinished route tail and appends the next emitted
 path instead of replacing it with a straight catch-up segment. The sim
 state remains authoritative; the visual layer may trail it slightly
 rather than snapping units across the map or making existing caravans
-look like random new spawns.
+look like random new spawns. If high-speed burn-in builds a long visual
+backlog, the renderer drains the queued route at a bounded wall-clock
+speed and caps per-frame catch-up distance; it must degrade by trailing,
+not by teleporting.
 
 Caravans carrying bandit-stolen cargo have a red outline.
 

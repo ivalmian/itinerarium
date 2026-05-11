@@ -18,24 +18,30 @@ ROI, and political dimensions (who decides? Who pays?) that
 needed the rest of the politics layer to land first.
 
 **Realistic:** every season, each settlement's stockpile-owning
-actors look at observed market prices (their `priceBook`) vs. the
-recipes their existing buildings could run. If a recipe is
-profitable AND the actor has the treasury for the building cost,
-they invest in adding capacity (or a new building of that type).
+investor looks at observed market prices vs. recipe input costs. If a
+recipe is profitable and the actor has the required construction
+materials in stockpile, they commit those materials to adding capacity
+(or a new building of that type). This is capital allocation, not magic
+spawning: mines need matching local deposits, and ore refineries need
+local ore stock or a deposit-backed mine already present/under
+construction.
 
 **Current implementation:**
+
 1. Each season-end (90-day boundary), in `politicsPhase`, for each
-   actor with `kind ∈ {patrician_family, free_village,
-   city_corporation, governor_office, hamlet_household}`:
+   settlement's richest investor with `kind ∈ {patrician_family,
+free_village, city_corporation, governor_office, hamlet_household}`:
    a. For each recipe in the catalog, compute expected daily
-      profit at last-observed input + output prices.
+   profit at last-observed input + output prices.
    b. Pick the most profitable recipe whose building isn't already
-      saturated locally.
-   c. If treasury ≥ building cost AND expected profit / building
-      cost > 0.005/day: invest. Treasury decreases by cost;
-      `pendingBuilding` is added at a free urban or catchment hex.
-      The building becomes productive only after construction
-      worker-days complete.
+   saturated locally and whose resource gates are satisfiable.
+   c. If the investor has the construction materials and expected
+   profit / local material opportunity cost > 0.005/day: invest.
+   Construction materials leave the actor stockpile; a
+   `pendingBuilding` is added at a free urban or catchment hex. Mine
+   placement must be on a matching finite deposit, including rugged
+   mountain deposits. The building becomes productive only after
+   construction worker-days complete.
 2. Building costs live in `src/sim/buildings/catalog.ts`; docs/08
    describes the current construction semantics.
 3. Cap investment at 1 building per actor per season to prevent
@@ -50,32 +56,30 @@ a new `building_invested` TickEvent.
 investment", `docs/03-production.md`, `docs/08-money-and-trade.md`
 (price observation).
 
-## C5 — Bootstrap stockpile final reduction [TODO]
+## C5 — Bootstrap stockpile final reduction (landed)
 
-**Current cushion:** `GRAIN_DAYS_OF_RESERVE` is now 180 days (down from
-the original 365). Wood + tools bootstrap remain high
-(pop*5 wood, pop*20 tools).
+**v1.5 — landed.** `GRAIN_DAYS_OF_RESERVE` is now 30 days. Starter
+wood is about 7 days of subsistence fuel (`0.001 cord/adult/day`),
+with small minimum buffers for tiny settlements. Starter tools are
+`0.2` tool units per capita, again with small settlement minimums.
 
-**Why this is still a hack:** ideally seed bootstrap = ~30 days of
-grain + ~7 days of tools/wood. We can't reduce further yet because
-the worker reallocation hook (C6) takes ~8%/yr to migrate workers
-into bottlenecked roles, and dynamic settlement investment (C4)
-now adds capacity over seasons rather than within the first
-bootstrap month. Cities still need enough initial slack for
-foresters / smithies / mills to converge.
+**Why:** the previous `pop*20` tool grant created millions of tools
+before the economy ran. That flattened tool prices and made smithing
+look irrelevant. The reduced reserve is still enough for the current
+tool-wear ratios to bridge early burn-in, but forces tools and fuel to
+come from actual production, local trade, and caravans within the first
+season.
 
-**Realistic:** seed bootstrap = ~30 days of grain + ~7 days of
-tools/wood. Forces production to come online within the first
-month. Requires:
-- C4 (dynamic investment) so cities self-correct capacity gaps
-- Faster C6 reallocation (or a smarter initial allocation at
-  procgen) so labor isn't permanently mismatched
+**Remaining risk:** if a seed lacks enough forester/smith capacity or
+labor, the market should show that as real wood/tool scarcity rather
+than hiding it behind bootstrap stock.
 
 **TODO implementation:**
+
 1. Drop `GRAIN_DAYS_OF_RESERVE` to 30.
 2. Drop `pop * 5` wood seed → `pop * 0.5`.
 3. Drop `pop * 20` tools seed → `pop * 1`.
-4. Run burn-in. If it fails, the issue is *upstream*: not enough
+4. Run burn-in. If it fails, the issue is _upstream_: not enough
    buildings being built fast enough by C4.
 
 **Acceptance:** burn-in passes the 10-year watchdog with the
@@ -96,7 +100,9 @@ realistic recipe ratios (C2) AND the reduced bootstrap.
    under-staffing; with C6's `jobAllocations` driving the
    production engine, role mismatches surface as
    `recipe_blocked(reason='labor')` and the monthly hook nudges
-   workers — but at ~8%/yr that's slow.
+   workers. The current hook moves roughly 8%/month using both blocked
+   events and local price-profit signals, so convergence is gradual but
+   burn-in-visible.
 
 So C5-final waits for either: (a) C4-built buildings to
 accumulate over years AND C6 to converge on the right
@@ -123,6 +129,7 @@ target) remains.
 its own hex with no neighbors of the same type sharing it.
 
 **v1.5 — landed:**
+
 1. ✅ Procgen `siteSettlements`: applies a 3x village + 5x hamlet
    disaggregation factor so caller-requested counts (which were
    "aggregated entities" in old units) translate to one entity per
@@ -131,13 +138,13 @@ its own hex with no neighbors of the same type sharing it.
 2. ✅ Multiple `SettlementSite`s may share a hex: hamlets stack on
    a village or another hamlet, capped at `MAX_SAMEHEX_HAMLETS = 5`.
    Hamlet scoring biases toward same-hex / adjacent-to-village
-   placements (the *pagus* pattern).
+   placements (the _pagus_ pattern).
 3. ✅ Catchment arbitration: same-hex settlements share the urban
    hex; `orderSitesForCatchment` extends the kind-order with a
    descending-population tiebreak so the bigger village runs first
    through `computeCatchment`'s closer-wins rule. Same-hex hamlets
    get whatever isn't already claimed (often empty in the inner
-   ring of a *pagus*).
+   ring of a _pagus_).
 4. ✅ `claimVillageHexes` no longer overwrites a larger-tier
    settlement's urban-hex ownership.
 5. ✅ Same-hex 0-tick movement short-circuit in `tickCaravanMovement`
@@ -146,6 +153,7 @@ its own hex with no neighbors of the same type sharing it.
    `src/sim/reputation/newsMovement.test.ts`.
 
 **Still open:**
+
 - [TODO] Performance: `tickPhase` per-settlement loops are tolerable at
   ~341 entities (60-100 ms/tick) but become hot paths at the full
   500×500 / 3,000-8,000 entity target. A settlements-by-hex index
@@ -174,13 +182,17 @@ right would have made debugging harder.
 1. When `investmentPhase` decides to build, deduct
    `constructionCost` resources AND add a `pendingBuilding` record
    on the settlement: `{ buildingId, hex, ownerActor, beganOnDay,
-   workerDaysRemaining }`.
+workerDaysRemaining }`.
 2. Each tick, after production, the construction phase consumes
    construction worker-days derived from `mason` + `carpenter`
    allocations toward
    pending buildings (proportional to how many people are
-   assigned). When `workerDaysRemaining ≤ 0`, the building is
-   added via `addBuilding` and the pending record is removed.
+   assigned). The owner pays free/paid worker-days at the local
+   subsistence-basket reservation wage, moving coin to local worker
+   households. Enslaved construction worker-days advance the project
+   without a cash wage, while still requiring owner-funded upkeep.
+   When `workerDaysRemaining ≤ 0`, the building is added via
+   `addBuilding` and the pending record is removed.
 3. While pending, the building doesn't produce.
 4. [TODO] Demolition is symmetric: removes the building over ~10-20% of
    construction time, returns ~50% of materials.
@@ -223,9 +235,15 @@ present) above their per-resource cap (or wildcard pool aggregate)
 spoil at 0.2%/day proportionally across owners. Hard goods (iron,
 tools, cut stone, weapons) NEVER spoil.
 
-365-day grace period: bootstrap stockpiles (90 days of grain in
-a 30k city = 161k modii vs. one granary's 5k cap) consume
-naturally before the cap kicks in.
+Short-lived perishables with `perishableDays <= 14` also spoil
+naturally from day 0 using a first-order daily fraction
+`1 - exp(-1 / perishableDays)`. This covers grapes, olives, bread,
+milk, fish, game, and hides: they must sell, process, or rot even
+during bootstrap.
+
+365-day grace period: longer-lived bootstrap stockpiles (for example
+flour, cheese, salted fish, salted meat) consume naturally before the
+capacity-overflow cap kicks in.
 
 New `storage_spoilage` TickEvent.
 
@@ -250,6 +268,7 @@ round's clearing prices fall → derived input demand falls.
 (every 91 days) `roadMaintenancePhase` runs:
 
 For each Roman-road hex:
+
 - If governor.treasury ≥ 0.1 coin → drain it, reset counter to 0.
 - Else → increment counter. After 4 consecutive missed quarters
   (~1 year), the hex demotes to `road = 'dirt'` (with `roadWear`
@@ -274,9 +293,10 @@ per recipe-instance (was: cheese: 8 directly). `make_cheese`
 consumes milk: 60 + salt: 0.5 → cheese: 6 (historical ~10 kg
 milk per kg hard cheese). Surrounding villages can now sell
 daily milk to neighboring cheesemaking towns through the local-
-trade phase.
+trade phase. Pasture/dairy `requires` also create productive-capital
+demand: a dairy short of cattle bids for herd stock as a real owned
+asset before it can produce the milk stream.
 
-**Decision needed:** promote `food.milk` to a Tier 0/1 resource
 **Cross-refs:** `docs/02-resources.md` `food.milk` + `food.cheese`,
 `docs/03-production.md` `milk_dairy` + `make_cheese`.
 
@@ -386,6 +406,7 @@ procgen (Phase 12); auto-enrolls local patrician families + the
 city corporation as members.
 
 Tick-loop wiring:
+
 1. On caravan arrival, `syncCaravanWithLocalGuild` deposits the
    caravan's recent priceBook entries into the owner-guild's ledger
    AND reads freshest collective entries back into the priceBook
@@ -425,6 +446,7 @@ goal types are placeholders for future engine wiring.
 
 C4 dynamic investment and C8 construction time are landed. Remaining
 order:
+
 - Finish C9's performance follow-up (settlements-by-hex index).
 - Reduce C5 bootstrap stockpiles after burn-in stays stable without
   the cushion.
@@ -450,14 +472,28 @@ order:
 - ✅ C5 (partial) — Grain reserve halved (365 → 180 days). Full
   reduction deferred per above.
 - ✅ C6 — Worker reallocation by demand: `Settlement.jobAllocations`
-  drives `laborAvailableInSettlement`; monthly hook reallocates
-  ~0.66% of workers per month based on `recipe_blocked` events.
+  drives per-job/per-class labor pools; the tick derives class mix from
+  allowed classes and owner command rights so slave-excluded roles
+  cannot be staffed by slave adults, and common/merchant actors cannot
+  treat another actor's slaves as free labor. The monthly hook
+  reallocates ~8% of workers per month across blocked and profitable
+  price-signaled roles.
 - ✅ C8 — Construction time + labor cost: investments create
   `pendingBuilding` records that consume worker-days before becoming
   productive. Demolition remains [TODO].
+- ✅ C9/C12 economics correction — Production now ranks recipes by
+  local marginal value, runs a two-pass daily planner so downstream
+  high-value goods can claim scarce labor, and keeps per-building
+  installed `maxCapacity` instead of resetting starter estates to the
+  catalog default. Procgen also seeds rural wine/oil, textile,
+  tanning, pottery, tailoring, and prior-vintage market inventories so
+  spring day 0 is not an artificial empty-warehouse shock. Labor cost is
+  owner-sensitive and paid from the actual class mix consumed by a recipe
+  run.
 - ✅ C10 — Storage capacity discipline: per-resource cap enforced
-  every tick after production; overflow forced-sold at spoilage
-  floor (0.5 × baseline) with a `storage_overflow` event.
+  every tick after production; perishable overflow gently spoils after
+  the bootstrap grace period instead of being force-sold. Hard goods do
+  not spoil.
 - ✅ C11 — Roman-road maintenance cost: governor pays
   0.1 coin + 0.01 cut_stone per Roman hex per quarter; missed
   quarters accumulate; after 4 missed quarters the hex demotes

@@ -3,10 +3,10 @@
  *
  * `seedWorld` (T26) leaves `world.caravans` empty, so a fresh burn-in
  * starts with zero commerce on the road. This module gives the world a
- * warm-start: pick N caravans and place them at sensible origins with
- * planned destinations and small starter cargo. Burn-in then has actual
- * trade flowing from day 1 instead of needing weeks of in-sim time for
- * caravans to spawn organically.
+ * warm-start: fill the world up to a bounded standing-fleet target and place
+ * those caravans at sensible origins with planned destinations and small
+ * starter cargo. Burn-in then has actual trade flowing from day 1 without
+ * injecting one random caravan per generated settlement on large maps.
  *
  * What we do NOT do here:
  *   - Drain origin stockpiles. Cargo is fabricated from thin air (a
@@ -18,6 +18,12 @@
  *     is a random *other* settlement, biased toward closer ones so we get
  *     short intra-cluster runs rather than every caravan trying to cross
  *     the map. The NPC AI tick will replace these routes once they arrive.
+ *
+ * Re-entry rule: the default warm-start is a one-shot no-op on worlds that
+ * already have caravans. Callers that explicitly pass `totalCaravans` can
+ * top up to that target total, but existing caravans still count toward
+ * both the target and each owner's cap. This prevents viewer/debug
+ * warm-start code from accidentally injecting another full random batch.
  *
  * Determinism: every random pick flows through `Rng.derive(label)`. Same
  * `(seed, world)` → same caravans.
@@ -32,18 +38,29 @@ import {
   actorId,
   caravanId,
   resourceId,
+  type ActorId,
   type CaravanId,
   type Position,
   type ResourceId,
   type SettlementId,
 } from '../sim/types.js';
 import { createActor, type Actor } from '../sim/politics/actor.js';
-import { createCaravan, type Caravan, type CrewKind, type CrewMember } from '../sim/caravan/caravan.js';
+import { MAX_ACTIVE_WORLD_CARAVANS } from '../sim/caravan/limits.js';
+import {
+  createCaravan,
+  dailyCarriedFoodReserveKg,
+  totalCargoWeightKg,
+  totalCarryKg,
+  type Caravan,
+  type CrewKind,
+  type CrewMember,
+} from '../sim/caravan/caravan.js';
 import {
   drawDemographicsFromPool,
   ROLE_BIASES,
   type RoleBias,
 } from '../sim/population/demographics.js';
+import { getResource } from '../sim/resources/catalog.js';
 import { hexDistance, hexEquals, type Hex } from '../sim/world/hex.js';
 import type { Settlement } from '../sim/world/settlement.js';
 import type { WorldState } from './seed.js';
@@ -52,9 +69,9 @@ export interface SeedCaravansOpts {
   readonly seed: string;
   readonly world: WorldState;
   /**
-   * Total caravans to attempt to seed. Defaults to roughly 1 per
-   * settlement. The actual count may be lower if eligible owners are
-   * scarce or the per-owner cap kicks in.
+   * Total caravans to attempt to seed. Defaults to a bounded standing-fleet
+   * target, not one per settlement. The actual count may be lower if eligible
+   * owners are scarce or the per-owner cap kicks in.
    */
   readonly totalCaravans?: number;
   /** Default 0.7. */
@@ -67,6 +84,9 @@ export interface SeedCaravansOpts {
 
 const PER_OWNER_CAP = 3;
 const MIN_DESTINATION_HEX_DISTANCE = 1;
+const DEFAULT_WARM_START_PER_SETTLEMENT = 0.25;
+const DEFAULT_WARM_START_MIN = 4;
+const DEFAULT_WARM_START_MAX = 80;
 
 type OwnerKindShare = 'family' | 'merchant_house' | 'governor';
 
@@ -103,6 +123,15 @@ const allFamilies = (world: WorldState): Actor[] => {
     if (a.kind === 'patrician_family' && a.homeSettlement !== undefined) {
       out.push(a);
     }
+  }
+  return out;
+};
+
+const countExistingCaravansByOwner = (world: WorldState): Map<string, number> => {
+  const out = new Map<string, number>();
+  for (const c of world.caravans.values()) {
+    const ownerKey = String(c.ownerActor);
+    out.set(ownerKey, (out.get(ownerKey) ?? 0) + 1);
   }
   return out;
 };
@@ -170,15 +199,21 @@ const pickDestination = (
   return { settlement: last.settlement, hex: last.settlement.anchor };
 };
 
-const STARTER_CARGO_OPTIONS: readonly { resource: ResourceId; minUnits: number; maxUnits: number }[] =
-  [
-    { resource: resourceId('food.grain'), minUnits: 5, maxUnits: 20 },
-    { resource: resourceId('food.wine'), minUnits: 2, maxUnits: 8 },
-    { resource: resourceId('food.olive_oil'), minUnits: 2, maxUnits: 6 },
-    { resource: resourceId('material.pottery'), minUnits: 2, maxUnits: 6 },
-    { resource: resourceId('goods.cloth'), minUnits: 2, maxUnits: 5 },
-    { resource: resourceId('goods.tools'), minUnits: 1, maxUnits: 3 },
-  ];
+const STARTER_CARGO_OPTIONS: readonly {
+  resource: ResourceId;
+  minUnits: number;
+  maxUnits: number;
+}[] = [
+  { resource: resourceId('food.grain'), minUnits: 5, maxUnits: 20 },
+  { resource: resourceId('food.wine'), minUnits: 2, maxUnits: 8 },
+  { resource: resourceId('food.olive_oil'), minUnits: 2, maxUnits: 6 },
+  { resource: resourceId('material.pottery'), minUnits: 2, maxUnits: 6 },
+  { resource: resourceId('goods.cloth'), minUnits: 2, maxUnits: 5 },
+  { resource: resourceId('goods.tools'), minUnits: 1, maxUnits: 3 },
+];
+
+const STARTER_RATION_DAYS = 21;
+const STARTER_RATION_RESOURCE = resourceId('food.grain');
 
 const buildStarterCargo = (rng: Rng): Map<ResourceId, number> => {
   const cargo = new Map<ResourceId, number>();
@@ -192,6 +227,40 @@ const buildStarterCargo = (rng: Rng): Map<ResourceId, number> => {
     cargo.set(opt.resource, qty);
   }
   return cargo;
+};
+
+const addStarterRations = (caravan: Caravan): void => {
+  const grain = getResource(STARTER_RATION_RESOURCE);
+  if (grain.weightKgPerUnit <= 0) return;
+  const targetUnits =
+    (dailyCarriedFoodReserveKg(caravan) * STARTER_RATION_DAYS) / grain.weightKgPerUnit;
+  const current = caravan.cargo.get(STARTER_RATION_RESOURCE) ?? 0;
+  if (current < targetUnits) caravan.cargo.set(STARTER_RATION_RESOURCE, targetUnits);
+};
+
+const trimStarterCargoToCapacity = (caravan: Caravan): void => {
+  let excessKg = totalCargoWeightKg(caravan) - totalCarryKg(caravan);
+  if (excessKg <= 1e-9) return;
+
+  for (const [resource, qty] of Array.from(caravan.cargo.entries())) {
+    if (resource === STARTER_RATION_RESOURCE) continue;
+    const weightKgPerUnit = getResource(resource).weightKgPerUnit;
+    if (weightKgPerUnit <= 0 || qty <= 0) continue;
+    const removeQty = Math.min(qty, excessKg / weightKgPerUnit);
+    const remaining = qty - removeQty;
+    if (remaining > 1e-9) caravan.cargo.set(resource, remaining);
+    else caravan.cargo.delete(resource);
+    excessKg -= removeQty * weightKgPerUnit;
+    if (excessKg <= 1e-9) return;
+  }
+
+  const grainQty = caravan.cargo.get(STARTER_RATION_RESOURCE) ?? 0;
+  if (grainQty <= 0 || excessKg <= 1e-9) return;
+  const grainWeightKg = getResource(STARTER_RATION_RESOURCE).weightKgPerUnit;
+  const removeGrainQty = Math.min(grainQty, excessKg / grainWeightKg);
+  const remainingGrain = grainQty - removeGrainQty;
+  if (remainingGrain > 1e-9) caravan.cargo.set(STARTER_RATION_RESOURCE, remainingGrain);
+  else caravan.cargo.delete(STARTER_RATION_RESOURCE);
 };
 
 const CREW_ROLE_BIAS: Record<CrewKind, RoleBias> = {
@@ -213,7 +282,7 @@ const CREW_ROLE_BIAS: Record<CrewKind, RoleBias> = {
 const buildStarterCrew = (rng: Rng, origin: Settlement): CrewMember[] => {
   const merchantCount = 1;
   const droverCount = rng.int(2, 4);
-  const guardCount = rng.int(1, 3);
+  const guardCount = rng.int(3, 5);
   const pool = origin.population;
   const mk = (kind: CrewKind, count: number, weapons: number, armor: number): CrewMember => ({
     kind,
@@ -230,7 +299,7 @@ const buildStarterCrew = (rng: Rng, origin: Settlement): CrewMember[] => {
   return [
     mk('merchant', merchantCount, 0, 0),
     mk('drover', droverCount, 0, 0),
-    mk('caravan_guard', guardCount, 0.4, 0.2),
+    mk('caravan_guard', guardCount, 0.6, 0.4),
   ];
 };
 
@@ -278,10 +347,16 @@ const pickGovernorOwner = (world: WorldState): OwnerSlot | undefined => {
   return { actor: gov, origin: home };
 };
 
+const ensureSettlementStockpileOwner = (settlement: Settlement, actor: ActorId): void => {
+  if (!settlement.stockpileOwners.includes(actor)) settlement.stockpileOwners.push(actor);
+};
+
 /**
  * Spawn (or re-use) a synthetic off_map_house actor. Each new house picks
  * a random city as its on-map base; this gives merchant houses an actual
- * place to operate from instead of being floating refs.
+ * place to operate from instead of being floating refs. City-based merchant
+ * houses are also local stockpile owners so they can buy pack animals and
+ * carts through the same market as every other actor.
  */
 const ensureMerchantHouseOwner = (
   rng: Rng,
@@ -298,6 +373,7 @@ const ensureMerchantHouseOwner = (
     if (house.homeSettlement === undefined) return undefined;
     const home = settlementById(world, house.homeSettlement);
     if (home === undefined) return undefined;
+    ensureSettlementStockpileOwner(home, house.id);
     return { actor: house, origin: home };
   }
   const homeCity = cs[rng.int(0, cs.length - 1)] as Settlement;
@@ -312,11 +388,17 @@ const ensureMerchantHouseOwner = (
     treasury: rng.int(1000, 5000),
   });
   world.actors.set(aId, actor);
+  ensureSettlementStockpileOwner(homeCity, actor.id);
   spawnedHouses.push(actor);
   return { actor, origin: homeCity };
 };
 
 const cloneHex = (h: Hex): Position => ({ q: h.q, r: h.r });
+
+const defaultWarmStartTarget = (settlementCount: number): number => {
+  const raw = Math.floor(settlementCount * DEFAULT_WARM_START_PER_SETTLEMENT);
+  return Math.max(DEFAULT_WARM_START_MIN, Math.min(DEFAULT_WARM_START_MAX, raw));
+};
 
 const buildOneCaravan = (
   rng: Rng,
@@ -339,11 +421,13 @@ const buildOneCaravan = (
     crew: buildStarterCrew(rng.derive('crew'), owner.origin),
     animals: buildStarterAnimals(rng.derive('animals')),
     vehicles: { pack_saddle: 1 },
-    treasury: rng.int(50, 500),
+    treasury: rng.int(250, 1000),
   });
   for (const [res, qty] of buildStarterCargo(rng.derive('cargo'))) {
     caravan.cargo.set(res, qty);
   }
+  addStarterRations(caravan);
+  trimStarterCargoToCapacity(caravan);
   return caravan;
 };
 
@@ -360,17 +444,27 @@ export const seedCaravans = (opts: SeedCaravansOpts): void => {
   if (!haveFamily && !haveGov && !haveCity) return;
 
   const rng = createRng(opts.seed).derive('caravans');
-  const target = Math.max(0, Math.floor(opts.totalCaravans ?? settlementCount));
-  if (target === 0) return;
+  const explicitTarget = opts.totalCaravans !== undefined;
+  if (!explicitTarget && world.caravans.size > 0) return;
+
+  const requestedTarget = Math.max(
+    0,
+    Math.floor(opts.totalCaravans ?? defaultWarmStartTarget(settlementCount)),
+  );
+  const targetTotal = Math.min(MAX_ACTIVE_WORLD_CARAVANS, requestedTarget);
+  if (targetTotal === 0 || world.caravans.size >= targetTotal) return;
 
   const shares = computeShares(opts);
-  const caravansByOwner = new Map<string, number>();
-  const spawnedHouses: Actor[] = [];
-  // Pre-seed the index counter from existing caravans (so re-runs append
-  // cleanly if a caller chains us after a prior seeding step).
+  const caravansByOwner = countExistingCaravansByOwner(world);
+  const spawnedHouses = Array.from(world.actors.values()).filter(
+    (a) => a.kind === 'off_map_house' && a.homeSettlement !== undefined,
+  );
+  // Pre-seed the index counter from existing caravans so any deliberate
+  // top-up uses fresh ids without turning a repeated warm-start into a
+  // discontinuous second fleet.
   let idx = world.caravans.size;
 
-  for (let i = 0; i < target; i++) {
+  for (let i = 0; i < targetTotal && world.caravans.size < targetTotal; i++) {
     const kind = pickByShare(rng.derive(`pick-${i}`), shares);
     let owner: OwnerSlot | undefined;
     switch (kind) {

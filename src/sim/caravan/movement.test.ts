@@ -3,7 +3,7 @@ import { createGrid, type HexGrid } from '../world/grid.js';
 import { hex, hexKey, type Hex } from '../world/hex.js';
 import type { HexTile } from '../world/terrain.js';
 import { actorId, caravanId, resourceId } from '../types.js';
-import { createCaravan, type Caravan } from './caravan.js';
+import { createCaravan, dailyCrewRationKg, type Caravan } from './caravan.js';
 import { tickCaravanMovement } from './movement.js';
 
 const tile = (overrides: Partial<HexTile> = {}): HexTile => ({
@@ -44,9 +44,8 @@ const muleCaravan = (start: Hex, dest: Hex | null = null, mules = 10): Caravan =
     animals: { mule: mules },
     vehicles: { pack_saddle: 1 },
   });
-  // Pre-load with rations and fodder so movement isn't immediately starvation-blocked.
+  // Pre-load with enough grain for crew rations plus carried animal feed.
   c.cargo.set(resourceId('food.grain'), 200);
-  c.cargo.set(resourceId('material.wood'), 0); // placeholder; real fodder in a sim would be its own resource
   return c;
 };
 
@@ -202,6 +201,29 @@ describe('tickCaravanMovement — consumption', () => {
     expect(c.health).toBeLessThan(before);
   });
 
+  it('offsets missing cargo rations with limited terrain forage', () => {
+    const g = createGrid();
+    fillRect(g, 0, 10, 0, 2, { terrain: 'plains', road: 'roman' });
+    const c = muleCaravan(hex(0, 0), hex(10, 0));
+    c.cargo.clear();
+
+    const result = tickCaravanMovement({ caravan: c, grid: g, season: 'summer', today: 0 });
+
+    expect(result.rationsConsumed).toBeGreaterThan(0);
+    expect(result.rationsConsumed).toBeLessThan(dailyCrewRationKg(c));
+    expect(result.events.some((e) => e.type === 'starvation_threshold')).toBe(true);
+  });
+
+  it('slowly recovers health on fully-fed days', () => {
+    const g = createGrid();
+    fillRect(g, 0, 10, 0, 2, { road: 'roman' });
+    const c = muleCaravan(hex(0, 0), hex(10, 0));
+    c.health = 0.5;
+    c.cargo.set(resourceId('food.grain'), 50);
+    tickCaravanMovement({ caravan: c, grid: g, season: 'summer', today: 0 });
+    expect(c.health).toBeCloseTo(0.51, 5);
+  });
+
   it('reports fodder consumption from animals', () => {
     const g = createGrid();
     fillRect(g, 0, 10, 0, 2, { road: 'roman' });
@@ -209,6 +231,37 @@ describe('tickCaravanMovement — consumption', () => {
     const result = tickCaravanMovement({ caravan: c, grid: g, season: 'summer', today: 0 });
     // 5 mules × 6 kg = 30 kg/day.
     expect(result.fodderConsumed).toBeCloseTo(30, 5);
+  });
+
+  it('supplements poor grazing with carried grain or legumes', () => {
+    const g = createGrid();
+    fillRect(g, 0, 10, 0, 2, { terrain: 'urban', road: 'roman' });
+    const c = muleCaravan(hex(0, 0), hex(10, 0), 5);
+    c.cargo.clear();
+    c.cargo.set(resourceId('food.bread'), 10);
+    c.cargo.set(resourceId('food.legumes'), 20);
+    const beforeLegumes = c.cargo.get(resourceId('food.legumes')) ?? 0;
+
+    const result = tickCaravanMovement({ caravan: c, grid: g, season: 'summer', today: 0 });
+
+    expect(result.fodderConsumed).toBeCloseTo(30, 5);
+    expect(c.cargo.get(resourceId('food.legumes')) ?? 0).toBeLessThan(beforeLegumes);
+    expect(result.events.some((e) => e.type === 'starvation_threshold')).toBe(false);
+  });
+
+  it('penalizes caravan health when animals cannot graze or draw carried feed', () => {
+    const g = createGrid();
+    fillRect(g, 0, 10, 0, 2, { terrain: 'urban', road: 'roman' });
+    const c = muleCaravan(hex(0, 0), hex(10, 0), 5);
+    c.cargo.clear();
+    c.cargo.set(resourceId('food.bread'), 10);
+    const beforeHealth = c.health;
+
+    const result = tickCaravanMovement({ caravan: c, grid: g, season: 'summer', today: 0 });
+
+    expect(result.fodderConsumed).toBe(0);
+    expect(result.events.some((e) => e.type === 'starvation_threshold')).toBe(true);
+    expect(c.health).toBeLessThan(beforeHealth);
   });
 
   it('accrues a small amount of vehicle wear per day', () => {

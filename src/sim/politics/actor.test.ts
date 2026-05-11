@@ -27,6 +27,7 @@ describe('ACTOR_KINDS', () => {
     const expected: readonly ActorKind[] = [
       'patrician_family',
       'free_village',
+      'common_household',
       'hamlet_household',
       'governor_office',
       'temple',

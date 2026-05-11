@@ -24,7 +24,12 @@ import type { Rng } from '../rng.js';
 import type { Position, Quantity, ResourceId, SettlementId } from '../types.js';
 import { hexDistance, hexEquals, hexKey, type Hex } from '../world/hex.js';
 import type { SettlementTier } from '../world/settlement.js';
-import { dailyAnimalFodderKg, dailyCrewRationKg, totalCarryKg, type Caravan } from './caravan.js';
+import {
+  dailyCarriedFoodReserveKg,
+  totalCarryKg,
+  totalCargoWeightKg,
+  type Caravan,
+} from './caravan.js';
 
 // --- Cost helpers -----------------------------------------------------------
 
@@ -34,12 +39,24 @@ const COIN_PER_KG_FOOD = 1;
 /** Wear amortization: per-day fixed maintenance cost. */
 const COIN_PER_DAY_WEAR = 0.5;
 
-/** Assumed average pace when estimating trip duration (hexes/day). */
-const ASSUMED_HEXES_PER_DAY = 18;
+/**
+ * Assumed average pace when estimating trip duration (hexes/day).
+ *
+ * Roads are endogenous and many early burn-in routes are off-road. With the
+ * v1.5 off-road multiplier, a laden mule caravan is closer to 5-7 hexes/day
+ * on unimproved ground than the older optimistic 18 hexes/day.
+ */
+const ASSUMED_HEXES_PER_DAY = 6;
 
 const estimateDays = (hexes: number): number => {
   if (hexes <= 0) return 0;
   return Math.max(1, Math.ceil(hexes / ASSUMED_HEXES_PER_DAY));
+};
+
+const cargoCanSurviveTrip = (resource: ResourceId, estimatedTripDays: number): boolean => {
+  const perishableDays = getResource(resource).perishableDays;
+  if (perishableDays === undefined) return true;
+  return estimatedTripDays <= perishableDays;
 };
 
 /** Continuous version used for cost so it scales smoothly with distance. */
@@ -53,7 +70,10 @@ export const travelCost = (caravan: Caravan, hexes: number): number => {
   // Round trip: a profit-seeking merchant has to come home (or at least
   // sustain itself for the return), so cost both ways.
   const days = continuousDays(hexes) * 2;
-  const dailyConsumption = dailyCrewRationKg(caravan) + dailyAnimalFodderKg(caravan);
+  // Match the actual provisioning model: crews eat carried food, but animals
+  // graze when possible and caravans carry a prudent fodder reserve rather
+  // than assuming every kilogram of daily fodder is bought as road cargo.
+  const dailyConsumption = dailyCarriedFoodReserveKg(caravan);
   const food = dailyConsumption * days * COIN_PER_KG_FOOD;
   const wear = days * COIN_PER_DAY_WEAR;
   return food + wear;
@@ -92,6 +112,25 @@ interface OriginDestObservation {
   originPrice: number;
   destPrice: number;
   spread: number;
+}
+
+export interface CargoPlanningConstraints {
+  /**
+   * Capacity to leave empty for known missing rations/fodder capacity. This is
+   * not current cargo; it is free space the merchant should not fill with trade
+   * goods because survival supplies still need it.
+   */
+  readonly reserveCapacityKg?: number;
+  /** Cash available for buying cargo after keeping survival reserves. */
+  readonly maxSpendCoin?: number;
+  /**
+   * When true, route evaluation also withholds the estimated trip operating
+   * cost from cargo spend. This keeps live merchants liquid enough to replace
+   * consumed rations/wear instead of turning every coin into speculative cargo.
+   */
+  readonly reserveTripOperatingCost?: boolean;
+  /** Locally available stock at the origin market, by resource. */
+  readonly originAvailableQuantity?: ReadonlyMap<ResourceId, Quantity>;
 }
 
 const observationsForRoute = (
@@ -152,12 +191,14 @@ const observationsByDestination = (
 const planCargo = (
   caravan: Caravan,
   observations: readonly OriginDestObservation[],
+  constraints: CargoPlanningConstraints = {},
 ): { cargo: Map<ResourceId, Quantity>; grossSpread: number } => {
   const cargo = new Map<ResourceId, Quantity>();
   if (observations.length === 0) return { cargo, grossSpread: 0 };
 
-  const capacityKg = totalCarryKg(caravan);
-  if (capacityKg <= 0) return { cargo, grossSpread: 0 };
+  const reservedKg = Math.max(0, constraints.reserveCapacityKg ?? 0);
+  const capacityKg = Math.max(0, totalCarryKg(caravan) - totalCargoWeightKg(caravan) - reservedKg);
+  if (capacityKg <= 1e-9) return { cargo, grossSpread: 0 };
 
   const ranked = observations
     .map((obs) => {
@@ -172,14 +213,25 @@ const planCargo = (
     });
 
   let remainingKg = capacityKg;
+  let remainingSpend = Math.max(0, constraints.maxSpendCoin ?? Number.POSITIVE_INFINITY);
   let grossSpread = 0;
   for (const r of ranked) {
     if (remainingKg <= 0) break;
-    const maxUnitsByCapacity = Math.floor(remainingKg / r.weightKgPerUnit);
-    if (maxUnitsByCapacity <= 0) continue;
-    cargo.set(r.obs.resource, maxUnitsByCapacity);
-    grossSpread += r.obs.spread * maxUnitsByCapacity;
-    remainingKg -= maxUnitsByCapacity * r.weightKgPerUnit;
+    if (remainingSpend <= 1e-9) break;
+    const maxUnitsByCapacity = remainingKg / r.weightKgPerUnit;
+    const availability = constraints.originAvailableQuantity;
+    const maxUnitsByAvailability =
+      availability === undefined
+        ? Number.POSITIVE_INFINITY
+        : (availability.get(r.obs.resource) ?? 0);
+    const maxUnitsBySpend =
+      r.obs.originPrice > 0 ? remainingSpend / r.obs.originPrice : Number.POSITIVE_INFINITY;
+    const qty = Math.min(maxUnitsByCapacity, maxUnitsByAvailability, maxUnitsBySpend);
+    if (qty <= 1e-9) continue;
+    cargo.set(r.obs.resource, qty);
+    grossSpread += r.obs.spread * qty;
+    remainingKg -= qty * r.weightKgPerUnit;
+    remainingSpend -= qty * r.obs.originPrice;
   }
   return { cargo, grossSpread };
 };
@@ -243,6 +295,7 @@ export interface PlanCaravanRouteInputs {
     preferOwnFamilyFlows?: boolean;
     familyHomeSettlement?: SettlementId;
   };
+  readonly cargoConstraints?: CargoPlanningConstraints;
   readonly includeReason?: boolean;
 }
 
@@ -252,7 +305,7 @@ export interface PlanCaravanRouteInputs {
  * need a perfect path — only a representative sample of the hexes
  * it'll touch.
  */
-const approximatePath = (from: Hex, to: Hex): Hex[] => {
+export const approximatePath = (from: Hex, to: Hex): Hex[] => {
   if (hexEquals(from, to)) return [from];
   const path: Hex[] = [];
   const dq = to.q - from.q;
@@ -298,11 +351,23 @@ const evaluateCandidate = (
 ): Evaluation | null => {
   if (hexEquals(candidate.hex, origin)) return null;
   if (observations.length === 0) return null;
-  const { cargo, grossSpread } = planCargo(caravan, observations);
+  const distance = hexDistance(origin, candidate.hex);
+  const tripDays = estimateDays(distance);
+  const durableObservations = observations.filter((obs) =>
+    cargoCanSurviveTrip(obs.resource, tripDays),
+  );
+  const travelCostCoin = travelCost(caravan, distance);
+  const constraints =
+    inputs.cargoConstraints?.reserveTripOperatingCost === true &&
+    inputs.cargoConstraints.maxSpendCoin !== undefined
+      ? {
+          ...inputs.cargoConstraints,
+          maxSpendCoin: Math.max(0, inputs.cargoConstraints.maxSpendCoin - travelCostCoin),
+        }
+      : inputs.cargoConstraints;
+  const { cargo, grossSpread } = planCargo(caravan, durableObservations, constraints);
   if (grossSpread <= 0 || cargo.size === 0) return null;
 
-  const distance = hexDistance(origin, candidate.hex);
-  const travelCostCoin = travelCost(caravan, distance);
   const riskMultiplier =
     inputs.knownBanditDensity.size === 0
       ? 0

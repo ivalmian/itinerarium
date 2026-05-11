@@ -117,7 +117,7 @@ describe('reservation price', () => {
     expect(patrician.reservationPrice).toBeGreaterThan(poor.reservationPrice);
   });
 
-  it('higher urgency lowers reservation price (urgency=2 → divide by 3)', () => {
+  it('higher urgency lowers the opportunity premium but not below production cost', () => {
     const s = ownerSupply({
       ownerActor: A,
       stockpile: 100,
@@ -127,8 +127,9 @@ describe('reservation price', () => {
       ownerUrgencyFactor: 2,
       storageHoldingDays: 30,
     });
-    // raw = max(9, 9) = 9; divisor = 1 + 2 = 3 → reservation = 3.
-    expect(s.reservationPrice).toBeCloseTo(3);
+    // raw = max(9, 9) = 9; divisor = 1 + 2 = 3 would discount to 3,
+    // but the marginal-cost floor keeps the ask at 9.
+    expect(s.reservationPrice).toBeCloseTo(9);
   });
 
   it('perishable item near spoilage has lower reservation than fresh', () => {
@@ -169,19 +170,32 @@ describe('reservation price', () => {
   });
 
   it('production cost acts as a floor (cannot go below it via urgency alone)', () => {
-    // productionCost is the *raw* floor before division by (1 + urgency).
-    // The doc explicitly notes "max(productionCost, opportunity_cost - spoilage)";
-    // urgency then divides the result, so very high urgency still drops below cost.
+    // Production cost is a true marginal-cost floor; urgency may lower the
+    // opportunity premium, but not the physical cost floor.
     const s = ownerSupply({
       ownerActor: A,
       stockpile: 100,
       reservedForOwnUse: 0,
       productionCost: 10,
-      expectedFuturePrice: 6,
-      ownerUrgencyFactor: 0,
+      expectedFuturePrice: 60,
+      ownerUrgencyFactor: 20,
       storageHoldingDays: 30,
     });
     expect(s.reservationPrice).toBeCloseTo(10);
+  });
+
+  it('minimumReservationPrice prevents local-only goods from collapsing to zero', () => {
+    const s = ownerSupply({
+      ownerActor: A,
+      stockpile: 100,
+      reservedForOwnUse: 0,
+      productionCost: 0,
+      minimumReservationPrice: 0.35,
+      expectedFuturePrice: 0.1,
+      ownerUrgencyFactor: 10,
+      storageHoldingDays: 30,
+    });
+    expect(s.reservationPrice).toBeCloseTo(0.35);
   });
 
   it('spoilageDaysRemaining at or above storageHoldingDays yields no spoilage pressure', () => {

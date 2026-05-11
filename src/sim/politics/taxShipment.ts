@@ -23,6 +23,7 @@
 
 import {
   ANIMAL_SPECS,
+  dailyCarriedFoodReserveKg,
   type AnimalKind,
   type Caravan,
   type CrewMember,
@@ -116,6 +117,7 @@ export interface TaxAssessmentInputs {
 const GRAIN_RESOURCE: ResourceId = 'food.grain' as ResourceId;
 const CLOTH_RESOURCE: ResourceId = 'goods.cloth' as ResourceId;
 const COIN_RESOURCE: ResourceId = 'goods.coin' as ResourceId;
+const CREW_RATION_RESERVE_DAYS = 21;
 
 // ---------------------------------------------------------------------------
 // Assessment.
@@ -225,12 +227,10 @@ export interface SizedShipment {
   readonly crew: CrewMember[];
 }
 
-export const sizeShipmentForCargo = (resource: ResourceId, quantity: Quantity): SizedShipment => {
-  if (!Number.isFinite(quantity) || quantity <= 0) {
-    throw new Error(`sizeShipmentForCargo: quantity must be positive, got ${quantity}`);
+const sizeShipmentForCargoKg = (cargoKg: number): SizedShipment => {
+  if (!Number.isFinite(cargoKg) || cargoKg <= 0) {
+    throw new Error(`sizeShipmentForCargo: cargo kg must be positive, got ${cargoKg}`);
   }
-  const def = getResource(resource);
-  const cargoKg = def.weightKgPerUnit * quantity;
   const requiredCapKg = cargoKg * (1 + CARGO_BUFFER_FRACTION);
   const muleCarry = ANIMAL_SPECS.mule.carryKg;
   const mules = Math.max(1, Math.ceil(requiredCapKg / muleCarry));
@@ -253,6 +253,14 @@ export const sizeShipmentForCargo = (resource: ResourceId, quantity: Quantity): 
   };
 };
 
+export const sizeShipmentForCargo = (resource: ResourceId, quantity: Quantity): SizedShipment => {
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    throw new Error(`sizeShipmentForCargo: quantity must be positive, got ${quantity}`);
+  }
+  const def = getResource(resource);
+  return sizeShipmentForCargoKg(def.weightKgPerUnit * quantity);
+};
+
 // ---------------------------------------------------------------------------
 // Caravan factory.
 // ---------------------------------------------------------------------------
@@ -266,14 +274,8 @@ export interface TaxShipmentInputs {
   readonly rng: Rng;
 }
 
-export const createTaxShipmentCaravan = (input: TaxShipmentInputs): Caravan => {
-  const sized = sizeShipmentForCargo(input.assessment.resource, input.assessment.quantityOwed);
-  // Reserve the rng parameter for future jitter (random crew names, slight
-  // animal mix variation). Currently deterministic; consume one value so the
-  // signature stays stable and seed advancement is documented.
-  void input.rng.next();
-
-  const caravan = createCaravan({
+const createTaxCaravanShell = (input: TaxShipmentInputs, sized: SizedShipment): Caravan =>
+  createCaravan({
     id: input.id,
     ownerActor: input.governorActor,
     position: input.fromHex,
@@ -282,6 +284,37 @@ export const createTaxShipmentCaravan = (input: TaxShipmentInputs): Caravan => {
     animals: sized.animals,
     vehicles: {},
   });
+
+const sizeShipmentForCargoAndProvisions = (input: TaxShipmentInputs): SizedShipment => {
+  const def = getResource(input.assessment.resource);
+  const assessedCargoKg = def.weightKgPerUnit * input.assessment.quantityOwed;
+  let sized = sizeShipmentForCargoKg(assessedCargoKg);
+
+  for (let i = 0; i < 16; i++) {
+    const shell = createTaxCaravanShell(input, sized);
+    const provisionKg = dailyCarriedFoodReserveKg(shell) * CREW_RATION_RESERVE_DAYS;
+    const next = sizeShipmentForCargoKg(assessedCargoKg + provisionKg);
+    if ((next.animals.mule ?? 0) === (sized.animals.mule ?? 0)) return next;
+    sized = next;
+  }
+
+  return sized;
+};
+
+export const createTaxShipmentCaravan = (input: TaxShipmentInputs): Caravan => {
+  const sized = sizeShipmentForCargoAndProvisions(input);
+  // Reserve the rng parameter for future jitter (random crew names, slight
+  // animal mix variation). Currently deterministic; consume one value so the
+  // signature stays stable and seed advancement is documented.
+  void input.rng.next();
+
+  const caravan = createTaxCaravanShell(input, sized);
   caravan.cargo.set(input.assessment.resource, input.assessment.quantityOwed);
+  const grain = getResource(GRAIN_RESOURCE);
+  if (grain.weightKgPerUnit > 0) {
+    const rationUnits =
+      (dailyCarriedFoodReserveKg(caravan) * CREW_RATION_RESERVE_DAYS) / grain.weightKgPerUnit;
+    caravan.cargo.set(GRAIN_RESOURCE, (caravan.cargo.get(GRAIN_RESOURCE) ?? 0) + rationUnits);
+  }
   return caravan;
 };

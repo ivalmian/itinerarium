@@ -236,29 +236,31 @@ reputation, and friends in low places.
 
 1. **Recruitment from pressure points**: for each settlement, count
    the recruitment pool ≈ adults × pressure-fraction. Default
-   pressure-fraction = 0.08 (8% of adults are "idle-ish"); 0.25 for
+   pressure-fraction = 0.03 (3% of adults are "idle-ish"); 0.15 for
    settlements with a current food shortfall.
-   A baseline fraction (default ~0.0025/day, i.e. `BASE_RECRUIT_FRAC_PER_DAY`)
+   A baseline fraction (default ~0.0005/day, i.e. `BASE_RECRUIT_FRAC_PER_DAY`)
    of that pool defects to wilderness banditry. **Successful nearby
    bands recruit faster** — if a camp within ~30 hexes has a
    successful raid in the past 30 days, that camp's recruitment
    fraction triples (word gets out: "Caelius is rich now"). **Poor
    villages contribute disproportionately**: a settlement with
-   subsistence shortfall recruits at 4× rate relative to a
-   prosperous one (`POOR_VILLAGE_RECRUIT_BOOST = 4`).
+   subsistence shortfall recruits at 3× rate relative to a
+   prosperous one (`POOR_VILLAGE_RECRUIT_BOOST = 3`).
 
-   These constants were bumped ~5× from the initial v1 values
-   (0.0005/day, 5%/20% pool) because the original tuning left the
-   bandit population invisible at human-observable timescales —
-   typical villages contributed less than one recruit per
-   100 village-days, so a camp drawing from a few villages took a
-   year+ to reach even medium scale. The new rates target a normal
-   200-adult village contributing ~1 recruit every 30–50 days; a
-   famine-stricken village about every 3–5 days.
+   These are deliberately low baseline rates. A prosperous 200-adult
+   village contributes far less than one bandit per year on average;
+   a famine-stricken village can contribute a visible trickle over a
+   season. The goal is endemic danger, not a deterministic province-
+   wide insurgency from normal peacetime.
 2. **Joining vs. founding**: defectors walk to the nearest existing
    camp within ~50 hexes if it has space; otherwise a new camp is
    founded in a wilderness forest/hills hex within 5–15 hexes of
    the settlement.
+   Ordinary recruitment stops at a soft cap of ~120 fighters per camp:
+   beyond that, logistics, conspicuousness, and internal disputes make
+   further peacetime growth unlikely. Camps above that size require
+   future special causes such as war, demobilization, or sustained
+   famine.
 3. **Camp population dynamics**: each camp consumes daily rations
    from its loot stockpile (~0.4 kg grain-equivalent per bandit per
    day). When loot food runs out, the camp must raid or starve.
@@ -268,7 +270,13 @@ reputation, and friends in low places.
 4. **Camp decisions**: for each camp, call `decideCampAction(camp,
    inputs)` (T16). Translate the action:
    - `raid_caravan(targetHex)` → emit pendingBattle; resolve via
-     T45 ambush at the caravan's hex
+     T45 ambush at the caravan's hex. Caravan ambushes are
+     probabilistic, not automatic: camp size, target value, guard
+     pressure, and nearby patrol pressure set the chance. After a
+     successful ambush, the camp has a short lay-low/fence-loot
+     cooldown before it attacks again; otherwise a single camp becomes
+     an unrealistic daily caravan-kill zone instead of a punctuated
+     road hazard.
    - `raid_settlement(targetSettlement)` → emit pendingBattle;
      resolve via T38 raid. **Camp-size-scaled probability**:
      insurgency-scale (500+) raids at 40% chance per check, large

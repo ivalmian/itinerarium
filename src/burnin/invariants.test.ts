@@ -28,6 +28,7 @@ import { hex } from '../sim/world/hex.js';
 import type { WorldState } from '../procgen/seed.js';
 import {
   STANDARD_INVARIANTS,
+  activeCaravanCountWithinCap,
   caravanCargoNonNegative,
   caravanCrewPositive,
   checkInvariants,
@@ -44,6 +45,7 @@ import {
   type InvariantContext,
   type InvariantViolation,
 } from './invariants.js';
+import { MAX_ACTIVE_WORLD_CARAVANS } from '../sim/caravan/limits.js';
 
 const seedHex = hex(0, 0);
 
@@ -238,6 +240,36 @@ describe('caravanCrewPositive', () => {
     const violations = caravanCrewPositive({ world, day: 0 as Day });
     expect(violations.length).toBe(1);
     expect(violations[0]?.severity).toBe('error');
+  });
+});
+
+// --- activeCaravanCountWithinCap -------------------------------------------
+
+describe('activeCaravanCountWithinCap', () => {
+  it('passes at the province caravan cap', () => {
+    const caravans = new Map<Caravan['id'], Caravan>();
+    for (let i = 0; i < MAX_ACTIVE_WORLD_CARAVANS; i++) {
+      const c = baseCaravan(`capped-${i}`);
+      caravans.set(c.id, c);
+    }
+    expect(activeCaravanCountWithinCap({ world: makeWorld({ caravans }), day: 0 as Day })).toEqual(
+      [],
+    );
+  });
+
+  it('fires when a bug creates a discontinuous caravan wave above the cap', () => {
+    const caravans = new Map<Caravan['id'], Caravan>();
+    for (let i = 0; i <= MAX_ACTIVE_WORLD_CARAVANS; i++) {
+      const c = baseCaravan(`runaway-${i}`);
+      caravans.set(c.id, c);
+    }
+    const violations = activeCaravanCountWithinCap({
+      world: makeWorld({ caravans }),
+      day: 0 as Day,
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]?.severity).toBe('error');
+    expect(violations[0]?.detail).toContain(String(MAX_ACTIVE_WORLD_CARAVANS));
   });
 });
 
@@ -578,7 +610,7 @@ describe('marketClearedAtAllSettlements', () => {
     expect(marketClearedAtAllSettlements({ world, day: 0 as Day })).toEqual([]);
   });
 
-  it('passes when a settlement traded a resource AND has a clearing price for it', () => {
+  it('passes when a settlement has a resource outflow AND has a clearing price for it', () => {
     const settlement = createSettlement({
       id: settlementId('s1'),
       tier: 'town',
@@ -587,13 +619,13 @@ describe('marketClearedAtAllSettlements', () => {
       urbanHexes: [seedHex],
       catchmentHexes: [],
     });
-    settlement.market.recentInflows.set(resourceId('food.grain'), 100);
+    settlement.market.recentOutflows.set(resourceId('food.grain'), 100);
     settlement.market.lastClearingPrice.set(resourceId('food.grain'), 3.5);
     const world = makeWorld({ settlements: new Map([[settlement.id, settlement]]) });
     expect(marketClearedAtAllSettlements({ world, day: 0 as Day })).toEqual([]);
   });
 
-  it('fires when a settlement traded a resource but has no clearing price for it', () => {
+  it('fires when a settlement has a resource outflow but has no clearing price for it', () => {
     const settlement = createSettlement({
       id: settlementId('s1'),
       tier: 'town',
@@ -602,7 +634,7 @@ describe('marketClearedAtAllSettlements', () => {
       urbanHexes: [seedHex],
       catchmentHexes: [],
     });
-    settlement.market.recentInflows.set(resourceId('food.grain'), 100);
+    settlement.market.recentOutflows.set(resourceId('food.grain'), 100);
     // No lastClearingPrice for food.grain.
     const world = makeWorld({ settlements: new Map([[settlement.id, settlement]]) });
     const violations = marketClearedAtAllSettlements({ world, day: 0 as Day });

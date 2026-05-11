@@ -9,71 +9,72 @@ only — they don't restrict gameplay.
 
 ## Tier 0 — Raw materials (extracted from terrain)
 
-| Resource | Source hex | Notes |
-|---|---|---|
-| `food.grain` | Plains, fertile valleys | Wheat/barley/spelt aggregated. Subsistence backbone. Seasonal: planted spring, harvested late summer. |
-| `food.olives` | Mediterranean climate, hills | Annual harvest in autumn. Trees take years to mature. |
-| `food.grapes` | Mediterranean climate, hills | Annual autumn harvest. Vines take years. |
-| `food.fish` | Coast, river, lake hexes | Continuous, depletable if over-fished. |
-| `food.game` | Forest, hills | Limited supply per hex; mostly subsistence in marginal regions. |
-| `food.legumes` | Plains | Fallback crop, rotation partner with grain. |
-| `livestock.sheep` | Pasture, hills | Provides wool, milk, meat, hide. Herd unit, not individual animals. |
-| `livestock.cattle` | Plains, pasture | Provides meat, milk, hide, draft labor. |
-| `livestock.pigs` | Forests, settlements | Mostly meat; eat scraps & forage. |
-| `livestock.equines` | Plains | Horses/mules/donkeys. Caravan & military input. |
-| `material.wood` | Forest hexes | Renewable but depletable; over-harvest → erosion → reduced yield. |
-| `material.stone` | Hills, mountains | Effectively infinite per deposit, slow to extract. |
-| `material.clay` | River banks, lowlands | Effectively infinite. |
-| `material.flax` | Plains (cooler) | Annual; produces fiber + linseed oil. |
-| `material.hides` | Byproduct of livestock slaughter | Co-output, not extracted directly. |
-| `mineral.iron_ore` | Specific mountain hexes | Finite deposit per hex. |
-| `mineral.copper_ore` | Specific mountain hexes | Finite. |
-| `mineral.tin_ore` | Rare mountain hexes | Strategic — needed for bronze. |
-| `mineral.lead_ore` | Mountain hexes | Often co-located with silver. |
-| `mineral.silver_ore` | Mountain hexes | Coinage + luxury. |
-| `mineral.gold_ore` | Rare mountain/river hexes | Coinage + status. |
-| `mineral.salt` | Coastal pans, salt mines | Essential for preservation; geographically bottlenecked. |
+| Resource             | Source hex                             | Notes                                                                                                                   |
+| -------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `food.grain`         | Plains, fertile valleys                | Wheat/barley/spelt aggregated. Subsistence backbone. Seasonal: planted spring, harvested late summer.                   |
+| `food.olives`        | Mediterranean climate, hills           | Annual harvest in autumn. Trees take years to mature.                                                                   |
+| `food.grapes`        | Mediterranean climate, hills           | Annual autumn harvest. Vines take years.                                                                                |
+| `food.fish`          | Coast, river, lake hexes               | Continuous, depletable if over-fished.                                                                                  |
+| `food.game`          | Forest, hills                          | Limited supply per hex; mostly subsistence in marginal regions.                                                         |
+| `food.milk`          | Dairy herds                            | Daily, highly perishable local flow. Sold fresh nearby or processed into cheese.                                        |
+| `food.legumes`       | Plains                                 | Fallback crop, rotation partner with grain.                                                                             |
+| `livestock.sheep`    | Pasture, hills                         | Provides wool, milk, meat, hide. Herd unit, not individual animals.                                                     |
+| `livestock.cattle`   | Plains, pasture                        | Provides meat, milk, hide, draft labor.                                                                                 |
+| `livestock.pigs`     | Forests, settlements                   | Mostly meat; eat scraps & forage.                                                                                       |
+| `livestock.equines`  | Plains                                 | Horses/mules/donkeys. Caravan & military input.                                                                         |
+| `material.wood`      | Forest hexes                           | Renewable but depletable; over-harvest → erosion → reduced yield.                                                       |
+| `material.stone`     | Hills, mountains                       | Effectively infinite per deposit, slow to extract.                                                                      |
+| `material.clay`      | River banks, lowlands                  | Effectively infinite.                                                                                                   |
+| `material.flax`      | Plains (cooler)                        | Annual; produces fiber + linseed oil.                                                                                   |
+| `material.hides`     | Byproduct of livestock slaughter       | Co-output, not extracted directly.                                                                                      |
+| `mineral.iron_ore`   | Specific mountain hexes                | Finite, long-lived deposit per hex.                                                                                     |
+| `mineral.copper_ore` | Specific mountain hexes                | Finite, long-lived deposit.                                                                                             |
+| `mineral.tin_ore`    | Rare mountain hexes                    | Strategic, finite, long-lived deposit — needed for bronze.                                                              |
+| `mineral.lead_ore`   | Mountain hexes                         | Finite, long-lived deposit; often co-located with silver.                                                               |
+| `mineral.silver_ore` | Mountain hexes                         | Finite, long-lived deposit; coinage + luxury.                                                                           |
+| `mineral.gold_ore`   | Rare mountain/river hexes              | Finite, long-lived deposit; coinage + status.                                                                           |
+| `mineral.salt`       | Coastal pans, salt mines, edge imports | Essential for preservation; geographically bottlenecked, so shortages are solved by real trade rather than local magic. |
 
 ## Tier 1 — Refined / processed
 
-| Resource | Inputs | Notes |
-|---|---|---|
-| `food.flour` | grain + mill labor | Stockpile shelf life: months. |
-| `food.bread` | flour + fuel + baker | Spoils in days; mostly produced where consumed. |
-| `food.olive_oil` | olives + press labor + amphora | Stores well; cooking + lighting + soap. |
-| `food.wine` | grapes + vintner + amphora | Improves over years; major trade good. |
-| `food.cheese` | milk + salt + dairy labor | Stores well. Milk is currently implicit in dairy recipes — see docs/15 §C12 for the promotion-to-tracked-resource decision. |
-| `food.salted_fish` | fish + salt + labor | Stores months; major Roman trade good. (Garum is a sub-variant — skip for current scope.) |
-| `food.salted_meat` | livestock slaughter + salt | Stores months. |
-| `material.wool` | sheep + shearer | Annual yield per herd unit. |
-| `material.linen_fiber` | flax + retting labor | Linen textile input. |
-| `material.leather` | hides + tanner + (oak bark / time) | Tanning takes turns to complete. |
-| `material.charcoal` | wood + collier | Required for smelting; *a lot* of wood per unit. |
-| `material.lumber` | wood + sawyer | Building material. |
-| `material.cut_stone` | stone + mason labor | Construction. |
-| `material.brick_tile` | clay + fuel + kiln labor | Construction. |
-| `material.pottery` | clay + fuel + potter | Storage, daily use. |
-| `material.amphora` | clay + fuel + potter | Specialized — required to ship liquids. |
-| `metal.iron` | iron_ore + charcoal + smelter | Bar stock. |
-| `metal.bronze` | copper/tin ore + charcoal + smelter | Bar stock; Roman-era still common for fittings. The current `alloy_bronze` recipe takes ore directly; whether to add `metal.copper` / `metal.tin` intermediates is tracked in docs/15 §C13. |
-| `metal.lead` | lead_ore + charcoal | Plumbing, weights, sling bullets. |
-| `metal.silver` | silver_ore + lead + cupellation labor | Coinage, plate. |
-| `metal.gold` | gold_ore + labor | Coinage, status. |
+| Resource               | Inputs                                | Notes                                                                                                                                                                                       |
+| ---------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `food.flour`           | grain + mill labor                    | Stockpile shelf life: months.                                                                                                                                                               |
+| `food.bread`           | flour + fuel + baker                  | Spoils in days; mostly produced where consumed.                                                                                                                                             |
+| `food.olive_oil`       | olives + press labor + amphora        | Stores well; cooking + lighting + soap.                                                                                                                                                     |
+| `food.wine`            | grapes + vintner + amphora            | Improves over years; major trade good.                                                                                                                                                      |
+| `food.cheese`          | milk + salt + dairy labor             | Stores well. Milk is a tracked short-lived input, so dairies must own or buy herd-backed milk flow before cheesemaking.                                                                     |
+| `food.salted_fish`     | fish + salt + labor                   | Stores months; major Roman trade good. (Garum is a sub-variant — skip for current scope.)                                                                                                   |
+| `food.salted_meat`     | livestock slaughter + salt            | Stores months.                                                                                                                                                                              |
+| `material.wool`        | sheep + shearer                       | Annual yield per herd unit.                                                                                                                                                                 |
+| `material.linen_fiber` | flax + retting labor                  | Linen textile input.                                                                                                                                                                        |
+| `material.leather`     | hides + tanner + (oak bark / time)    | Tanning takes turns to complete.                                                                                                                                                            |
+| `material.charcoal`    | wood + collier                        | Required for smelting; _a lot_ of wood per unit.                                                                                                                                            |
+| `material.lumber`      | wood + sawyer                         | Building material.                                                                                                                                                                          |
+| `material.cut_stone`   | stone + mason labor                   | Construction.                                                                                                                                                                               |
+| `material.brick_tile`  | clay + fuel + kiln labor              | Construction.                                                                                                                                                                               |
+| `material.pottery`     | clay + fuel + potter                  | Storage, daily use.                                                                                                                                                                         |
+| `material.amphora`     | clay + fuel + potter                  | Specialized — required to ship liquids.                                                                                                                                                     |
+| `metal.iron`           | iron_ore + charcoal + smelter         | Bar stock. Strategic input; local smelters are primary, but off-map caravans can import bars when scarcity covers transport.                                                                |
+| `metal.bronze`         | copper/tin ore + charcoal + smelter   | Bar stock; Roman-era still common for fittings. The current `alloy_bronze` recipe takes ore directly; whether to add `metal.copper` / `metal.tin` intermediates is tracked in docs/15 §C13. |
+| `metal.lead`           | lead_ore + charcoal                   | Plumbing, weights, sling bullets.                                                                                                                                                           |
+| `metal.silver`         | silver_ore + lead + cupellation labor | Coinage, plate.                                                                                                                                                                             |
+| `metal.gold`           | gold_ore + labor                      | Coinage, status.                                                                                                                                                                            |
 
 ## Tier 2 — Manufactured goods
 
-| Resource | Inputs | Notes |
-|---|---|---|
-| `goods.cloth` | wool *or* linen_fiber + weaver | Bolts of fabric. |
-| `goods.clothing` | cloth + tailor | Wears out at population's consumption rate. |
-| `goods.tools` | iron + lumber + smith | Required for most production jobs. Wear out. |
-| `goods.weapons` | iron + lumber + smith | Military equipment. |
-| `goods.armor` | iron + leather + smith | Military equipment. |
-| `goods.shields` | lumber + leather + bronze trim + carpenter | Military. |
-| `goods.cart` | lumber + iron + leather + wright | Caravan capacity unit. Wears out. |
-| `goods.furniture` | lumber + carpenter | Comfort/status good. |
-| `goods.luxury_textiles` | cloth + dye + skilled weaver | Elite demand. |
-| `goods.coin` | silver/gold + mint labor | Medium of exchange. |
+| Resource                | Inputs                                     | Notes                                                                                                                   |
+| ----------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `goods.cloth`           | wool _or_ linen_fiber + weaver             | Bolts of fabric.                                                                                                        |
+| `goods.clothing`        | cloth + tailor                             | Wears out at population's consumption rate.                                                                             |
+| `goods.tools`           | iron + handle stock + smith                | Durable capital kits required for most production jobs. Recipes consume small wear fractions, not whole tools each day. |
+| `goods.weapons`         | iron + lumber + smith                      | Military equipment.                                                                                                     |
+| `goods.armor`           | iron + leather + smith                     | Military equipment.                                                                                                     |
+| `goods.shields`         | lumber + leather + bronze trim + carpenter | Military.                                                                                                               |
+| `goods.cart`            | lumber + iron + leather + wright           | Caravan capacity unit. Wears out.                                                                                       |
+| `goods.furniture`       | lumber + carpenter                         | Comfort/status good.                                                                                                    |
+| `goods.luxury_textiles` | cloth + dye + skilled weaver               | Elite demand.                                                                                                           |
+| `goods.coin`            | silver/gold + mint labor                   | Coin as a physical resource while minted or shipped; spendable balances live in actor treasury.                         |
 
 (No `goods.ship` — sea trade deferred.)
 
@@ -84,12 +85,12 @@ caravans (see [06 — Caravans](06-caravans.md)) and command high
 prices. They're high value per unit weight, which is why long-haul
 trade brings them at all.
 
-| Resource | Notes |
-|---|---|
-| `exotic.spices` | Pepper, cinnamon, etc. Status + comfort demand; some preservation use. |
-| `exotic.silk` | Luxury textile input or finished cloth. Pure status good. |
-| `exotic.incense` | Religious + status use; consumed in temples and patrician homes. |
-| `exotic.dyes` | Murex purple, indigo, etc. Input for `goods.luxury_textiles`. |
+| Resource         | Notes                                                                  |
+| ---------------- | ---------------------------------------------------------------------- |
+| `exotic.spices`  | Pepper, cinnamon, etc. Status + comfort demand; some preservation use. |
+| `exotic.silk`    | Luxury textile input or finished cloth. Pure status good.              |
+| `exotic.incense` | Religious + status use; consumed in temples and patrician homes.       |
+| `exotic.dyes`    | Murex purple, indigo, etc. Input for `goods.luxury_textiles`.          |
 
 Bulk staples (especially grain) **don't appear here** even though
 the global market exists, because the math doesn't work: their value
@@ -105,10 +106,10 @@ naturally flow at this distance — emergent, not hard-coded. See
 People can be carried or led by a caravan. The two cases that
 matter:
 
-| Resource | Notes |
-|---|---|
-| `people.slave` | Owned humans being transported. Walks under guard rather than being carted. Consumes rations. Has weight (~70 kg) but doesn't take cargo space the way packed goods do. Detailed in [04 — Population](04-population.md) and [11 — Politics & Ownership](11-politics-and-ownership.md). |
-| `people.migrants` | Free people relocating with their belongings. Walking caravan. Same physics. Detailed in [04 — Population](04-population.md). |
+| Resource          | Notes                                                                                                                                                                                                                                                                                  |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `people.slave`    | Owned humans being transported. Walks under guard rather than being carted. Consumes rations. Has weight (~70 kg) but doesn't take cargo space the way packed goods do. Detailed in [04 — Population](04-population.md) and [11 — Politics & Ownership](11-politics-and-ownership.md). |
+| `people.migrants` | Free people relocating with their belongings. Walking caravan. Same physics. Detailed in [04 — Population](04-population.md).                                                                                                                                                          |
 
 Both can be intercepted, ransomed, lost to disease en route. People
 are not abstractions; they are real cargo that walks.
@@ -118,12 +119,26 @@ are not abstractions; they are real cargo that walks.
 These aren't items in cargo holds; they're standing capacities tied
 to a settlement.
 
-| Capacity | Backed by | What it does |
-|---|---|---|
-| `service.garrison` | trained soldiers + weapons + armor + ration upkeep | Suppresses banditry in catchment, defends against raids. |
-| `service.administration` | scribes/officials + parchment + grain stipend | Enables taxation, edicts, public works. |
-| `service.priesthood` | priests + offerings (grain, wine, livestock) | Population happiness; festivals shift demand. |
-| `service.public_works` | masons + lumber + cut_stone + iron, accumulated over turns | Roads (movement bonus), aqueducts (city size cap), walls (defense). |
+They still create market supply and demand. The current v1.5
+implementation lets buildings offer local `service.*` capacity at a
+reservation price, while households and civic buyers bid for it with
+real coin. A cleared service trade transfers coin from the buyer actor
+to the building owner, records consumed service outflow, and does not
+create stockpile or caravan cargo. The physical inputs that sustain the
+service still clear separately as **institutional procurement**:
+barracks, temples, and forums bid for rations, tools, weapons, armor,
+shields, wine, oil, incense, and cloth. Those goods are bought and
+consumed in the normal settlement market. `service.public_works` is
+also coin-only service capacity: patrons with pending construction buy
+it from forum/project offices, while construction materials and wages
+remain separate physical market flows.
+
+| Capacity                 | Backed by                                                    | What it does                                                        |
+| ------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------------- |
+| `service.garrison`       | trained soldiers + weapons + armor + shields + ration upkeep | Suppresses banditry in catchment, defends against raids.            |
+| `service.administration` | scribes/officials + parchment + grain stipend                | Enables taxation, edicts, public works.                             |
+| `service.priesthood`     | priests + offerings (grain, wine, livestock)                 | Population happiness; festivals shift demand.                       |
+| `service.public_works`   | masons + lumber + cut_stone + iron, accumulated over turns   | Roads (movement bonus), aqueducts (city size cap), walls (defense). |
 
 ## Locked decisions (formerly open questions)
 
@@ -132,9 +147,12 @@ to a settlement.
   directly with the historical name. See
   [04 — Population](04-population.md) and
   [11 — Politics & Ownership](11-politics-and-ownership.md).
-- **Exotic imports**: included as `exotic.*` resources, available
-  only via real off-map caravans entering at edge hexes. No magic
-  spawning. See [06 — Caravans](06-caravans.md).
+- **Off-map imports**: exotic goods enter only via real off-map
+  caravans at edge hexes. Salt can also enter this way because it is an
+  essential strategic staple with geographically concentrated supply.
+  Iron bars can enter the same way when local scarcity is severe enough
+  to cover long-haul transport. No magic spawning. See
+  [06 — Caravans](06-caravans.md).
 - **Exports to off-map global market**: symmetric — high-value
   low-weight goods (silver, luxury cloth, slaves, fine pottery,
   amphora-packed olive oil and wine when the spread is high enough)

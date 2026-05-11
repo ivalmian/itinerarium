@@ -26,6 +26,53 @@ Implications:
   cannot conjure specialists; specialists arise from the population's
   job-retraining process or arrive as migrants.
 
+When a recipe runs, the building owner pays a local wage bill for the
+free/paid worker-days to a worker/household actor. Labor is
+owner-sensitive, not just settlement-wide: a patrician estate, temple,
+governor office, city corporation, village household, or player estate
+may command enslaved workers it owns or controls; common-household
+aggregates, merchant guilds, off-map houses, and caravan firms cannot
+draw on another actor's slaves as free labor just because those slaves
+exist in the same settlement. Enslaved worker-days are real labor but do
+**not** receive a cash wage; their subsistence/upkeep appears through
+owner-funded consumption instead. The wage is not a fixed constant: it is
+the local subsistence-basket reservation wage documented in
+[08 — Money & Trade](08-money-and-trade.md). That paid wage also appears
+inside marginal cost, so production, household income, and prices are the
+same economic loop rather than separate tuning knobs.
+
+Paid/free-labor production is cash-constrained before it runs when the
+wage would transfer to a distinct worker actor. A bankrupt owner cannot
+hire free workers by fiat; the recipe scales down to the wage bill the
+owner can actually pay in coin or staple in-kind wages
+(grain/flour/bread valued at local prices). Owner-operated household
+labor and slave-only labor are not cash-wage constrained, but the owner
+still has to support the household or enslaved workforce through
+upkeep/consumption demand.
+
+Within a day's production planner, labor is depleted from per-job,
+per-class pools. Owners who can command enslaved labor draw from that
+pool first, then free labor; owners who cannot command slaves see only
+the free/freed/foreigner/patrician labor available for the job. The wage
+bill is based on the actual class mix consumed by the recipe run, not on
+a fixed settlement-average labor cost.
+
+Production also respects output inventory. A building owner who already
+holds the stock target for a recipe output idles that recipe instead of
+turning every available input into more unsold goods. Staples and
+preserved foods use longer targets; ordinary manufactured and trade
+goods default to about a month of installed capacity.
+
+Mining is geographically constrained. A `mine` building only runs the
+recipe whose output matches the finite mineral deposit under that mine
+hex (`mineral.iron_ore`, `mineral.copper_ore`, `mineral.tin_ore`,
+`mineral.lead_ore`, `mineral.silver_ore`, `mineral.gold_ore`, or
+`mineral.salt`). Depositless mines do not fabricate ore. Starter
+seeding can claim nearby unowned deposit hexes as mining claims, but it
+only places mines on actual deposits; bloomeries are seeded only where
+local smeltable ore exists. This keeps ore supply and charcoal demand
+tied to geography rather than province-wide bootstrap magic.
+
 ## Format
 
 ```
@@ -54,7 +101,36 @@ bake_bread:
   labor:    { baker: 1 }
   building: oven (1 oven cap = 1 baker-day)
   outputs:  { food.bread: 40 }                  # ~1.3 kg bread / kg flour
-  notes:    bread spoils in ~3 days; baked for local consumption only
+  notes:    bread spoils in ~3 days; baked for local consumption only.
+            Since one mill run makes 45 flour and one oven run consumes
+            30 flour, bakery capacity should be about 1.5x mill capacity
+            where mills and bakeries are paired.
+```
+
+Mills should not target their full flour shelf life as working stock.
+Flour can last for months if dry, but a rational miller with local baker
+customers holds roughly a fortnight of working inventory and then idles
+until bakers draw it down. Rural household baking is modeled as direct
+grain demand and hand-milling, not tiny flour bids in every hamlet. This
+prevents a flour glut from coexisting with persistent bread shortages.
+
+Military and capital workshop outputs are even tighter. Weapons,
+armor, shields, and carts are not ordinary speculative inventory:
+unless barracks, governor offices, caravans, or merchant houses are
+actively buying them, workshops keep only tiny showroom/procurement
+buffers. That leaves scarce iron for tools before smithies fill stores
+with armor nobody has ordered.
+
+```
+burn_charcoal:
+  inputs:   { material.wood: 1 }                # one cord ≈ 700 kg wood
+  labor:    { collier: 1 }
+  building: charcoal_kiln
+  outputs:  { material.charcoal: 5 }            # five 30 kg sacks
+  notes:    Roman clamp burn yield is roughly 4–5 kg wood per kg
+            charcoal. Keep resource units straight: wood is a cord,
+            charcoal is a sack. A collier-day tends a batch; four cords
+            into one sack is a unit bug, not historical scarcity.
 ```
 
 ```
@@ -69,12 +145,35 @@ smelt_iron:
 
 ```
 forge_tools:
-  inputs:   { metal.iron: 5, material.lumber: 2, material.charcoal: 3 }
+  inputs:   { metal.iron: 5, material.lumber: 0.08, material.charcoal: 3 }
   labor:    { smith: 1 }
   building: smithy
   outputs:  { goods.tools: 15 }                 # mixed simple tools
-  notes:    tools are required by farmers, miners, woodcutters etc.
+  notes:    lumber is handle stock, not structural timber; tools are
+            required by farmers, miners, woodcutters etc.
 ```
+
+```
+olive_and_grape_harvest:                         # seasonal
+  inputs:   { goods.tools: small wear }          # ~0.005 tool units / farmer-day
+  labor:    { farmer: fractional }
+  building: olive grove / vineyard
+  outputs:  { food.olives / food.grapes }
+  notes:    harvest output occurs in autumn only; pruning and grove/vine
+            care are abstracted into the standing building capacity
+```
+
+Ordinary crop recipes (`sow_grain`, `harvest_grain`, `grow_flax`,
+`grow_legumes`, olive/vine tending) use the same low daily tool-wear
+rate: about one sickle/hoe replacement per farmer per working year
+(modeled as ~0.005 tool units per farmer-day). Mining, quarrying,
+forestry, and heavy craft recipes keep higher wear because picks, axes,
+and industrial tools break faster under load. This keeps tools
+load-bearing without making farms consume a province's tool stock in a
+few months. `sow_grain` is a seed-and-labor upkeep pass, not a market
+output recipe: it consumes seed grain in spring but does not mint any
+symbolic `service.*` output or public-works capacity. Harvest output is
+represented by `harvest_grain`.
 
 ```
 press_olives:                                    # seasonal
@@ -91,12 +190,21 @@ raise_sheep:                                     # annual flows shown
   labor:    { shepherd: 0.2 per herd unit (≈100 sheep) }
   outputs:  (per herd unit, per year — applied as steady daily fractions)
             { material.wool:               200,    # kg
-              raw_milk (→ cheese recipe):  5000,   # implicit dairy flow today; see docs/15 §C12
               food.salted_meat (on cull):  600,
               material.hides (on cull):    30 }
   notes:    standing herd is itself a stockpile; over-grazing degrades
             pasture for a season or more
 ```
+
+`milk_dairy` is the parallel dairy flow: the recipe requires standing
+cattle stock, outputs explicit `food.milk`, and downstream
+`make_cheese` consumes that milk plus salt.
+
+Recipes can also declare `requires`: stock that must be present but is
+not consumed. Shearing requires sheep and milking requires cattle. A
+producer short of that standing herd now bids for it as productive
+capital, valued from the expected output stream over a payback window,
+rather than receiving free capacity from the settlement.
 
 ```
 caravan_transport:                               # see also [06 — Caravans]
@@ -115,7 +223,9 @@ caravan_transport:                               # see also [06 — Caravans]
 
 **Pastoral:** `raise_sheep`, `raise_cattle`, `raise_pigs`,
 `raise_equines`, `shear_wool`, `milk_dairy`,
-`slaughter_for_meat_and_hides`.
+`slaughter_for_meat_and_hides`,
+`slaughter_sheep_for_meat_and_hides`,
+`slaughter_pigs_for_meat_and_hides`.
 
 **Extraction:** `fell_timber`, `quarry_stone`, `dig_clay`, `mine_iron`,
 `mine_copper`, `mine_tin`, `mine_lead`, `mine_silver`, `mine_gold`,
@@ -132,27 +242,49 @@ caravan_transport:                               # see also [06 — Caravans]
 bronze; whether to split out `metal.copper` and `metal.tin`
 intermediates is tracked in docs/15 §C13.
 
-**Manufacture:** `weave_cloth`, `tailor_clothing`, `forge_tools`,
-`forge_weapons`, `forge_armor`, `make_shields`, `build_cart`,
-`make_furniture`, `weave_luxury`, `mint_coin`. (No `build_ship` — sea
-trade deferred; see [10 — Scope](10-scope-and-questions.md).)
+**Manufacture:** `weave_cloth`, `weave_linen_cloth`,
+`tailor_clothing`, `forge_tools`, `forge_weapons`, `forge_armor`,
+`make_shields`, `build_cart`, `make_furniture`, `weave_luxury`,
+`mint_coin`. (No `build_ship` — sea trade deferred; see
+[10 — Scope](10-scope-and-questions.md).)
 
 **Construction (one-shot, accumulates `service.public_works`):**
 `build_road`, `build_aqueduct`, `build_walls`, `build_warehouse`,
 `build_temple`, `build_workshop`, `build_house`.
 
+**Institutional upkeep and service sale:** barracks, temples, and
+forums are not ordinary output recipes. Their buildings offer local
+`service.garrison`, `service.priesthood`, and
+`service.administration` capacity for coin. Forum/market offices also
+offer `service.public_works` capacity when local patrons have pending
+construction. These services are consumed locally and never become
+stockpile or caravan cargo. The same institutions create procurement
+demand for the goods that sustain that capacity (rations, tools,
+weapons, armor, wine/oil/incense, cloth). The purchased goods are
+consumed immediately as upkeep.
+
 ## Reconciliation rule
 
-Each turn, every settlement runs a small planner: for each desired
-recipe, check that **inputs, labor, AND building capacity** are all
-available; if any are short, scale that recipe down proportionally.
-Surplus workers in a role go idle for the day. Job retraining is slow
-(current v1.5 timing: ~0.66% of workers shift roles per month,
-roughly ~8% per year) so a
-settlement can't pivot its whole economy in a week.
+Each turn, every settlement runs a small planner. Recipes are ranked
+by local marginal value using observed prices, with the recipe
+topological order as the tie-breaker. The planner makes two passes:
+high-value downstream recipes get first claim on existing inventory,
+then upstream recipes can produce fresh inputs and downstream recipes
+can retry if labor/capacity remains. For each attempted recipe, check
+that **inputs, labor, AND building capacity** are all available; if
+any are short, scale that recipe down proportionally. Surplus workers
+in a role go idle for the day. Job retraining is gradual (current v1.5
+timing: ~8% of workers can shift roles per month using blocked-event
+and price-profit signals) so a settlement can't pivot its whole economy
+in a week.
 
 Recipe outputs go to the **owner's stockpile**, not to a generic
 settlement pool — see [11 — Politics & Ownership](11-politics-and-ownership.md).
+Physical buildings keep an installed `maxCapacity`; the daily
+`capacity` counter resets to that installed capacity, not the catalog
+default. This matters because procgen starter estates and city
+workshops can represent many farm plots or workshop benches under one
+logical building record.
 
 ## Steady-state tuning (Leontief view)
 
@@ -164,6 +296,7 @@ intensities `x` (recipes/day across the world) and final demand `d`
 when `M·x = d`.
 
 Run `npx tsx scripts/analyze-steady-state.ts [population]` to:
+
 1. Back-chain final demand into recipe intensities.
 2. Show required intensity per recipe and per building.
 3. Compare required vs. seeded building capacity → flag bottlenecks.
@@ -173,6 +306,7 @@ Run `npx tsx scripts/analyze-steady-state.ts [population]` to:
 **Target: a small surplus.** A world that exactly meets demand has no
 slack — one bad harvest year and famine cascades. We aim for ~10–20%
 slack on staple chains so:
+
 - Seasonal variation in `harvest_grain` (autumn 1.0 → winter 0.3) doesn't
   produce winter shortages.
 - Disease outbreaks that kill workers don't immediately shut down the
@@ -188,6 +322,12 @@ deflation as coin leaves the system. Per docs/08, off-map merchant
 houses arrive with desirable goods (spices, silks, exotic dyes); the
 province pays in surplus oil/wine/cloth + minted silver.
 
+In implementation terms, `mint_coin` outputs `goods.coin` only as the
+recipe/resource identity. A successful mint run credits the mint owner's
+spendable `treasury`; it does not leave inert coin sitting in stockpile.
+`goods.coin` appears as physical cargo only while coin is being moved,
+for example in a tax caravan.
+
 ## Monetary balance (no inflation, no deflation)
 
 For a stable price level under population growth `g` and a per-capita
@@ -202,7 +342,7 @@ new coin produced per year = g × P × M  +  net imports value  −  net exports
 - **Net exports value** = coin received from off-map houses → enters the system.
 
 If a province exports more than it imports, the trade surplus brings
-silver in *without* needing to mint locally. If it imports more, the
+silver in _without_ needing to mint locally. If it imports more, the
 local mint must run faster — and if the silver mines can't keep up,
 the province bleeds out its coin supply (deflation, broken markets).
 

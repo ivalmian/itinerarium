@@ -30,6 +30,7 @@ import {
   totalCarryKg,
   totalCrewCount,
 } from '../sim/caravan/caravan.js';
+import { MAX_ACTIVE_WORLD_CARAVANS } from '../sim/caravan/limits.js';
 import { hexKey } from '../sim/world/hex.js';
 
 // --- Types ------------------------------------------------------------------
@@ -120,8 +121,9 @@ export const stockpileNonNegative: Invariant = ({ world }) => {
  */
 export const treasuryNonNegative: Invariant = ({ world }) => {
   const out: InvariantViolation[] = [];
+  const EPSILON_DEBT = 1e-9;
   for (const actor of world.actors.values()) {
-    if (!Number.isFinite(actor.treasury) || actor.treasury < 0) {
+    if (!Number.isFinite(actor.treasury) || actor.treasury < -EPSILON_DEBT) {
       out.push(
         violation(
           'treasuryNonNegative',
@@ -148,6 +150,17 @@ export const caravanCrewPositive: Invariant = ({ world }) => {
     }
   }
   return out;
+};
+
+export const activeCaravanCountWithinCap: Invariant = ({ world }) => {
+  if (world.caravans.size <= MAX_ACTIVE_WORLD_CARAVANS) return [];
+  return [
+    violation(
+      'activeCaravanCountWithinCap',
+      `${world.caravans.size} active caravans exceeds province cap ${MAX_ACTIVE_WORLD_CARAVANS}`,
+      'error',
+    ),
+  ];
 };
 
 export const caravanCargoNonNegative: Invariant = ({ world }) => {
@@ -432,19 +445,18 @@ export const noOrphanedHexRefs: Invariant = ({ world }) => {
 };
 
 /**
- * For every settlement, every resource that has been traded recently
- * (recentInflows or recentOutflows is non-empty) must have an entry in
- * lastClearingPrice. Catches the bug where the trade ledger updates but
- * the market clearing did not record a price.
+ * For every settlement, every resource with a recent outflow must have an
+ * entry in lastClearingPrice. Pure recent inflow can be production output
+ * (a mine produced iron ore; a farm harvested grain) and does not imply a
+ * market trade happened yet. Outflow means goods left the local owner pool
+ * through market consumption, local trade, tax, or caravan loading; that
+ * should have a price signal.
  */
 export const marketClearedAtAllSettlements: Invariant = ({ world }) => {
   const out: InvariantViolation[] = [];
   for (const settlement of world.settlements.values()) {
     const m = settlement.market;
     const traded = new Set<string>();
-    for (const [resource, qty] of m.recentInflows) {
-      if (qty > 0) traded.add(String(resource));
-    }
     for (const [resource, qty] of m.recentOutflows) {
       if (qty > 0) traded.add(String(resource));
     }
@@ -477,6 +489,7 @@ export const STANDARD_INVARIANTS: readonly Invariant[] = Object.freeze([
   stockpileNonNegative,
   treasuryNonNegative,
   caravanCrewPositive,
+  activeCaravanCountWithinCap,
   caravanCargoNonNegative,
   priceFinite,
   noPathologicalZeroPrices,

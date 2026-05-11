@@ -4,10 +4,12 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { resourceId, type ActorId } from '../sim/types.js';
-import { hexKey, type Hex } from '../sim/world/hex.js';
+import { buildingId, jobId, resourceId, type ActorId } from '../sim/types.js';
+import { createGrid } from '../sim/world/grid.js';
+import { hex, hexesWithinRange, hexKey, type Hex } from '../sim/world/hex.js';
+import type { HexTile } from '../sim/world/terrain.js';
 import { generateTerrain } from './terrain.js';
-import { siteSettlements } from './settlements.js';
+import { siteSettlements, type SettlementSite } from './settlements.js';
 import { seedWorld, type WorldState } from './seed.js';
 
 const SMALL_GRID_OPTS = {
@@ -27,6 +29,16 @@ const SMALL_SITE_OPTS = {
   clusterRadiusHexes: 8,
 } as const;
 
+const tile = (overrides: Partial<HexTile> = {}): HexTile => ({
+  terrain: 'plains',
+  climate: 'mediterranean',
+  elevation: 20,
+  hasRiver: false,
+  road: 'none',
+  ownerActor: null,
+  ...overrides,
+});
+
 const buildFixtureWorld = (
   overrides: { seed?: string; familiesPerCity?: number } = {},
 ): WorldState => {
@@ -41,6 +53,34 @@ const buildFixtureWorld = (
       : {}),
   };
   return seedWorld(opts);
+};
+
+const buildSameHexHamletWorld = (): WorldState => {
+  const grid = createGrid();
+  const center = hex(0, 0);
+  for (const h of hexesWithinRange(center, 5)) {
+    grid.set(h, tile());
+  }
+  const sites: SettlementSite[] = [
+    {
+      kind: 'capital',
+      anchor: center,
+      urbanHexes: [center],
+      estimatedPopulation: 12_000,
+    },
+    {
+      kind: 'hamlet',
+      anchor: center,
+      urbanHexes: [center],
+      estimatedPopulation: 80,
+    },
+  ];
+  return seedWorld({
+    seed: 'same-hex-hamlet',
+    grid,
+    settlementSites: sites,
+    patricianFamiliesPerCity: 1,
+  });
 };
 
 describe('seedWorld', () => {
@@ -178,6 +218,27 @@ describe('seedWorld', () => {
       const perCity = cityCount === 0 ? 0 : families.length / cityCount;
       expect(perCity).toBeGreaterThanOrEqual(3);
       expect(perCity).toBeLessThanOrEqual(7);
+    });
+  });
+
+  describe('common households', () => {
+    it('creates common household cash actors for towns, cities, and patron-client villages', () => {
+      const w = buildFixtureWorld();
+      for (const settlement of w.settlements.values()) {
+        const owners = settlement.stockpileOwners
+          .map((id) => w.actors.get(id))
+          .filter((a): a is NonNullable<typeof a> => a !== undefined);
+        const hasCommon = owners.some((a) => a.kind === 'common_household');
+        const isUrban =
+          settlement.tier === 'town' ||
+          settlement.tier === 'small_city' ||
+          settlement.tier === 'large_city';
+        const isPatronClientVillage =
+          settlement.tier === 'village' && owners.some((a) => a.kind === 'patrician_family');
+        if (isUrban || isPatronClientVillage) {
+          expect(hasCommon).toBe(true);
+        }
+      }
     });
   });
 
@@ -396,6 +457,140 @@ describe('seedWorld', () => {
         );
         expect(someoneHasGrain).toBe(true);
       }
+    });
+  });
+
+  describe('starter buildings', () => {
+    it('records installed capacity for seeded buildings', () => {
+      const w = buildFixtureWorld();
+      for (const settlement of w.settlements.values()) {
+        for (const building of settlement.buildings) {
+          expect(building.maxCapacity).toBe(building.capacity);
+          expect(building.maxCapacity).toBeGreaterThan(0);
+        }
+      }
+    });
+
+    it('gives same-hex hamlets subsistence buildings even when their catchment is fully claimed', () => {
+      const w = buildSameHexHamletWorld();
+      const hamlet = [...w.settlements.values()].find((s) => s.tier === 'hamlet');
+      expect(hamlet).toBeDefined();
+      expect(hamlet?.catchmentHexes).toHaveLength(0);
+
+      const buildingIds = new Set(hamlet?.buildings.map((b) => String(b.buildingId)) ?? []);
+      expect(buildingIds.has('pasture')).toBe(true);
+      expect(buildingIds.has('farm')).toBe(true);
+      expect(buildingIds.has('forester_camp')).toBe(true);
+      expect(buildingIds.has('sawmill')).toBe(true);
+
+      expect(hamlet?.jobAllocations.get(jobId('farmer')) ?? 0).toBeGreaterThan(0);
+      expect(hamlet?.jobAllocations.get(jobId('idle')) ?? 0).toBeLessThan(
+        hamlet?.population.totalAdults() ?? 0,
+      );
+    });
+
+    it('seeds town light industry needed by comfort demand', () => {
+      const w = buildFixtureWorld();
+      const towns = [...w.settlements.values()].filter(
+        (s) => s.tier === 'town' || s.tier === 'small_city' || s.tier === 'large_city',
+      );
+      expect(towns.length).toBeGreaterThan(0);
+      for (const town of towns) {
+        const buildingIds = new Set(town.buildings.map((b) => String(b.buildingId)));
+        expect(buildingIds.has('weaver_workshop')).toBe(true);
+        expect(buildingIds.has('tannery')).toBe(true);
+        expect(buildingIds.has('kiln')).toBe(true);
+        expect(buildingIds.has('pottery')).toBe(true);
+        expect(buildingIds.has('tailor_shop')).toBe(true);
+        expect(buildingIds.has('cart_wright')).toBe(true);
+      }
+    });
+
+    it('seeds fisheries for settlements with river or lake access', () => {
+      const grid = createGrid();
+      const center = hex(0, 0);
+      for (const h of hexesWithinRange(center, 2)) {
+        grid.set(h, tile({ hasRiver: hexKey(h) === hexKey(center) }));
+      }
+      const sites: SettlementSite[] = [
+        {
+          kind: 'village',
+          anchor: center,
+          urbanHexes: [center],
+          estimatedPopulation: 500,
+        },
+      ];
+      const w = seedWorld({
+        seed: 'river-fishery',
+        grid,
+        settlementSites: sites,
+        patricianFamiliesPerCity: 1,
+      });
+      const village = [...w.settlements.values()][0];
+      const buildingIds = new Set(village?.buildings.map((b) => String(b.buildingId)) ?? []);
+      expect(buildingIds.has('fishery')).toBe(true);
+    });
+
+    it('seeds mines only on actual mineral deposits', () => {
+      const grid = createGrid();
+      const center = hex(0, 0);
+      const depositHex = hex(1, 0);
+      for (const h of hexesWithinRange(center, 2)) {
+        grid.set(
+          h,
+          tile(
+            hexKey(h) === hexKey(depositHex)
+              ? {
+                  terrain: 'hills',
+                  deposit: { resource: resourceId('mineral.iron_ore'), remaining: 500 },
+                }
+              : {},
+          ),
+        );
+      }
+      const w = seedWorld({
+        seed: 'deposit-backed-mines',
+        grid,
+        settlementSites: [
+          {
+            kind: 'village',
+            anchor: center,
+            urbanHexes: [center],
+            estimatedPopulation: 500,
+          },
+        ],
+        patricianFamiliesPerCity: 1,
+      });
+      const village = [...w.settlements.values()][0];
+      const mines = village?.buildings.filter((b) => b.buildingId === buildingId('mine')) ?? [];
+
+      expect(mines).toHaveLength(1);
+      expect(hexKey(mines[0]!.hex)).toBe(hexKey(depositHex));
+    });
+
+    it('does not seed fake mines when a village has no mineral deposit', () => {
+      const grid = createGrid();
+      const center = hex(0, 0);
+      for (const h of hexesWithinRange(center, 2)) {
+        grid.set(h, tile());
+      }
+      const w = seedWorld({
+        seed: 'no-fake-mines',
+        grid,
+        settlementSites: [
+          {
+            kind: 'village',
+            anchor: center,
+            urbanHexes: [center],
+            estimatedPopulation: 500,
+          },
+        ],
+        patricianFamiliesPerCity: 1,
+      });
+      const village = [...w.settlements.values()][0];
+      const mines = village?.buildings.filter((b) => b.buildingId === buildingId('mine')) ?? [];
+
+      expect(mines).toHaveLength(0);
     });
   });
 

@@ -178,13 +178,27 @@ describe('decideCampAction: juicy caravan', () => {
     const inputs = decisionInputs({
       camp: baseCamp({ banditCount: 30 }),
       knownNearbyCaravans: [{ hex: hex(3, 0), estimatedCargoValue: 800, guards: 2 }],
-      rng: createRng('juicy'),
+      rng: createRng('juicy-0'),
     });
     const action = decideCampAction(inputs);
     expect(action.type).toBe('raid_caravan');
     if (action.type === 'raid_caravan') {
       expect(action.targetHex).toEqual(hex(3, 0));
     }
+  });
+
+  it('does not chain fresh successful raids into another immediate attack', () => {
+    const camp = baseCamp({ banditCount: 30 });
+    camp.loot.set(silver, 80);
+    const inputs = decisionInputs({
+      camp,
+      knownNearbyCaravans: [{ hex: hex(3, 0), estimatedCargoValue: 800, guards: 2 }],
+      knownFriendlySettlements: [{ id: sid('fence-town'), hex: hex(2, 2) }],
+      daysSinceLastSuccessfulRaid: 1,
+      rng: createRng('fresh-hit'),
+    });
+    const action = decideCampAction(inputs);
+    expect(action.type).toBe('fence_loot');
   });
 });
 

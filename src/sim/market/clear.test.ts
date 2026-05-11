@@ -133,7 +133,7 @@ describe('clearMarket — excess demand (famine)', () => {
     const result = clearMarket(demand, supply);
     expect(result.clearingPrice).toBeCloseTo(2e5, -2);
     expect(result.totalTraded).toBeCloseTo(5);
-    expect(result.unmetDemandAtClearingPrice).toBeGreaterThan(0);
+    expect(result.unmetDemandAtClearingPrice).toBe(0);
   });
 });
 
@@ -375,6 +375,26 @@ describe('clearMarket — degenerate cases', () => {
     const result = clearMarket(demand, supply, { maxPrice: 100 });
     expect(result.totalTraded).toBe(0);
     expect(result.unmetDemandAtClearingPrice).toBeGreaterThan(0);
+  });
+
+  it('does not count priced-out derived demand as unmet at the clearing price', () => {
+    const demand = aggregateDemand([
+      derivedInputDemand({
+        id: 'priced-out-feed',
+        expectedOutputRevenuePerInputUnit: 1,
+        otherCostsPerInputUnit: 0,
+        margin: 0,
+        productionCapacity: 100,
+        inputPerOutput: 1,
+      }),
+      subsistenceDemand({ id: 'subsistence', needPerDay: 10, segmentWealth: 1e6 }),
+    ]);
+    const supply = aggregateSupply([]);
+
+    const result = clearMarket(demand, supply, { maxPrice: 100 });
+
+    expect(result.totalTraded).toBe(0);
+    expect(result.unmetDemandAtClearingPrice).toBeCloseTo(10);
   });
 
   it('no demand: clearing price hits the floor and supply is reported unsold', () => {

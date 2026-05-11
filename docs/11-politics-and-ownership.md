@@ -11,8 +11,8 @@ This doc covers the political and ownership layer for the current scope.
 ## Every faction has named characters (locked)
 
 Every faction in the world — patrician families, free village
-councils, hamlet households, bandit camps, patrol detachments,
-city watches, caravans, the governor's office, temples — has
+councils, common households, hamlet households, bandit camps,
+patrol detachments, city watches, caravans, the governor's office, temples — has
 **named individual characters** who actually decide, remember,
 and act. The patriarch of Family Vibian. The captain of the III
 Cohort. The headman of Free Village Carnia. The leader of the
@@ -30,6 +30,15 @@ A settlement may have **one or many factions**: a hamlet has one
 one to three; a city has 5–10 (multiple patrician families, the
 city watch, the temple, the magistrates) often in active
 competition with each other.
+
+The economic ledger also has **common household** actors in towns,
+cities, and patron-client villages. They are not landowners; they
+stand for plebeian/freedman/foreigner household cash and wage
+receipts so food, fuel, and comfort purchases are paid by workers
+rather than by the city corporation. Free villages and hamlets use
+their village/hamlet household actor directly. Common households do
+not command enslaved labor; if a common-owned workshop runs, it hires
+free/freed/foreigner labor and pays the local reservation wage.
 
 ## Province governor
 
@@ -65,6 +74,19 @@ future scope; currently the governor keeps provincial tax revenue. A tax-shipmen
 caravan that gets ambushed (see
 [12 — Bandits & Conflict](12-bandits-and-conflict.md)) is an
 unfunded garrison the next month.
+
+Assessment is not dispatch. A harvest assessment may create many owed
+shipments, but the tax office queues them and releases only a limited
+number of district convoys per day. It also has an active-convoy cap:
+if earlier tax convoys are still on the road, later assessments remain
+queued instead of spawning a second wave. Several same-resource
+owner/settlement assessments can ride in one convoy; the local
+feeder-cart collection into that staging convoy is abstracted. This
+avoids impossible province-wide instant mobilization and keeps caravan
+counts continuous. Once a tax shipment reaches the capital, in-kind
+cargo enters the governor's stockpile, while `goods.coin` cargo credits
+the governor's spendable treasury; the shipment unit leaves the caravan
+simulation and does not become a permanent merchant caravan.
 
 A per-governor disposition modifier (corrupt / generous / militant
 / neglectful) shapes their decisions while in office. The governor
@@ -173,6 +195,10 @@ have real economic teeth: ownership is traceable end-to-end.
 - Slaves are **owned property** — owned by a specific actor (a
   family, the city, the governor, a temple).
 - Can be inherited, sold, freed.
+- They are not a settlement-wide labor subsidy. Only actors with slave
+  ownership or command rights can use enslaved worker-days without a
+  cash wage; other actors must hire free labor or rent/purchase labor
+  through an explicit future contract.
 - Sources: war captives, debt bondage, raids and trade from beyond
   the map (carried by real caravans — see
   [06 — Caravans](06-caravans.md)).
@@ -213,6 +239,6 @@ have real economic teeth: ownership is traceable end-to-end.
   estate-level labor control. Cannot replace a governor. Cannot
   dictate tax policy. Cannot directly run a workshop or farm.
 
-These limits keep the player as *one actor among many* in the
+These limits keep the player as _one actor among many_ in the
 simulated economy. The path to becoming a patrician (and beyond)
 is future scope.

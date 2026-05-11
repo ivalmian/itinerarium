@@ -248,14 +248,18 @@ price history to optimize against, so we seed the OBVIOUS workshops
 implied by abundant local inputs. This is a reasonable cold-start
 that lines up with the eventual market-driven equilibrium.
 
-**Stage 2 — Dynamic investment (current v1.5)**: every season, owners evaluate
-their portfolio against observed market spreads. If a price book
-shows an output trading much higher than its input cost basis, the
-owner spends coin + materials to construct a new workshop (per the
+**Stage 2 — Dynamic investment (current v1.5)**: every season, each
+settlement's richest stockpile-owning investor evaluates observed
+market spreads. If an output trades much higher than its input cost
+basis, and the investor already holds the construction materials, the
+investor commits those materials to a pending building (per the
 construction recipes in docs/03). Construction then consumes worker-
-days before the building becomes productive. If a workshop runs at a
-loss for many months, it decays and isn't rebuilt. This is what makes the
-specialization *adaptive* over the burn-in.
+days before the building becomes productive. Mines are additionally
+geography-gated: a mine investment must go on a matching finite
+deposit, and ore refineries require local ore stock or a
+deposit-backed mine already present/under construction. If a workshop
+runs at a loss for many months, it decays and isn't rebuilt. This is
+what makes the specialization *adaptive* over the burn-in.
 
 ### Two ways a market gap closes
 

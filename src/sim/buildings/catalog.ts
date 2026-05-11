@@ -190,8 +190,9 @@ const DEFS: readonly BuildingInput[] = [
     id: 'bakery',
     category: 'production',
     name: 'Bakery',
-    // 50 = enough oven-days to bake the flour of one mill.
-    capacityUnits: 50,
+    // A mill at cap=200 outputs 9,000 flour/day. bake_bread consumes
+    // 30 flour/run, so a matching oven complex needs about 300 runs/day.
+    capacityUnits: 300,
     constructionCost: { 'material.brick_tile': 8, 'material.cut_stone': 2, 'material.lumber': 2 },
     maintenancePerDay: { 'material.brick_tile': 0.02 },
     decayDaysIfUnmaintained: 180,

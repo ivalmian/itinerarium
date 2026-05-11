@@ -7,8 +7,10 @@
  *   3. status      — step from want to 0 at a very-high threshold.
  *   4. derived     — step from full producer demand to 0 at break-even.
  *
- * Source: docs/08-money-and-trade.md "Demand: how it forms (locked)" plus
- * the population segments described in docs/04-population.md.
+ * Source: docs/08-money-and-trade.md "Modern microeconomic pricing" and
+ * "Demand: how it forms (locked)" plus the population segments described
+ * in docs/04-population.md. The shapes encode constrained utility demand
+ * (subsistence/comfort/status) and profit-derived input demand.
  *
  * The curves operate on plain numbers; this module is intentionally
  * resource- and actor-agnostic. Callers attach IDs upstream via the
@@ -21,6 +23,8 @@
  * only require "smooth, monotonic, falls to zero".
  */
 
+import type { ActorId } from '../types.js';
+
 export type DemandCurveKind = 'subsistence' | 'comfort' | 'status' | 'derived';
 
 export interface DemandSource {
@@ -29,6 +33,10 @@ export interface DemandSource {
   quantityAt(price: number): number;
   readonly peakQuantity: number;
   readonly maxWillingnessToPay: number;
+  /** Concrete actor whose treasury/stockpile should receive purchases. */
+  readonly buyerActor?: ActorId;
+  /** Consumer purchases are consumed immediately; producer inputs are stored. */
+  readonly buyerDisposition?: 'consume' | 'stockpile';
 }
 
 export interface DemandBreakpoint {
@@ -52,6 +60,8 @@ export interface SubsistenceOpts {
   readonly id?: string;
   readonly needPerDay: number;
   readonly segmentWealth: number;
+  readonly buyerActor?: ActorId;
+  readonly buyerDisposition?: 'consume' | 'stockpile';
 }
 
 export const subsistenceDemand = (opts: SubsistenceOpts): DemandSource => {
@@ -62,6 +72,8 @@ export const subsistenceDemand = (opts: SubsistenceOpts): DemandSource => {
     id,
     curve: 'subsistence',
     peakQuantity: need,
+    ...(opts.buyerActor !== undefined ? { buyerActor: opts.buyerActor } : {}),
+    ...(opts.buyerDisposition !== undefined ? { buyerDisposition: opts.buyerDisposition } : {}),
     // Households will starve before they refuse to pay; the curve is
     // hyperbolic above the wealth/need threshold, never reaching zero.
     maxWillingnessToPay: Number.POSITIVE_INFINITY,
@@ -81,6 +93,8 @@ export interface ComfortOpts {
   readonly id?: string;
   readonly wantQuantity: number;
   readonly budget: number;
+  readonly buyerActor?: ActorId;
+  readonly buyerDisposition?: 'consume' | 'stockpile';
   /** Larger = steeper drop past the budget. Defaults to 1. */
   readonly decayScale?: number;
   /**
@@ -105,6 +119,8 @@ export const comfortDemand = (opts: ComfortOpts): DemandSource => {
     curve: 'comfort',
     peakQuantity: want,
     maxWillingnessToPay: maxWtp,
+    ...(opts.buyerActor !== undefined ? { buyerActor: opts.buyerActor } : {}),
+    ...(opts.buyerDisposition !== undefined ? { buyerDisposition: opts.buyerDisposition } : {}),
     quantityAt(price: number): number {
       if (want <= 0) return 0;
       if (price <= 0) return want;
@@ -120,6 +136,8 @@ export const comfortDemand = (opts: ComfortOpts): DemandSource => {
 export interface StatusOpts {
   readonly id?: string;
   readonly wantQuantity: number;
+  readonly buyerActor?: ActorId;
+  readonly buyerDisposition?: 'consume' | 'stockpile';
   /**
    * Pool of cash/assets backing the elite segment's status spend. Currently
    * unused for shape (status is a step), but plumbed for future tuning where
@@ -142,6 +160,8 @@ export const statusDemand = (opts: StatusOpts): DemandSource => {
     curve: 'status',
     peakQuantity: effectiveWant,
     maxWillingnessToPay: threshold,
+    ...(opts.buyerActor !== undefined ? { buyerActor: opts.buyerActor } : {}),
+    ...(opts.buyerDisposition !== undefined ? { buyerDisposition: opts.buyerDisposition } : {}),
     quantityAt(price: number): number {
       if (effectiveWant <= 0) return 0;
       return price <= threshold ? effectiveWant : 0;
@@ -158,6 +178,8 @@ export interface DerivedInputOpts {
   readonly margin: number;
   readonly productionCapacity: number;
   readonly inputPerOutput: number;
+  readonly buyerActor?: ActorId;
+  readonly buyerDisposition?: 'consume' | 'stockpile';
 }
 
 export const derivedInputDemand = (opts: DerivedInputOpts): DemandSource => {
@@ -173,6 +195,8 @@ export const derivedInputDemand = (opts: DerivedInputOpts): DemandSource => {
     curve: 'derived',
     peakQuantity: quantityDemanded,
     maxWillingnessToPay: safeBreakEven,
+    ...(opts.buyerActor !== undefined ? { buyerActor: opts.buyerActor } : {}),
+    ...(opts.buyerDisposition !== undefined ? { buyerDisposition: opts.buyerDisposition } : {}),
     quantityAt(price: number): number {
       if (quantityDemanded <= 0) return 0;
       return price <= safeBreakEven ? quantityDemanded : 0;

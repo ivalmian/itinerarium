@@ -532,9 +532,10 @@ const placeDeposits = (pre: PreTile[], W: number, H: number, fields: SampledFiel
     // by *ore type* per the spec).
     const bucket = Math.floor(oreVal * ORE_RESOURCES.length * 7) % ORE_RESOURCES.length;
     const resource = ORE_RESOURCES[bucket] as ResourceId;
-    // Remaining: 200 + up to 800 units, scaled by oreVal; deeper deposits last
-    // longer. Numbers are coarse; balance pass tunes them.
-    const remaining = Math.floor(200 + oreVal * 800);
+    // Remaining is in resource units (50 kg for most ore resources). A working
+    // mine can extract hundreds of units per day, so deposits must be
+    // long-lived ore bodies rather than day-scale caches.
+    const remaining = Math.floor(500_000 + oreVal * 2_000_000);
     (pre[i] as PreTile).deposit = { resource, remaining };
   }
 };

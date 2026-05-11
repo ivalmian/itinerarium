@@ -254,6 +254,15 @@ const lootValue = (camp: BanditCamp): number => {
   return v;
 };
 
+const CARAVAN_RAID_COOLDOWN_DAYS = 7;
+const FRESH_LOOT_FENCE_THRESHOLD = 50;
+const CARAVAN_RAID_BASE_PROBABILITY: Readonly<Record<CampSize, number>> = Object.freeze({
+  small: 0.08,
+  medium: 0.16,
+  large: 0.24,
+  insurgency: 0.3,
+});
+
 const patrolPressure = (
   camp: BanditCamp,
   patrols: CampDecisionInputs['knownNearbyPatrols'],
@@ -274,9 +283,34 @@ const scoreCaravan = (
 };
 
 export const decideCampAction = (inputs: CampDecisionInputs): CampAction => {
-  const { camp, knownNearbyCaravans, knownNearbyPatrols, knownFriendlySettlements, rng } = inputs;
+  const {
+    camp,
+    knownNearbyCaravans,
+    knownNearbyPatrols,
+    knownFriendlySettlements,
+    daysSinceLastSuccessfulRaid,
+    rng,
+  } = inputs;
   const size = campSize(camp);
   const pressure = patrolPressure(camp, knownNearbyPatrols);
+  const loot = lootValue(camp);
+  const freshSuccessfulRaid = daysSinceLastSuccessfulRaid < CARAVAN_RAID_COOLDOWN_DAYS;
+
+  // A camp that just hit a caravan should not immediately attack the next
+  // cart or hamlet that passes. It has wounded people, loose cargo, and
+  // witnesses to avoid. If it has a fence, prefer converting loot; otherwise
+  // lay low or recruit. This turns banditry into punctuated risk instead of a
+  // daily 95%-lethal kill zone for every road near a camp.
+  if (freshSuccessfulRaid) {
+    if (loot >= FRESH_LOOT_FENCE_THRESHOLD && knownFriendlySettlements.length > 0) {
+      const fence = rng.pick(knownFriendlySettlements);
+      return { type: 'fence_loot', throughSettlement: fence.id };
+    }
+    if (pressure < 0.75 && camp.banditCount < 50 && rng.chance(0.25)) {
+      return { type: 'recruit_drive' };
+    }
+    return { type: 'lay_low' };
+  }
 
   // 1. Settlement raids — gated by camp size so smaller bands hit smaller
   //    settlements without waiting until they reach insurgency scale.
@@ -312,10 +346,15 @@ export const decideCampAction = (inputs: CampDecisionInputs): CampAction => {
     const best = scoredCaravans[0];
     if (best) {
       // Patrol pressure suppresses raid willingness. Above ~1 the camp hesitates.
-      const raidWillingness = clamp(1 - pressure * 0.5, 0, 1);
-      // High-value targets above threshold push past hesitation.
-      const valueBoost = clamp(best.estimatedCargoValue / 1000, 0, 0.6);
-      const raidProb = clamp(raidWillingness + valueBoost, 0, 0.95);
+      const raidWillingness = clamp(1 - pressure * 0.75, 0, 1);
+      // High-value targets make risk attractive, but even a juicy convoy is
+      // not an every-day certainty: scouting, timing, and witnesses matter.
+      const valueBoost = clamp(best.score / 3_000, 0, 0.35);
+      const raidProb = clamp(
+        (CARAVAN_RAID_BASE_PROBABILITY[size] + valueBoost) * raidWillingness,
+        0,
+        0.65,
+      );
       if (rng.chance(raidProb)) {
         return { type: 'raid_caravan', targetHex: best.hex };
       }
@@ -336,7 +375,7 @@ export const decideCampAction = (inputs: CampDecisionInputs): CampAction => {
   }
 
   // 4. If loot is high and a friendly settlement is available, fence.
-  if (lootValue(camp) >= 100 && knownFriendlySettlements.length > 0) {
+  if (loot >= 100 && knownFriendlySettlements.length > 0) {
     if (rng.chance(0.4)) {
       const fence = rng.pick(knownFriendlySettlements);
       return { type: 'fence_loot', throughSettlement: fence.id };

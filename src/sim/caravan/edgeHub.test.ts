@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createRng } from '../rng.js';
 import { actorId, resourceId, settlementId, type Quantity, type ResourceId } from '../types.js';
 import { hex } from '../world/hex.js';
+import { dailyCrewRationKg, totalCarryKg, totalCargoWeightKg } from './caravan.js';
 import {
   DEFAULT_IMPORT_PALETTE,
   DEFAULT_GLOBAL_PRICES,
@@ -15,7 +16,12 @@ import {
 const grain = resourceId('food.grain');
 const oliveOil = resourceId('food.olive_oil');
 const wine = resourceId('food.wine');
+const salt = resourceId('mineral.salt');
+const iron = resourceId('metal.iron');
 const cloth = resourceId('goods.cloth');
+const tools = resourceId('goods.tools');
+const weapons = resourceId('goods.weapons');
+const armor = resourceId('goods.armor');
 const luxuryTextiles = resourceId('goods.luxury_textiles');
 const silver = resourceId('metal.silver');
 const spices = resourceId('exotic.spices');
@@ -38,6 +44,20 @@ const cityImportTargets = [
   { settlementId: ravenna, hex: hex(40, 0) },
 ];
 
+const profitableCityImportTargets = cityImportTargets.map((target) => ({
+  ...target,
+  localPrices: new Map<ResourceId, number>([
+    [salt, 100],
+    [iron, 800],
+    [tools, 1000],
+    [cloth, 400],
+    [weapons, 800],
+    [armor, 1200],
+    [spices, 500],
+    [slave, 1200],
+  ]),
+}));
+
 const exportSource = (
   id: typeof aquileia,
   h: ReturnType<typeof hex>,
@@ -59,9 +79,35 @@ describe('TRANSPORT_COST_COIN_PER_KG_PER_HEX', () => {
 
 describe('DEFAULT_GLOBAL_PRICES', () => {
   it('has prices for the major exotic imports and exportables', () => {
-    for (const r of [grain, oliveOil, wine, cloth, luxuryTextiles, silver, spices]) {
+    for (const r of [grain, salt, oliveOil, wine, cloth, luxuryTextiles, silver, spices]) {
       expect(DEFAULT_GLOBAL_PRICES.get(r)).toBeGreaterThan(0);
     }
+  });
+
+  it('includes salt in the import palette because it is essential and geographically bottlenecked', () => {
+    expect(DEFAULT_IMPORT_PALETTE.some((p) => p.resource === salt)).toBe(true);
+  });
+
+  it('includes iron bars as a strategic importable input under real scarcity', () => {
+    expect(DEFAULT_GLOBAL_PRICES.get(iron)).toBeGreaterThan(0);
+    expect(DEFAULT_IMPORT_PALETTE.some((p) => p.resource === iron)).toBe(true);
+  });
+
+  it('includes strategic finished goods in the import palette', () => {
+    for (const r of [tools, cloth, weapons, armor]) {
+      expect(DEFAULT_IMPORT_PALETTE.some((p) => p.resource === r)).toBe(true);
+    }
+  });
+
+  it('brings strategic iron/tools in production-scale lots, not token luxury parcels', () => {
+    const ironImport = DEFAULT_IMPORT_PALETTE.find((p) => p.resource === iron);
+    const toolsImport = DEFAULT_IMPORT_PALETTE.find((p) => p.resource === tools);
+    const spiceImport = DEFAULT_IMPORT_PALETTE.find((p) => p.resource === spices);
+    if (!ironImport || !toolsImport || !spiceImport) throw new Error('missing default import');
+
+    expect(ironImport.weight).toBeGreaterThan(spiceImport.weight);
+    expect(ironImport.cargoKg[0]).toBeGreaterThanOrEqual(80);
+    expect(toolsImport.cargoKg[0]).toBeGreaterThanOrEqual(50);
   });
 
   it('high-value-per-kg goods (silver) trade at much higher coin/unit than bulk grain', () => {
@@ -110,7 +156,7 @@ describe('tickEdgeHubs — imports', () => {
       config,
       today: 100,
       season: 'summer',
-      cityImportTargets,
+      cityImportTargets: profitableCityImportTargets,
       cityExportSources: [],
       rng: createRng('imports-1'),
     });
@@ -126,9 +172,12 @@ describe('tickEdgeHubs — imports', () => {
       );
       expect(isCity).toBe(true);
       expect(c.cargo.size).toBeGreaterThan(0);
-      // Cargo entry should be one of the configured import-palette resources.
+      // Cargo entry should be one of the configured import-palette resources,
+      // plus the seeded grain ration reserve.
       for (const cargoRes of c.cargo.keys()) {
-        expect(config.importPalette.some((p) => p.resource === cargoRes)).toBe(true);
+        expect(
+          cargoRes === grain || config.importPalette.some((p) => p.resource === cargoRes),
+        ).toBe(true);
       }
     }
   });
@@ -146,23 +195,164 @@ describe('tickEdgeHubs — imports', () => {
     expect(result.newCaravans).toEqual([]);
   });
 
-  it('imports prefer the nearest city target', () => {
+  it('does not spawn imports when no city has a profitable scarcity signal', () => {
     const config = baseConfig({ baseImportSpawnProbPerDay: 1.0, baseExportSpawnProbPerDay: 0 });
     const result = tickEdgeHubs({
       config,
       today: 100,
       season: 'summer',
-      // edge at (50,0); aquileia at (0,0) dist 50; ravenna at (40,0) dist 10. ravenna should win for the 50,0 edge.
       cityImportTargets,
       cityExportSources: [],
-      rng: createRng('nearest'),
+      rng: createRng('no-scarcity-no-import'),
     });
-    // For the (50,0) edge, the chosen destination should be ravenna.
-    const fromEastEdge = result.newCaravans.filter((c) => c.position.q === 50);
-    expect(fromEastEdge.length).toBeGreaterThan(0);
-    for (const c of fromEastEdge) {
-      expect(c.destination?.q).toBe(40);
+    expect(result.newCaravans).toEqual([]);
+  });
+
+  it('imports target the city with the strongest profitable scarcity signal', () => {
+    const config = baseConfig({
+      edgeHexes: [hex(0, 0)],
+      baseImportSpawnProbPerDay: 1.0,
+      baseExportSpawnProbPerDay: 0,
+      importPalette: [
+        { resource: tools, weight: 1, cargoKg: [20, 20] },
+        { resource: spices, weight: 1, cargoKg: [20, 20] },
+      ],
+    });
+    const near = {
+      settlementId: aquileia,
+      hex: hex(5, 0),
+      localPrices: new Map<ResourceId, number>([
+        [tools, 10],
+        [spices, 10],
+      ]),
+    };
+    const scarce = {
+      settlementId: ravenna,
+      hex: hex(20, 0),
+      localPrices: new Map<ResourceId, number>([
+        [tools, 2500],
+        [spices, 10],
+      ]),
+    };
+
+    const result = tickEdgeHubs({
+      config,
+      today: 100,
+      season: 'summer',
+      cityImportTargets: [near, scarce],
+      cityExportSources: [],
+      rng: createRng('scarce-target-import'),
+    });
+
+    expect(result.newCaravans.length).toBe(1);
+    expect(result.newCaravans[0]?.destination).toEqual(scarce.hex);
+    expect(result.newCaravans[0]?.cargo.has(tools)).toBe(true);
+  });
+
+  it('imports carry an operating purse for post-delivery rations', () => {
+    const config = baseConfig({ baseImportSpawnProbPerDay: 1.0, baseExportSpawnProbPerDay: 0 });
+    const result = tickEdgeHubs({
+      config,
+      today: 100,
+      season: 'summer',
+      cityImportTargets: profitableCityImportTargets,
+      cityExportSources: [],
+      rng: createRng('import-operating-cash'),
+    });
+    expect(result.newCaravans.length).toBeGreaterThan(0);
+    for (const c of result.newCaravans) {
+      expect(c.treasury).toBeGreaterThanOrEqual(dailyCrewRationKg(c) * 60);
     }
+  });
+
+  it('sizes import trains for cargo plus carried ration reserve', () => {
+    const config = baseConfig({
+      edgeHexes: [hex(-20, 0), hex(-10, 0), hex(10, 0), hex(20, 0)],
+      baseImportSpawnProbPerDay: 1.0,
+      baseExportSpawnProbPerDay: 0,
+      maxImportSpawnsPerDay: 4,
+      maxTotalSpawnsPerDay: 4,
+    });
+    for (let trial = 0; trial < 50; trial++) {
+      const result = tickEdgeHubs({
+        config,
+        today: 100 + trial,
+        season: 'summer',
+        cityImportTargets: profitableCityImportTargets,
+        cityExportSources: [],
+        rng: createRng(`import-capacity-${trial}`),
+      });
+      for (const c of result.newCaravans) {
+        expect(totalCargoWeightKg(c)).toBeLessThanOrEqual(totalCarryKg(c) + 1e-6);
+      }
+    }
+  });
+
+  it('prefers locally scarce profitable imports over unprofitable palette entries', () => {
+    const config = baseConfig({
+      edgeHexes: [hex(-20, 0)],
+      baseImportSpawnProbPerDay: 1.0,
+      baseExportSpawnProbPerDay: 0,
+      importPalette: [
+        { resource: tools, weight: 1, cargoKg: [20, 20] },
+        { resource: spices, weight: 1, cargoKg: [20, 20] },
+      ],
+    });
+    const result = tickEdgeHubs({
+      config,
+      today: 100,
+      season: 'summer',
+      cityImportTargets: [
+        {
+          settlementId: aquileia,
+          hex: hex(0, 0),
+          localPrices: new Map<ResourceId, number>([
+            [tools, 1000],
+            [spices, 1],
+          ]),
+        },
+      ],
+      cityExportSources: [],
+      rng: createRng('scarce-tools-import'),
+    });
+
+    expect(result.newCaravans.length).toBe(1);
+    expect(result.newCaravans[0]?.cargo.has(tools)).toBe(true);
+    expect(result.newCaravans[0]?.cargo.has(spices)).toBe(false);
+  });
+
+  it('raises import cadence when landed scarcity margins are very high', () => {
+    const countImportsForToolsPrice = (price: number): number => {
+      let count = 0;
+      for (let trial = 0; trial < 200; trial++) {
+        const result = tickEdgeHubs({
+          config: baseConfig({
+            edgeHexes: [hex(-20, 0)],
+            baseImportSpawnProbPerDay: 0.05,
+            baseExportSpawnProbPerDay: 0,
+            importPalette: [{ resource: tools, weight: 1, cargoKg: [20, 20] }],
+          }),
+          today: 100,
+          season: 'summer',
+          cityImportTargets: [
+            {
+              settlementId: aquileia,
+              hex: hex(0, 0),
+              localPrices: new Map<ResourceId, number>([[tools, price]]),
+            },
+          ],
+          cityExportSources: [],
+          rng: createRng(`scarcity-cadence-${price}-${trial}`),
+        });
+        count += result.newCaravans.length;
+      }
+      return count;
+    };
+
+    const barelyProfitable = countImportsForToolsPrice(50);
+    const severeScarcity = countImportsForToolsPrice(1000);
+
+    expect(severeScarcity).toBeGreaterThan(barelyProfitable * 2);
   });
 
   it('cargo amounts respect importPalette range', () => {
@@ -179,18 +369,61 @@ describe('tickEdgeHubs — imports', () => {
         config,
         today: 100,
         season: 'summer',
-        cityImportTargets,
+        cityImportTargets: cityImportTargets.map((target) => ({
+          ...target,
+          localPrices: new Map<ResourceId, number>([[spices, 500]]),
+        })),
         cityExportSources: [],
         rng: createRng(`cargo-${trial}`),
       });
       for (const c of result.newCaravans) {
-        for (const [, qty] of c.cargo) {
-          // spices is 1 kg/unit so kg ≈ unit count
-          expect(qty).toBeGreaterThanOrEqual(100);
-          expect(qty).toBeLessThanOrEqual(200);
-        }
+        const qty = c.cargo.get(spices);
+        expect(qty).toBeDefined();
+        // spices is 1 kg/unit so kg ≈ unit count; grain is the ration reserve.
+        expect(qty ?? 0).toBeGreaterThanOrEqual(100);
+        expect(qty ?? 0).toBeLessThanOrEqual(200);
       }
     }
+  });
+
+  it('honors daily import and total spawn caps', () => {
+    const config = baseConfig({
+      edgeHexes: [hex(-50, 0), hex(-49, 0), hex(-48, 0), hex(-47, 0), hex(-46, 0)],
+      baseImportSpawnProbPerDay: 1.0,
+      baseExportSpawnProbPerDay: 0,
+      maxImportSpawnsPerDay: 2,
+      maxTotalSpawnsPerDay: 2,
+    });
+    const result = tickEdgeHubs({
+      config,
+      today: 100,
+      season: 'summer',
+      cityImportTargets: profitableCityImportTargets,
+      cityExportSources: [],
+      rng: createRng('import-cap'),
+    });
+    expect(result.newCaravans.length).toBe(2);
+  });
+
+  it('applies outstanding import-fleet back-pressure before spawning more', () => {
+    const config = baseConfig({
+      edgeHexes: [hex(-50, 0), hex(-49, 0), hex(-48, 0)],
+      baseImportSpawnProbPerDay: 1.0,
+      baseExportSpawnProbPerDay: 0,
+      activeImportCaravans: 3,
+      maxActiveImportCaravans: 3,
+      maxImportSpawnsPerDay: 3,
+      maxTotalSpawnsPerDay: 3,
+    });
+    const result = tickEdgeHubs({
+      config,
+      today: 100,
+      season: 'summer',
+      cityImportTargets,
+      cityExportSources: [],
+      rng: createRng('import-active-cap'),
+    });
+    expect(result.newCaravans).toEqual([]);
   });
 });
 
@@ -255,7 +488,7 @@ describe('tickEdgeHubs — exports', () => {
     });
     expect(result.newCaravans.length).toBeGreaterThan(0);
     for (const c of result.newCaravans) {
-      const cargoResources = Array.from(c.cargo.keys());
+      const cargoResources = Array.from(c.cargo.keys()).filter((r) => r !== grain);
       expect(cargoResources.length).toBeGreaterThan(0);
       // Cargo should be one of the amphora staples (the higher-margin
       // pick wins per bestExportFor).
@@ -325,7 +558,7 @@ describe('tickEdgeHubs — exports', () => {
       expect(c.position.q).toBe(0);
       expect(c.destination).toEqual(farEdge);
       // Cargo is one of the profitable goods.
-      const cargoResources = Array.from(c.cargo.keys());
+      const cargoResources = Array.from(c.cargo.keys()).filter((r) => r !== grain);
       expect(cargoResources.length).toBeGreaterThan(0);
       for (const r of cargoResources) {
         expect([silver, luxuryTextiles]).toContain(r);
@@ -365,7 +598,7 @@ describe('tickEdgeHubs — seasonality', () => {
         config,
         today: 150,
         season: 'summer',
-        cityImportTargets,
+        cityImportTargets: profitableCityImportTargets,
         cityExportSources: [],
         rng: sRng,
       }).newCaravans.length;
@@ -373,7 +606,7 @@ describe('tickEdgeHubs — seasonality', () => {
         config,
         today: 350,
         season: 'winter',
-        cityImportTargets,
+        cityImportTargets: profitableCityImportTargets,
         cityExportSources: [],
         rng: wRng,
       }).newCaravans.length;

@@ -5,6 +5,11 @@
  * (settlement, resource, day), find a clearing price p* and emit the
  * resulting trades.
  *
+ * This is the market microstructure side of docs/08's modern
+ * microeconomic model: buyers arrive with willingness-to-pay curves,
+ * sellers arrive with reservation asks, and price discovery matches the
+ * highest WTP to the lowest ask until one side is exhausted.
+ *
  * Properties used:
  *   - aggregate demand is non-increasing in price.
  *   - aggregate supply is non-decreasing in price.
@@ -298,13 +303,10 @@ const finalizeClearing = (
     if (seller.remaining <= 0) si++;
   }
 
-  // "Unmet demand" reflects the famine semantics in docs/08: people who
-  // either could not be served at the clearing price (rationing) OR who
-  // were priced out (subsistence walked away because they couldn't afford,
-  // comfort substituted, status declined, producers shut down). We sum
-  // peakQuantity across sources and subtract what actually traded.
-  const totalPeakDemand = sumPeakQuantity(demand.sources);
-  const unmetDemandAtClearingPrice = Math.max(0, totalPeakDemand - totalTraded);
+  // "Unmet demand at clearing price" is literal: demand that still exists at
+  // p* but could not be served. Priced-out derived/status/comfort demand is
+  // foregone activity, not a shortage at the discovered market price.
+  const unmetDemandAtClearingPrice = Math.max(0, totalDemand - totalTraded);
   const unsoldSupplyAtClearingPrice = Math.max(
     0,
     supplyAvailableAt(supply.sources, clearingPrice) - totalTraded,
@@ -325,12 +327,6 @@ const sumSourceQuantities = (
 ): number => {
   let total = 0;
   for (const s of sources) total += s.quantityAt(p);
-  return total;
-};
-
-const sumPeakQuantity = (sources: readonly { peakQuantity: number }[]): number => {
-  let total = 0;
-  for (const s of sources) total += s.peakQuantity;
   return total;
 };
 

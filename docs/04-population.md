@@ -38,16 +38,16 @@ Notable individuals are modeled separately as **named characters**
 First-pass numbers tuned to historical Roman demographic
 estimates; tunable.
 
-| Metric | Estimate | Notes |
-|---|---|---|
-| Crude birth rate | 38–42 / 1000 / year | High by modern standards, normal for pre-industrial. |
-| Infant mortality (0–1 yr) | 25–30% | Half the gap to age-5 mortality. |
-| Child mortality (1–5 yr) | 15–20% | Combined with infant: ~40% don't reach 5. |
-| Adult baseline mortality | 10–15 / 1000 / year | Excludes plague, war, famine. |
-| Life expectancy at birth | 25–30 yr | Heavily skewed by child mortality. |
-| Life expectancy at age 15 | +40–55 more yr | If you survive childhood, you can live long. |
-| Plague-year excess mortality | +5–25% in one year | Historically devastating. |
-| Famine-year excess mortality | +5–20% if severe | Often local rather than universal. |
+| Metric                       | Estimate            | Notes                                                |
+| ---------------------------- | ------------------- | ---------------------------------------------------- |
+| Crude birth rate             | 38–42 / 1000 / year | High by modern standards, normal for pre-industrial. |
+| Infant mortality (0–1 yr)    | 25–30%              | Half the gap to age-5 mortality.                     |
+| Child mortality (1–5 yr)     | 15–20%              | Combined with infant: ~40% don't reach 5.            |
+| Adult baseline mortality     | 10–15 / 1000 / year | Excludes plague, war, famine.                        |
+| Life expectancy at birth     | 25–30 yr            | Heavily skewed by child mortality.                   |
+| Life expectancy at age 15    | +40–55 more yr      | If you survive childhood, you can live long.         |
+| Plague-year excess mortality | +5–25% in one year  | Historically devastating.                            |
+| Famine-year excess mortality | +5–20% if severe    | Often local rather than universal.                   |
 
 The pyramid for a stable, healthy population is fat at the bottom
 (many children, many died young) and skinny at the top (few
@@ -63,7 +63,7 @@ Two ticks together drive demographics:
   fires every simulation day. It samples a **per-cohort death
   binomial** at the day-equivalent of the annual rate, then a
   **per-fertile-female birth binomial** for new infants. Children
-  *appear* in the 0-4 band the day they're born.
+  _appear_ in the 0-4 band the day they're born.
 - `tickYearly(pool, rng)` fires once per game year (in the annual
   hook). Per cohort, **20% of its members age into the next band**
   each year — the standard discretization for 5-year buckets, since
@@ -189,18 +189,49 @@ see [12 — Bandits & Conflict](12-bandits-and-conflict.md)).
 
 ## Consumption per adult per day (subsistence baseline)
 
-| Need | Amount | Substitutes / notes |
-|---|---|---|
-| Calories | ~0.4 kg grain-equivalent / day | Bread, porridge, legumes, cheese, meat. Substitutable across food types with diminishing returns. |
-| Salt | ~7 g / day | Hard floor; no substitute. |
-| Fuel | ~0.7 kg wood-equivalent / day | More in cold climate, less in hot. Charcoal substitutes (~0.25 kg charcoal ≈ 1 kg wood for heat). |
-| Clothing wear | ~1 garment / 700 days | Cloth + tailor labor. |
-| Shelter upkeep | small lumber + brick over time | Per-household, accrues monthly. |
-| Water | (hex must have water access) | Aqueducts let cities exceed local water. |
+| Need           | Amount                         | Substitutes / notes                                                                               |
+| -------------- | ------------------------------ | ------------------------------------------------------------------------------------------------- |
+| Calories       | ~0.4 kg grain-equivalent / day | Bread, porridge, legumes, cheese, meat. Substitutable across food types with diminishing returns. |
+| Salt           | ~7 g / day                     | Hard floor; no substitute.                                                                        |
+| Fuel           | ~0.7 kg wood-equivalent / day  | More in cold climate, less in hot. Charcoal substitutes (~0.25 kg charcoal ≈ 1 kg wood for heat). |
+| Clothing wear  | ~1 garment / 700 days          | Cloth + tailor labor.                                                                             |
+| Shelter upkeep | small lumber + brick over time | Per-household, accrues monthly.                                                                   |
+| Water          | (hex must have water access)   | Aqueducts let cities exceed local water.                                                          |
 
 Children consume ~0.5×, elders ~0.8×.
 **Slaves**: subsistence calories + minimal salt + minimal
 clothing only. No comfort/status demand.
+
+Implementation note: daily staple consumption is settled through the
+local market as a mixed ration: grain remains the backbone, but bread
+and legumes also appear as direct subsistence demand. Rural settlements
+shift most of the bread line into grain because household baking,
+hand-milling, and porridge dominate outside towns; cities keep direct
+bread demand because ovens and retail bakeries are local institutions.
+Other edible stockpiles, including flour, raw milk, fresh fish, game,
+cheese, salted meat, and salted fish, plus any grain that did not clear
+in the first market pass, act as fallback rations when market-cleared
+staples do not cover the day's calorie need. All of these are still
+priced: a local household, civic body, or estate owner buys/allocates
+the ration and consumes it immediately. Self-allocation is
+ownership-aware: common households, villages/hamlets, city corporations,
+governor stores, and the player can consume their own ration stock for
+the population they represent; patrician families can self-provision
+patricians and enslaved dependents. A cashless common household still
+cannot take an unrelated patrician's private granary without a wage,
+ration entitlement, or other explicit transfer.
+
+Free workers receive coin income when production recipes run. The wage
+is the local subsistence basket, priced through the same market-price
+maps used by marginal cost. Enslaved workers do not receive wages; their
+owner buys or allocates subsistence for them. Which owner commands the
+work matters: slaves in a settlement are not a free public labor pool.
+Patrician estates, civic institutions, villages/hamlets, temples, the
+governor, and the player can use enslaved workers they control; common
+household aggregates, merchant guilds, off-map houses, and caravan firms
+must hire free/freed/foreigner labor instead. This is why households can
+spend on goods instead of being a purely notional demand source, while
+slave upkeep still remains a concrete owner-funded demand.
 
 ## Comfort and status demand
 
@@ -251,8 +282,9 @@ At each turn's production phase: for each settlement, sum up
 labor demanded by all desired recipes; compare to available
 workers in each role; if short, recipes scale down
 proportionally; surplus workers become idle. The settlement's
-planner can shift workers between roles slowly (current v1.5
-timing: ~0.66% reallocated per month, ~8% per year).
+planner can shift workers between roles gradually (current v1.5
+timing: ~8% reallocated per month, enough to respond within a year
+without making labor teleport daily).
 
 A recipe also requires its building (see
 [03 — Production](03-production.md)). Both must be present.
@@ -262,7 +294,8 @@ A recipe also requires its building (see
 Workers are paid out of recipe-output profits. When a settlement has
 unmet demand for a resource (bread, oil, cloth) and no workers in
 the relevant role, the settlement's planner re-trains idle workers
-+ pulls from oversupplied roles toward the shortage. Mechanically:
+
+- pulls from oversupplied roles toward the shortage. Mechanically:
 
 1. **At procgen**, every settlement's working-age adults are
    distributed across job roles in proportion to the seeded
@@ -270,16 +303,20 @@ the relevant role, the settlement's planner re-trains idle workers
    settlement starts with a roughly farm-vs-smithy split; an
    un-staffable settlement parks everyone on `idle`.
 2. **Each tick**, the production engine reads
-   `Settlement.jobAllocations` directly — a recipe needing
-   `miller` only sees the workers actually assigned as millers,
-   not the whole adult pool.
+   `Settlement.jobAllocations` and derives a per-job class mix from
+   the working-age population plus the job catalog's allowed classes.
+   A recipe needing `miller` only sees the workers actually assigned
+   as millers, not the whole adult pool; if a role is slave-excluded,
+   slave adults cannot satisfy that allocation.
 3. **Every 30 days**, in `politicsPhase`, a monthly reallocation
-   hook walks each settlement: it looks at the last 30 days of
-   `recipe_blocked` events with `reason="no_labor"`, picks the
-   most-blocked job role as the recipient, and pulls ~0.66% of
-   workers from the largest non-target allocation (often `idle`).
-   Each move emits a `workers_reallocated` TickEvent for
-   telemetry. Across a year that compounds to ~8% reallocated.
+   hook walks each settlement and combines two labor-demand signals:
+   recent `recipe_blocked` events with `reason="no_labor"` and
+   profitable recipe price signals from the local market. It splits an
+   ~8% worker-move budget across demanded roles proportionally and
+   pulls workers from the allocation with the lowest demand-per-worker
+   (often broad primary or `idle` labor, but sometimes an overbuilt
+   low-margin role such as miners after ore has piled up). Each move
+   emits a `workers_reallocated` TickEvent for telemetry.
 4. Class restrictions per [03 — Production](03-production.md) are
    enforced at the recipe-engine boundary, not at the allocation
    step.
@@ -317,7 +354,7 @@ hand violates pillar 1 (no merchant in the world thinks of
 
 **Multiple settlements may share a hex.** A single fertile hex
 can host one larger village plus 1–4 satellite hamlets clustered
-around it (a Roman *pagus* with its dependent hamlets is the
+around it (a Roman _pagus_ with its dependent hamlets is the
 canonical case). They are still separate entities — separate
 populations, separate elders / patrons, separate stockpiles —
 but **travel time between same-hex settlements is zero ticks**, so
@@ -327,6 +364,7 @@ same-hex settlements feel like one community to the people who live
 in them, but the political economy stays granular.
 
 Implications:
+
 - The settlement entity count target (see
   [01 — Simulation Frame](01-simulation-frame.md)) is the current
   non-aggregated ~3,000–8,000 settlement range.

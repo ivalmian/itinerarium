@@ -3,7 +3,7 @@
  *
  * Every workshop, field, mine, herd, and stockpile in the game
  * belongs to exactly one Actor (docs/11 §"Hex-level ownership").
- * Patrician families, free villages, hamlet households, the
+ * Patrician families, free villages, common households, hamlet households, the
  * governor's office, temples, bandit camps, caravan owners, the
  * player, off-map merchant houses, and city corporations are all
  * Actors.
@@ -23,6 +23,7 @@ import type { ActorId, Coin, Quantity, ResourceId, SettlementId } from '../types
 export type ActorKind =
   | 'patrician_family'
   | 'free_village'
+  | 'common_household'
   | 'hamlet_household'
   | 'governor_office'
   | 'temple'
@@ -36,6 +37,7 @@ export type ActorKind =
 export const ACTOR_KINDS = [
   'patrician_family',
   'free_village',
+  'common_household',
   'hamlet_household',
   'governor_office',
   'temple',

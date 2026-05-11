@@ -376,11 +376,20 @@ const KG_PER_MODIUS = 6.7; // see resources/catalog.ts food.grain
 // C17 (merchant guilds) coordinates trade flows, and C18 (goal
 // stacks) gives caravans persistent multi-leg intents.
 const GRAIN_DAYS_OF_RESERVE = 30;
+const WOOD_DAYS_OF_RESERVE = 7;
+const WOOD_CORDS_PER_ADULT_PER_DAY = 0.001;
+const STARTER_TOOLS_PER_CAPITA = 0.2;
 
 const grainModiiForPopulation = (totalPop: number, days: number): number => {
   const kg = totalPop * GRAIN_KG_PER_DAY * days;
   return Math.round(kg / KG_PER_MODIUS);
 };
+
+const woodCordsForPopulation = (totalPop: number, minCords: number): number =>
+  Math.max(minCords, totalPop * WOOD_CORDS_PER_ADULT_PER_DAY * WOOD_DAYS_OF_RESERVE);
+
+const toolsForPopulation = (totalPop: number, minTools: number): number =>
+  Math.max(minTools, totalPop * STARTER_TOOLS_PER_CAPITA);
 
 const grantStockpile = (actor: Actor, resource: string, qty: number): void => {
   if (qty <= 0) return;
@@ -392,6 +401,27 @@ const grantStockpile = (actor: Actor, resource: string, qty: number): void => {
   const id = resourceId(resource);
   const existing = actor.stockpile.get(id) ?? 0;
   actor.stockpile.set(id, existing + qty);
+};
+
+const grantStarterMarketInventory = (actor: Actor, settlement: Settlement, scale = 1): void => {
+  const pop = settlement.population.total();
+  if (pop <= 0 || scale <= 0) return;
+  // Durable and semi-durable market inventories represent last season's
+  // warehouses, household stores, and workshop shelves. Day 0 starts in
+  // spring; wine and oil especially cannot be zero until autumn without
+  // creating an artificial scarcity cap unrelated to production economics.
+  const grants: ReadonlyArray<readonly [string, number]> = [
+    ['food.wine', pop * 0.02 * 45 * scale],
+    ['food.olive_oil', pop * 0.005 * 60 * scale],
+    ['food.cheese', pop * 0.01 * 30 * scale],
+    ['food.salted_fish', pop * 0.01 * 20 * scale],
+    ['food.salted_meat', pop * 0.01 * 20 * scale],
+    ['goods.cloth', pop * 0.0014 * 180 * scale],
+    ['goods.clothing', pop * 0.0014 * 90 * scale],
+    ['goods.furniture', pop * 0.0001 * 180 * scale],
+    ['material.pottery', pop * 0.001 * 120 * scale],
+  ];
+  for (const [resource, qty] of grants) grantStockpile(actor, resource, qty);
 };
 
 // --- Hex ownership ----------------------------------------------------------
@@ -545,9 +575,37 @@ const seedCityCorporation = (
   // oil cycle and amphora is durable.
   const pop = settlement.population.total();
   grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
-  grantStockpile(actor, 'material.wood', pop * 5);
+  grantStockpile(actor, 'material.wood', woodCordsForPopulation(pop, 20));
   grantStockpile(actor, 'material.amphora', Math.max(20, Math.floor(pop / 5)));
-  grantStockpile(actor, 'goods.tools', Math.max(500, pop * 20));
+  grantStockpile(actor, 'goods.tools', toolsForPopulation(pop, 50));
+  grantStarterMarketInventory(actor, settlement, 1.25);
+  return actor;
+};
+
+const commonHouseholdTreasuryForSettlement = (settlement: Settlement): number => {
+  // Match the liquid wealth assumptions in market/scheduleBuilder.ts:
+  // plebeian 30, freedman 15, foreigner 50 coin-equivalent per head.
+  const plebeian = settlement.population.totalByClass('plebeian') * 30;
+  const freedman = settlement.population.totalByClass('freedman') * 15;
+  const foreigner = settlement.population.totalByClass('foreigner') * 50;
+  return Math.max(100, Math.floor(plebeian + freedman + foreigner));
+};
+
+const seedCommonHousehold = (
+  ctx: BuildContext,
+  settlement: Settlement,
+  settlementName: string,
+): Actor => {
+  const aId = actorId(nextId('actor'));
+  const actor = createActor({
+    id: aId,
+    kind: 'common_household',
+    name: `Common Households of ${settlementName}`,
+    homeSettlement: settlement.id,
+    treasury: commonHouseholdTreasuryForSettlement(settlement),
+  });
+  addActor(ctx, actor);
+  settlement.stockpileOwners.push(aId);
   return actor;
 };
 
@@ -593,9 +651,10 @@ const seedFreeVillage = (
   // online within the first month; trade fills any remaining gap.
   const pop = settlement.population.total();
   grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
-  grantStockpile(actor, 'goods.tools', Math.max(500, pop * 20));
-  grantStockpile(actor, 'material.wood', pop * 5);
+  grantStockpile(actor, 'goods.tools', toolsForPopulation(pop, 10));
+  grantStockpile(actor, 'material.wood', woodCordsForPopulation(pop, 5));
   grantStockpile(actor, 'material.amphora', Math.max(10, Math.floor(pop / 10)));
+  grantStarterMarketInventory(actor, settlement, 0.7);
   return actor;
 };
 
@@ -624,15 +683,17 @@ const seedClientVillage = (ctx: BuildContext, settlement: Settlement, patron: Ac
   addCharacter(ctx, headman);
   settlement.factions.push(patronFaction.id);
   settlement.stockpileOwners.push(patron.id);
+  seedCommonHousehold(ctx, settlement, settlement.name);
   // ~30 days of grain + ~7 days of tools/wood for the patron's client
   // village; the patron accumulates across multiple villages so a city
   // family that holds 3-5 client villages still has months of headroom
   // before any single village's harvest. Per docs/15 §C5.
   const pop = settlement.population.total();
   grantStockpile(patron, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
-  grantStockpile(patron, 'goods.tools', Math.max(500, pop * 20));
-  grantStockpile(patron, 'material.wood', pop * 5);
+  grantStockpile(patron, 'goods.tools', toolsForPopulation(pop, 10));
+  grantStockpile(patron, 'material.wood', woodCordsForPopulation(pop, 5));
   grantStockpile(patron, 'material.amphora', Math.max(10, Math.floor(pop / 10)));
+  grantStarterMarketInventory(patron, settlement, 0.7);
 };
 
 const seedHamlet = (ctx: BuildContext, settlement: Settlement, settlementName: string): Actor => {
@@ -670,8 +731,9 @@ const seedHamlet = (ctx: BuildContext, settlement: Settlement, settlementName: s
   settlement.stockpileOwners.push(aId);
   const pop = settlement.population.total();
   grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
-  grantStockpile(actor, 'goods.tools', Math.max(500, pop * 20));
-  grantStockpile(actor, 'material.wood', pop * 5);
+  grantStockpile(actor, 'goods.tools', toolsForPopulation(pop, 10));
+  grantStockpile(actor, 'material.wood', woodCordsForPopulation(pop, 5));
+  grantStarterMarketInventory(actor, settlement, 0.25);
   return actor;
 };
 
@@ -792,6 +854,7 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
     const city = siteToSettlement.get(site);
     if (city === undefined) continue;
     seedCityCorporation(ctx, city, city.name);
+    seedCommonHousehold(ctx, city, city.name);
     const seeds: FamilySeed[] = [];
     for (let i = 0; i < familiesPerCity; i++) {
       seeds.push(seedPatricianFamily(ctx, city, city.name));
@@ -805,6 +868,7 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
     const town = siteToSettlement.get(site);
     if (town === undefined) continue;
     seedCityCorporation(ctx, town, town.name);
+    seedCommonHousehold(ctx, town, town.name);
   }
 
   // Phase 5: villages — assign as patron-client to a nearby family or as a
@@ -1033,7 +1097,11 @@ const seedInitialBanditCamps = (
         if (settlementHexKeys.has(hexKey(h))) continue;
         const tile = grid.get(h);
         if (tile === undefined) continue;
-        if (tile.terrain !== 'forest' && tile.terrain !== 'dense_forest' && tile.terrain !== 'hills') {
+        if (
+          tile.terrain !== 'forest' &&
+          tile.terrain !== 'dense_forest' &&
+          tile.terrain !== 'hills'
+        ) {
           continue;
         }
         candidates.push(h);
@@ -1305,6 +1373,7 @@ const tryAddBuilding = (
     hex,
     ownerActor,
     capacity,
+    maxCapacity: capacity,
     daysSinceMaintained: 0,
   });
 };
@@ -1335,8 +1404,11 @@ const TIER_CAPACITY: Record<SettlementTier, number> = {
 //   - pasture is a real bottleneck per the steady-state analyzer; one
 //     pasture per settlement at the tier cap covers most pastoral
 //     demand once the herd is established.
+//   - bakery needs ~1.5x mill capacity: mill_grain produces 45 flour/run
+//     and bake_bread consumes 30 flour/run.
 // All other buildings keep the tier-default cap.
 const BUILDING_CAP_MULTIPLIER: Record<string, number> = {
+  bakery: 1.5,
   forester_camp: 4,
   charcoal_kiln: 2,
   bloomery: 2,
@@ -1348,6 +1420,87 @@ const capacityFor = (kind: string, tier: SettlementTier): number => {
   const base = TIER_CAPACITY[tier];
   const mul = BUILDING_CAP_MULTIPLIER[kind] ?? 1;
   return base * mul;
+};
+
+const MINEABLE_DEPOSIT_RESOURCES: ReadonlySet<string> = new Set([
+  'mineral.iron_ore',
+  'mineral.copper_ore',
+  'mineral.tin_ore',
+  'mineral.lead_ore',
+  'mineral.silver_ore',
+  'mineral.gold_ore',
+  'mineral.salt',
+]);
+
+const SMELTABLE_ORE_RESOURCES: ReadonlySet<string> = new Set([
+  'mineral.iron_ore',
+  'mineral.copper_ore',
+  'mineral.tin_ore',
+  'mineral.lead_ore',
+  'mineral.silver_ore',
+  'mineral.gold_ore',
+]);
+
+const depositResourceAt = (ctx: BuildContext, h: Hex): string | undefined => {
+  const deposit = ctx.grid.get(h)?.deposit;
+  if (deposit === undefined || deposit.remaining <= 0) return undefined;
+  return String(deposit.resource);
+};
+
+const mineableDepositHexes = (ctx: BuildContext, hexes: readonly Hex[]): readonly Hex[] =>
+  hexes.filter((h) => {
+    const resource = depositResourceAt(ctx, h);
+    return resource !== undefined && MINEABLE_DEPOSIT_RESOURCES.has(resource);
+  });
+
+const hasSmeltableOreDeposit = (ctx: BuildContext, hexes: readonly Hex[]): boolean =>
+  hexes.some((h) => {
+    const resource = depositResourceAt(ctx, h);
+    return resource !== undefined && SMELTABLE_ORE_RESOURCES.has(resource);
+  });
+
+const miningClaimRadiusFor = (tier: SettlementTier): number => {
+  switch (tier) {
+    case 'hamlet':
+      return 0;
+    case 'village':
+      return 4;
+    case 'town':
+      return 7;
+    case 'small_city':
+    case 'large_city':
+      return 10;
+  }
+};
+
+const settlementHexKeys = (settlement: Settlement): Set<string> =>
+  new Set([...settlement.urbanHexes, ...settlement.catchmentHexes].map(hexKey));
+
+const claimNearbyMiningDeposits = (
+  ctx: BuildContext,
+  settlement: Settlement,
+  ownerActor: ActorId,
+): void => {
+  const radius = miningClaimRadiusFor(settlement.tier);
+  if (radius <= 0) return;
+  const known = settlementHexKeys(settlement);
+  for (const [h, tile] of ctx.grid.withinRange(settlement.anchor, radius)) {
+    const deposit = tile.deposit;
+    if (
+      deposit === undefined ||
+      deposit.remaining <= 0 ||
+      !MINEABLE_DEPOSIT_RESOURCES.has(String(deposit.resource))
+    ) {
+      continue;
+    }
+    const key = hexKey(h);
+    if (tile.ownerActor !== null && !known.has(key)) continue;
+    if (!known.has(key)) {
+      settlement.catchmentHexes.push(h);
+      known.add(key);
+    }
+    if (tile.ownerActor === null) tile.ownerActor = ownerActor;
+  }
 };
 
 /**
@@ -1364,8 +1517,9 @@ const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void =
   const tier = settlement.tier;
   const capOf = (kind: string): number => capacityFor(kind, tier);
 
+  claimNearbyMiningDeposits(ctx, settlement, owner);
+
   const catchment = settlement.catchmentHexes;
-  if (catchment.length === 0) return;
 
   // Filter both hex pools for buildable terrain. Per the user's model
   // (rivers <1 km wide, lakes fully occupy a hex), only lakes + high
@@ -1376,12 +1530,27 @@ const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void =
     if (t === undefined) return false;
     return t.terrain !== 'lake' && t.terrain !== 'mountains' && t.terrain !== 'dense_forest';
   };
+  const hasWaterAccess = (h: Hex): boolean => {
+    for (const n of hexesWithinRange(h, 1)) {
+      const t = ctx.grid.get(n);
+      if (t === undefined) continue;
+      if (t.hasRiver || t.terrain === 'river' || t.terrain === 'lake') return true;
+    }
+    return false;
+  };
   const passableCatchment = catchment.filter(passable);
   const passableUrban = settlement.urbanHexes.filter(passable);
-  if (passableCatchment.length === 0 || passableUrban.length === 0) return;
+  if (passableUrban.length === 0) return;
+  // Same-hex hamlets and dense pagus clusters can lose all claimed
+  // catchment under the closer-wins rule. They still need a subsistence
+  // footprint (garden plots, common pasture, worked strips around the home
+  // hex), so farm/pasture/forester fall back to buildable urban/home land.
+  const subsistenceLand = passableCatchment.length > 0 ? passableCatchment : passableUrban;
 
   const cHex = (i: number): Hex =>
-    (passableCatchment[i % passableCatchment.length] ?? (passableCatchment[0] as Hex)) as Hex;
+    (subsistenceLand[i % subsistenceLand.length] ?? (subsistenceLand[0] as Hex)) as Hex;
+  const catchmentHex = (i: number): Hex | undefined =>
+    passableCatchment.length > 0 ? passableCatchment[i % passableCatchment.length] : undefined;
   const uHex = (i: number): Hex =>
     (passableUrban[i % passableUrban.length] ?? (passableUrban[0] as Hex)) as Hex;
 
@@ -1393,27 +1562,57 @@ const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void =
   tryAddBuilding(settlement, 'farm', cHex(1), owner, capOf('farm'));
   tryAddBuilding(settlement, 'forester_camp', cHex(2), owner, capOf('forester_camp'));
   tryAddBuilding(settlement, 'sawmill', uHex(0), owner, capOf('sawmill'));
+  const fisheryHex = [...passableUrban, ...passableCatchment].find(hasWaterAccess);
+  if (fisheryHex !== undefined) {
+    tryAddBuilding(settlement, 'fishery', fisheryHex, owner, capOf('fishery'));
+  }
 
-  // Village+: add charcoal_kiln so smithies have fuel; mine + bloomery so
-  // iron production isn't gated on a procgen ore deposit landing in the
-  // catchment (deposits are rare). Plus dairy (the steady-state analyzer
-  // flagged dairy as not seeded — without it the cheese chain runs from
-  // milk_dairy → no building → no output).
+  const mineHexes = mineableDepositHexes(ctx, catchment);
+  const hasOreForSmelting = hasSmeltableOreDeposit(ctx, catchment);
+
+  // Village+: add charcoal_kiln so smithies have fuel. Mines are only seeded
+  // on actual mineral deposits; bloomeries are only seeded where smeltable ore
+  // exists locally. The earlier fake-mine bootstrap fabricated ore everywhere
+  // and created province-wide charcoal demand unrelated to geography.
+  // Dairy stays broad because milk/cheese is a normal local hinterland chain.
   if (
     settlement.tier === 'village' ||
     settlement.tier === 'town' ||
     settlement.tier === 'small_city' ||
     settlement.tier === 'large_city'
   ) {
-    // charcoal_kiln is a workshop (kiln in the village outskirts);
-    // mine + quarry need catchment land; bloomery/smithy/dairy are
-    // urban workshops.
+    // charcoal_kiln and craft shops sit in the village outskirts; mine +
+    // quarry + vineyards/olive groves need catchment land. Rural workshops
+    // matter because most cloth, pottery, wine, and oil are estate/village
+    // production, not only urban corporation output.
     tryAddBuilding(settlement, 'charcoal_kiln', uHex(1), owner, capOf('charcoal_kiln'));
-    tryAddBuilding(settlement, 'mine', cHex(3), owner, capOf('mine'));
-    tryAddBuilding(settlement, 'bloomery', uHex(2), owner, capOf('bloomery'));
+    for (const mineHex of mineHexes) {
+      tryAddBuilding(settlement, 'mine', mineHex, owner, capOf('mine'));
+    }
+    if (hasOreForSmelting) {
+      tryAddBuilding(settlement, 'bloomery', uHex(2), owner, capOf('bloomery'));
+    }
     tryAddBuilding(settlement, 'smithy', uHex(3), owner, capOf('smithy'));
     tryAddBuilding(settlement, 'dairy', uHex(4), owner, capOf('dairy'));
-    tryAddBuilding(settlement, 'quarry', cHex(4), owner, capOf('quarry'));
+    tryAddBuilding(settlement, 'weaver_workshop', uHex(5), owner, capOf('weaver_workshop'));
+    tryAddBuilding(settlement, 'tannery', uHex(6), owner, capOf('tannery'));
+    tryAddBuilding(settlement, 'tailor_shop', uHex(7), owner, capOf('tailor_shop'));
+    tryAddBuilding(settlement, 'kiln', uHex(8), owner, capOf('kiln'));
+    tryAddBuilding(settlement, 'pottery', uHex(9), owner, capOf('pottery'));
+    const oliveHex = catchmentHex(5);
+    if (oliveHex !== undefined) {
+      tryAddBuilding(settlement, 'olive_grove', oliveHex, owner, capOf('olive_grove'));
+    }
+    const vineyardHex = catchmentHex(6);
+    if (vineyardHex !== undefined) {
+      tryAddBuilding(settlement, 'vineyard', vineyardHex, owner, capOf('vineyard'));
+    }
+    tryAddBuilding(settlement, 'oil_press', uHex(10), owner, capOf('oil_press'));
+    tryAddBuilding(settlement, 'winery', uHex(11), owner, capOf('winery'));
+    const quarryHex = catchmentHex(4);
+    if (quarryHex !== undefined) {
+      tryAddBuilding(settlement, 'quarry', quarryHex, owner, capOf('quarry'));
+    }
   }
 
   // Town+: refining chain (mill + bakery + granary) and weaver_workshop.
@@ -1434,11 +1633,19 @@ const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void =
     tryAddBuilding(settlement, 'bakery', uHex(6), owner, capOf('bakery'));
     tryAddBuilding(settlement, 'granary', uHex(7), owner, capOf('granary'));
     tryAddBuilding(settlement, 'weaver_workshop', uHex(8), owner, capOf('weaver_workshop'));
-    tryAddBuilding(settlement, 'olive_grove', cHex(5), owner, capOf('olive_grove'));
-    tryAddBuilding(settlement, 'vineyard', cHex(6), owner, capOf('vineyard'));
-    tryAddBuilding(settlement, 'oil_press', uHex(9), owner, capOf('oil_press'));
-    tryAddBuilding(settlement, 'winery', uHex(10), owner, capOf('winery'));
-    tryAddBuilding(settlement, 'pottery', uHex(11), owner, capOf('pottery'));
+    tryAddBuilding(settlement, 'tannery', uHex(9), owner, capOf('tannery'));
+    tryAddBuilding(settlement, 'oil_press', uHex(10), owner, capOf('oil_press'));
+    tryAddBuilding(settlement, 'winery', uHex(11), owner, capOf('winery'));
+    tryAddBuilding(settlement, 'kiln', uHex(12), owner, capOf('kiln'));
+    tryAddBuilding(settlement, 'pottery', uHex(13), owner, capOf('pottery'));
+    tryAddBuilding(settlement, 'tailor_shop', uHex(14), owner, capOf('tailor_shop'));
+    tryAddBuilding(settlement, 'cart_wright', uHex(15), owner, capOf('cart_wright'));
+    // Institutional buyers: forums, temples, and barracks do not produce
+    // cargo, but they create real procurement demand for admin stipends,
+    // offerings, and garrison upkeep.
+    tryAddBuilding(settlement, 'forum_market', uHex(16), owner, 1);
+    tryAddBuilding(settlement, 'temple', uHex(17), owner, 1);
+    tryAddBuilding(settlement, 'barracks', uHex(18), owner, 1);
   }
 };
 
@@ -1447,7 +1654,7 @@ const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void =
  * capacity. Per docs/04 §"Worker reallocation by demand": each adult is
  * assigned to a single job; the production engine then treats them as
  * available *only* for that role. The monthly reallocation hook in
- * tick.ts shifts ~0.66% of workers per month between roles based on
+ * tick.ts shifts ~3% of workers per month between roles based on
  * observed shortages.
  *
  * Algorithm (deterministic):

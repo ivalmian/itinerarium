@@ -56,17 +56,29 @@ interface RecipeInput {
 
 const NOMINAL_INPUT: Readonly<Record<string, Quantity>> = {};
 
+// Tool inputs model depreciation of durable capital, not one-shot consumed
+// materials. A `goods.tools` unit is an ~8 kg kit; extraction jobs wear out
+// a small fraction of a kit per worker-day, while agriculture is lighter.
+const LIGHT_TOOL_WEAR = 0.005;
+const FISHING_TOOL_WEAR = 0.005;
+const FORESTRY_TOOL_WEAR = 0.01;
+const QUARRY_TOOL_WEAR = 0.02;
+const MINING_TOOL_WEAR = 0.02;
+
 const DEFS: readonly RecipeInput[] = [
   // --- Agriculture (seasonal) ---
+  // Ordinary crop tools wear slowly: ~1 sickle/hoe replacement per
+  // farmer per working year, represented as 0.005 tool units per
+  // farmer-day. Mining and heavy craft recipes keep higher tool wear.
   {
     id: 'sow_grain',
-    inputs: { 'food.grain': 5, 'goods.tools': 0.05 },
+    inputs: { 'food.grain': 5, 'goods.tools': LIGHT_TOOL_WEAR },
     labor: { farmer: 1 },
     building: 'farm',
-    outputs: { 'service.public_works': 0.001 },
+    outputs: {},
     seasonalMultiplier: { spring: 1, summer: 0, autumn: 0, winter: 0 },
     notes:
-      'Sowing consumes seed grain. Output here is symbolic; the real harvest comes from harvest_grain in summer/autumn.',
+      'Sowing consumes seed grain and farm labor but creates no tradable output; the real harvest comes from harvest_grain in summer/autumn.',
   },
   {
     id: 'harvest_grain',
@@ -74,7 +86,7 @@ const DEFS: readonly RecipeInput[] = [
     // (working ~200 farmer-days per year per sickle). This restores the
     // realistic per-recipe wear rate and makes the smithy/forge_tools
     // chain load-bearing for the world's tool supply.
-    inputs: { 'goods.tools': 0.005 },
+    inputs: { 'goods.tools': LIGHT_TOOL_WEAR },
     labor: { farmer: 1 },
     building: 'farm',
     outputs: { 'food.grain': 80 },
@@ -83,24 +95,25 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'tend_olive_grove',
-    inputs: { 'goods.tools': 0.02 },
+    inputs: { 'goods.tools': LIGHT_TOOL_WEAR },
     labor: { farmer: 0.3 },
     building: 'olive_grove',
     outputs: { 'food.olives': 30 },
-    seasonalMultiplier: { spring: 0.2, summer: 0.2, autumn: 1, winter: 0.1 },
-    notes: 'Year-round care; harvest concentrated in autumn.',
+    seasonalMultiplier: { spring: 0, summer: 0, autumn: 1, winter: 0 },
+    notes: 'Annual autumn harvest; year-round care is abstracted into grove capacity.',
   },
   {
     id: 'tend_vineyard',
-    inputs: { 'goods.tools': 0.02 },
+    inputs: { 'goods.tools': LIGHT_TOOL_WEAR },
     labor: { farmer: 0.4 },
     building: 'vineyard',
     outputs: { 'food.grapes': 40 },
-    seasonalMultiplier: { spring: 0.3, summer: 0.4, autumn: 1, winter: 0.1 },
+    seasonalMultiplier: { spring: 0, summer: 0, autumn: 1, winter: 0 },
+    notes: 'Annual autumn grape harvest; pruning/care is abstracted into vineyard capacity.',
   },
   {
     id: 'grow_flax',
-    inputs: { 'goods.tools': 0.05 },
+    inputs: { 'goods.tools': LIGHT_TOOL_WEAR },
     labor: { farmer: 1 },
     building: 'farm',
     outputs: { 'material.flax': 20 },
@@ -108,7 +121,7 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'grow_legumes',
-    inputs: { 'goods.tools': 0.05 },
+    inputs: { 'goods.tools': LIGHT_TOOL_WEAR },
     labor: { farmer: 1 },
     building: 'farm',
     outputs: { 'food.legumes': 50 },
@@ -168,7 +181,8 @@ const DEFS: readonly RecipeInput[] = [
     labor: { dairy_worker: 1 },
     building: 'dairy',
     outputs: { 'food.milk': 30 },
-    notes: 'Daily dairy yield (~30 kg per cattle herd unit). Sold or processed into cheese same day.',
+    notes:
+      'Daily dairy yield (~30 kg per cattle herd unit). Sold or processed into cheese same day.',
   },
   {
     id: 'slaughter_for_meat_and_hides',
@@ -179,11 +193,27 @@ const DEFS: readonly RecipeInput[] = [
     notes:
       'One slaughter event yields salted meat + hides. Modeled here on cattle; analog applies to other livestock.',
   },
+  {
+    id: 'slaughter_sheep_for_meat_and_hides',
+    inputs: { 'livestock.sheep': 0.03, 'mineral.salt': 1.5 },
+    labor: { shepherd: 0.4 },
+    building: 'pasture',
+    outputs: { 'food.salted_meat': 42, 'material.hides': 2 },
+    notes: 'Cull sheep into salted meat and hides; unlike shearing, this consumes herd stock.',
+  },
+  {
+    id: 'slaughter_pigs_for_meat_and_hides',
+    inputs: { 'livestock.pigs': 0.05, 'mineral.salt': 1.5 },
+    labor: { swineherd: 0.4 },
+    building: 'pasture',
+    outputs: { 'food.salted_meat': 48, 'material.hides': 1.5 },
+    notes: 'Turns pig herds into storable pork and hides so pigs have a real buyer path.',
+  },
 
   // --- Extraction ---
   {
     id: 'fell_timber',
-    inputs: { 'goods.tools': 0.05 },
+    inputs: { 'goods.tools': FORESTRY_TOOL_WEAR },
     labor: { forester: 1 },
     building: 'forester_camp',
     // Realistic: a Roman forester crew yields ~1.5 cords/day. The wood
@@ -195,56 +225,56 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'quarry_stone',
-    inputs: { 'goods.tools': 0.1 },
+    inputs: { 'goods.tools': QUARRY_TOOL_WEAR },
     labor: { quarryman: 1 },
     building: 'quarry',
     outputs: { 'material.stone': 1.2 },
   },
   {
     id: 'dig_clay',
-    inputs: { 'goods.tools': 0.05 },
+    inputs: { 'goods.tools': QUARRY_TOOL_WEAR },
     labor: { quarryman: 1 },
     building: 'quarry',
     outputs: { 'material.clay': 5 },
   },
   {
     id: 'mine_iron',
-    inputs: { 'goods.tools': 0.1 },
+    inputs: { 'goods.tools': MINING_TOOL_WEAR },
     labor: { miner: 1 },
     building: 'mine',
     outputs: { 'mineral.iron_ore': 4 },
   },
   {
     id: 'mine_copper',
-    inputs: { 'goods.tools': 0.1 },
+    inputs: { 'goods.tools': MINING_TOOL_WEAR },
     labor: { miner: 1 },
     building: 'mine',
     outputs: { 'mineral.copper_ore': 3 },
   },
   {
     id: 'mine_tin',
-    inputs: { 'goods.tools': 0.1 },
+    inputs: { 'goods.tools': MINING_TOOL_WEAR },
     labor: { miner: 1 },
     building: 'mine',
     outputs: { 'mineral.tin_ore': 1.5 },
   },
   {
     id: 'mine_lead',
-    inputs: { 'goods.tools': 0.1 },
+    inputs: { 'goods.tools': MINING_TOOL_WEAR },
     labor: { miner: 1 },
     building: 'mine',
     outputs: { 'mineral.lead_ore': 3 },
   },
   {
     id: 'mine_silver',
-    inputs: { 'goods.tools': 0.1 },
+    inputs: { 'goods.tools': MINING_TOOL_WEAR },
     labor: { miner: 1 },
     building: 'mine',
     outputs: { 'mineral.silver_ore': 0.6 },
   },
   {
     id: 'mine_gold',
-    inputs: { 'goods.tools': 0.1 },
+    inputs: { 'goods.tools': MINING_TOOL_WEAR },
     labor: { miner: 1 },
     building: 'mine',
     outputs: { 'mineral.gold_ore': 0.1 },
@@ -260,28 +290,28 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'mine_salt',
-    inputs: { 'goods.tools': 0.1 },
+    inputs: { 'goods.tools': MINING_TOOL_WEAR },
     labor: { salt_worker: 1 },
     building: 'mine',
     outputs: { 'mineral.salt': 6 },
   },
   {
     id: 'fish_river',
-    inputs: { 'goods.tools': 0.02 },
+    inputs: { 'goods.tools': FISHING_TOOL_WEAR },
     labor: { fisher: 1 },
     building: 'fishery',
     outputs: { 'food.fish': 6 },
   },
   {
     id: 'fish_lake',
-    inputs: { 'goods.tools': 0.02 },
+    inputs: { 'goods.tools': FISHING_TOOL_WEAR },
     labor: { fisher: 1 },
     building: 'fishery',
     outputs: { 'food.fish': 8 },
   },
   {
     id: 'hunt_game',
-    inputs: { 'goods.tools': 0.02 },
+    inputs: { 'goods.tools': FORESTRY_TOOL_WEAR },
     labor: { hunter: 1 },
     building: 'forester_camp',
     outputs: { 'food.game': 4, 'material.hides': 0.3 },
@@ -377,14 +407,16 @@ const DEFS: readonly RecipeInput[] = [
   {
     id: 'burn_charcoal',
     // Historical: ~5 kg of wood yields ~1 kg of charcoal in a clamp burn.
-    // We model 4 wood → 1 charcoal as a slightly generous Roman-era
-    // production rate (closer to industrial-era kilns). The forester /
-    // sawmill chain has to keep up.
-    inputs: { 'material.wood': 4 },
+    // Resource units matter here: material.wood is a 700 kg cord, while
+    // material.charcoal is a 30 kg sack. One collier-day tending a clamp
+    // batch yields about five sacks from one cord: the mass ratio stays
+    // realistic, but labor productivity no longer forces 100 colliers per
+    // smelter-day.
+    inputs: { 'material.wood': 1 },
     labor: { collier: 1 },
     building: 'charcoal_kiln',
-    outputs: { 'material.charcoal': 1 },
-    notes: 'Historical: clamp-burned charcoal at ~4-5 kg wood per kg charcoal.',
+    outputs: { 'material.charcoal': 5 },
+    notes: 'Clamp-burned charcoal: ~700 kg wood (1 cord) per five 30 kg charcoal sacks.',
   },
   {
     id: 'saw_lumber',
@@ -395,7 +427,7 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'dress_stone',
-    inputs: { 'material.stone': 2, 'goods.tools': 0.1 },
+    inputs: { 'material.stone': 2, 'goods.tools': QUARRY_TOOL_WEAR },
     labor: { mason: 1 },
     building: 'quarry',
     outputs: { 'material.cut_stone': 1 },
@@ -498,7 +530,16 @@ const DEFS: readonly RecipeInput[] = [
     labor: { weaver: 1 },
     building: 'weaver_workshop',
     outputs: { 'goods.cloth': 1 },
-    notes: 'Wool path; linen alternative would consume material.linen_fiber instead.',
+    notes: 'Wool cloth path. Runs before linen so wool remains the preferred textile input.',
+  },
+  {
+    id: 'weave_linen_cloth',
+    inputs: { 'material.linen_fiber': 4 },
+    labor: { weaver: 1 },
+    building: 'weaver_workshop',
+    outputs: { 'goods.cloth': 1 },
+    notes:
+      'Linen cloth path. Turns the flax/retting chain into real cloth supply instead of dead-end fiber.',
   },
   {
     id: 'tailor_clothing',
@@ -509,7 +550,7 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'forge_tools',
-    inputs: { 'metal.iron': 5, 'material.lumber': 2, 'material.charcoal': 3 },
+    inputs: { 'metal.iron': 5, 'material.lumber': 0.08, 'material.charcoal': 3 },
     labor: { smith: 1 },
     building: 'smithy',
     outputs: { 'goods.tools': 15 },
