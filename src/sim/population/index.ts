@@ -18,6 +18,19 @@ export {
   poolFromMap,
 } from './cohort.js';
 
+export type { Demographics, MutableDemographics, RoleBias, RoleBiasName } from './demographics.js';
+export {
+  ROLE_BIASES,
+  applyDeathsToPool,
+  cloneDemographics,
+  demoKey,
+  drainDemographics,
+  drawDemographicsFromPool,
+  parseDemoKey,
+  totalDemographics,
+  validateDemographics,
+} from './demographics.js';
+
 export type { VitalRates } from './vitalRates.js';
 export { ROMAN_VITAL_RATES, tickDaily, tickYearly } from './vitalRates.js';
 
