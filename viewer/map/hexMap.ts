@@ -127,10 +127,13 @@ export const createHexMap = (grid: HexGrid, hexSize: number): HexMap => {
   fills.label = 'hexFills';
   const biomeEdges = new Container();
   biomeEdges.label = 'biomeEdges';
+  const detail = new Container();
+  detail.label = 'terrainDetail';
   // Biome strips draw above the fill so they're visible, but the container
   // ordering here lives below the rivers/roads layers wired in app.ts.
   container.addChild(fills);
   container.addChild(biomeEdges);
+  container.addChild(detail);
 
   const entries = new Map<string, HexEntry>();
   const bounds = {
@@ -142,6 +145,7 @@ export const createHexMap = (grid: HexGrid, hexSize: number): HexMap => {
 
   for (const [h, tile] of grid.tiles()) {
     addHex(fills, entries, h, tile, hexSize, bounds);
+    drawTerrainDetail(detail, h, tile, hexSize);
   }
 
   // Pass two: biome edge strips. Walk every (hex, neighbor) once by only
@@ -181,6 +185,109 @@ const addHex = (
   if (px.y < bounds.minY) bounds.minY = px.y;
   if (px.x > bounds.maxX) bounds.maxX = px.x;
   if (px.y > bounds.maxY) bounds.maxY = px.y;
+};
+
+/**
+ * Sub-tile terrain detail: a few subtle glyphs per hex hint at what's
+ * there (tree triangles on forest, ripple lines on water, dunes on
+ * desert, etc.). Deterministic from the hex coords so the same world
+ * looks identical on every reload.
+ */
+const drawTerrainDetail = (container: Container, h: Hex, tile: HexTile, hexSize: number): void => {
+  const { x: cx, y: cy } = hexToPixel(h, hexSize);
+  // Pseudo-random in [0,1] derived from hex coords (stable per world).
+  const rand = (salt: number): number => {
+    const x = Math.sin(h.q * 91 + h.r * 173 + salt * 311) * 9999;
+    return x - Math.floor(x);
+  };
+  const t = tile.terrain;
+
+  if (t === 'forest' || t === 'dense_forest') {
+    const count = t === 'dense_forest' ? 4 : 2;
+    const treeColor = t === 'dense_forest' ? 0x1a2e15 : 0x2a4520;
+    for (let i = 0; i < count; i++) {
+      const angle = rand(i) * Math.PI * 2;
+      const r = rand(i + 100) * hexSize * 0.45;
+      const tx = cx + Math.cos(angle) * r;
+      const ty = cy + Math.sin(angle) * r;
+      const tree = new Graphics();
+      const sz = hexSize * 0.18;
+      tree.moveTo(tx, ty - sz).lineTo(tx + sz * 0.6, ty + sz * 0.4).lineTo(tx - sz * 0.6, ty + sz * 0.4).closePath();
+      tree.fill({ color: treeColor, alpha: 0.85 });
+      container.addChild(tree);
+    }
+  } else if (t === 'hills') {
+    // Two soft mounds — small arcs.
+    const mound = new Graphics();
+    const w = hexSize * 0.45;
+    const moundColor = 0x7a5e35;
+    mound.moveTo(cx - w, cy + w * 0.2).bezierCurveTo(cx - w * 0.4, cy - w * 0.4, cx + w * 0.4, cy - w * 0.4, cx + w, cy + w * 0.2);
+    mound.stroke({ color: moundColor, width: 0.8, alpha: 0.7 });
+    container.addChild(mound);
+  } else if (t === 'mountains') {
+    // Caret peaks.
+    const peak = new Graphics();
+    const w = hexSize * 0.5;
+    peak.moveTo(cx - w * 0.7, cy + w * 0.3)
+      .lineTo(cx - w * 0.2, cy - w * 0.3)
+      .lineTo(cx + w * 0.1, cy + w * 0.05)
+      .lineTo(cx + w * 0.4, cy - w * 0.4)
+      .lineTo(cx + w * 0.7, cy + w * 0.3);
+    peak.stroke({ color: 0x4d4844, width: 1.0, alpha: 0.9 });
+    container.addChild(peak);
+  } else if (t === 'lake' || t === 'river' || t === 'coast') {
+    // Ripple lines.
+    const ripple = new Graphics();
+    const lineColor = t === 'coast' ? 0xa9c4d6 : 0x6b9bbb;
+    for (let i = 0; i < 2; i++) {
+      const y = cy - hexSize * 0.15 + i * hexSize * 0.25;
+      ripple
+        .moveTo(cx - hexSize * 0.4, y)
+        .bezierCurveTo(cx - hexSize * 0.1, y - hexSize * 0.05, cx + hexSize * 0.1, y + hexSize * 0.05, cx + hexSize * 0.4, y);
+    }
+    ripple.stroke({ color: lineColor, width: 0.6, alpha: 0.8 });
+    container.addChild(ripple);
+  } else if (t === 'desert') {
+    // Dune crests.
+    const dune = new Graphics();
+    dune
+      .moveTo(cx - hexSize * 0.4, cy + hexSize * 0.1)
+      .bezierCurveTo(cx - hexSize * 0.15, cy - hexSize * 0.1, cx + hexSize * 0.15, cy - hexSize * 0.1, cx + hexSize * 0.4, cy + hexSize * 0.1);
+    dune.stroke({ color: 0xa68c5a, width: 0.6, alpha: 0.7 });
+    container.addChild(dune);
+  } else if (t === 'marsh') {
+    // Reed tufts: a few short vertical lines.
+    for (let i = 0; i < 3; i++) {
+      const reed = new Graphics();
+      const angle = rand(i) * Math.PI * 2;
+      const r = rand(i + 200) * hexSize * 0.35;
+      const rx = cx + Math.cos(angle) * r;
+      const ry = cy + Math.sin(angle) * r;
+      reed.moveTo(rx, ry).lineTo(rx, ry - hexSize * 0.2);
+      reed.stroke({ color: 0x4a5a30, width: 0.6, alpha: 0.8 });
+      container.addChild(reed);
+    }
+  } else if (t === 'fertile_valley') {
+    // Crop rows.
+    for (let i = 0; i < 3; i++) {
+      const y = cy - hexSize * 0.25 + i * hexSize * 0.25;
+      const row = new Graphics();
+      row.moveTo(cx - hexSize * 0.35, y).lineTo(cx + hexSize * 0.35, y);
+      row.stroke({ color: 0x4d6b25, width: 0.4, alpha: 0.6 });
+      container.addChild(row);
+    }
+  } else if (t === 'steppe') {
+    // Sparse dots (grass tufts).
+    for (let i = 0; i < 4; i++) {
+      const angle = rand(i) * Math.PI * 2;
+      const r = rand(i + 300) * hexSize * 0.4;
+      const tx = cx + Math.cos(angle) * r;
+      const ty = cy + Math.sin(angle) * r;
+      const dot = new Graphics();
+      dot.circle(tx, ty, hexSize * 0.04).fill({ color: 0x6f6238, alpha: 0.7 });
+      container.addChild(dot);
+    }
+  }
 };
 
 /**

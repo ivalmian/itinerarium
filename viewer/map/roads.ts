@@ -67,6 +67,15 @@ const EDGE_ANGLES_RAD: readonly number[] = [
 
 export interface RoadLayer {
   readonly container: Container;
+  /**
+   * Re-render the entire road layer from scratch. Cheap (~6,400 hex
+   * scan + a few hundred Graphics nodes); call when road state has
+   * changed (trail wear upgraded a hex, road reset fired,
+   * road_unmaintained downgraded a hex). Not called per-tick — the
+   * caller debounces (e.g., only on `road_upgraded`/`road_downgraded`/
+   * `road_reset`/`road_unmaintained` events).
+   */
+  refresh(grid: HexGrid): void;
 }
 
 interface NeighborConn {
@@ -89,66 +98,65 @@ export const createRoadLayer = (grid: HexGrid, hexSize: number): RoadLayer => {
   const romanRailWidth = 0.6;
   const dirtLineWidth = 0.8;
 
-  for (const [h, tile] of grid.tiles()) {
-    if (tile.road === 'none') continue;
-    const grade = tile.road;
-    const style = STYLE_BY_GRADE[grade];
-    const { x: cx, y: cy } = hexToPixel(h, hexSize);
+  const drawAll = (gridArg: HexGrid): void => {
+    container.removeChildren();
+    for (const [h, tile] of gridArg.tiles()) {
+      if (tile.road === 'none') continue;
+      const grade = tile.road;
+      const style = STYLE_BY_GRADE[grade];
+      const { x: cx, y: cy } = hexToPixel(h, hexSize);
 
-    const conns: NeighborConn[] = [];
-    for (let i = 0; i < 6; i++) {
-      const dir = HEX_DIRECTIONS[i] as Hex;
-      const neighbor = hexAdd(h, dir);
-      const ntile = grid.get(neighbor);
-      if (ntile === undefined) continue;
-      if (ntile.road === 'none') continue;
-      const angle = EDGE_ANGLES_RAD[i] as number;
-      const ex = cx + Math.cos(angle) * apothem;
-      const ey = cy + Math.sin(angle) * apothem;
-      conns.push({ dir: i, angle, ex, ey, neighborGrade: ntile.road });
-    }
+      const conns: NeighborConn[] = [];
+      for (let i = 0; i < 6; i++) {
+        const dir = HEX_DIRECTIONS[i] as Hex;
+        const neighbor = hexAdd(h, dir);
+        const ntile = gridArg.get(neighbor);
+        if (ntile === undefined) continue;
+        if (ntile.road === 'none') continue;
+        const angle = EDGE_ANGLES_RAD[i] as number;
+        const ex = cx + Math.cos(angle) * apothem;
+        const ey = cy + Math.sin(angle) * apothem;
+        conns.push({ dir: i, angle, ex, ey, neighborGrade: ntile.road });
+      }
 
-    if (conns.length === 0) {
-      // Isolated road hex — draw a small dot so it's still visible.
-      const dot = new Graphics();
-      dot.circle(cx, cy, Math.max(1.2, style.width)).fill({ color: style.color, alpha: style.alpha });
-      container.addChild(dot);
-      continue;
-    }
+      if (conns.length === 0) {
+        const dot = new Graphics();
+        dot.circle(cx, cy, Math.max(1.2, style.width)).fill({ color: style.color, alpha: style.alpha });
+        container.addChild(dot);
+        continue;
+      }
 
-    // Draw each half-segment from center to edge midpoint.
-    for (const c of conns) {
-      if (grade === 'roman') {
-        drawRomanHalfSegment(container, cx, cy, c.ex, c.ey, style, romanRailWidth, romanRailGap);
-      } else {
-        drawDirtHalfSegment(container, cx, cy, c.ex, c.ey, style, dirtLineWidth);
+      for (const c of conns) {
+        if (grade === 'roman') {
+          drawRomanHalfSegment(container, cx, cy, c.ex, c.ey, style, romanRailWidth, romanRailGap);
+        } else {
+          drawDirtHalfSegment(container, cx, cy, c.ex, c.ey, style, dirtLineWidth);
+        }
+      }
+
+      const hubR = grade === 'roman' ? romanRailGap * 0.9 + romanRailWidth : dirtLineWidth * 1.0;
+      const hubG = new Graphics();
+      hubG.circle(cx, cy, hubR).fill({ color: style.color, alpha: style.alpha });
+      container.addChild(hubG);
+
+      for (const c of conns) {
+        if (c.neighborGrade === grade) continue;
+        const milestoneColor = 0xf2e2b8;
+        const dotR = Math.max(0.9, hexSize * 0.12);
+        const dot = new Graphics();
+        dot.circle(c.ex, c.ey, dotR).fill({ color: milestoneColor, alpha: 1.0 });
+        dot.circle(c.ex, c.ey, dotR).stroke({ color: 0x3a2e1b, width: 0.3, alpha: 0.9 });
+        container.addChild(dot);
       }
     }
+  };
 
-    // Center hub: rounded blob covering the meeting point so all rails / lines
-    // merge cleanly. Always draw at least a single-segment terminus dot so a
-    // road tile is never bare in the middle.
-    const hubR = grade === 'roman' ? romanRailGap * 0.9 + romanRailWidth : dirtLineWidth * 1.0;
-    const hubG = new Graphics();
-    hubG.circle(cx, cy, hubR).fill({ color: style.color, alpha: style.alpha });
-    container.addChild(hubG);
+  drawAll(grid);
 
-    // Milestone dots at grade transitions (Roman ↔ dirt). Drawn once per
-    // boundary; we mark from this side using whichever grade is "Roman" so
-    // the dot color is the more prominent one.
-    for (const c of conns) {
-      if (c.neighborGrade === grade) continue;
-      const milestoneColor = 0xf2e2b8; // pale stone
-      const dotR = Math.max(0.9, hexSize * 0.12);
-      const dot = new Graphics();
-      dot.circle(c.ex, c.ey, dotR).fill({ color: milestoneColor, alpha: 1.0 });
-      // Thin outline for legibility on light terrain.
-      dot.circle(c.ex, c.ey, dotR).stroke({ color: 0x3a2e1b, width: 0.3, alpha: 0.9 });
-      container.addChild(dot);
-    }
-  }
-
-  return { container };
+  return {
+    container,
+    refresh: drawAll,
+  };
 };
 
 /**

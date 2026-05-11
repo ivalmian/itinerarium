@@ -98,6 +98,7 @@ interface BuildResult {
   hexMap: HexMap;
   catchmentLayer: CatchmentLayer;
   buildingsLayer: BuildingsLayer;
+  roadLayer: { refresh: (grid: WorldState['grid']) => void };
   settlementsLayer: SettlementsLayer;
   caravansLayer: CaravansLayer;
   banditCampsLayer: BanditCampsLayer;
@@ -202,6 +203,7 @@ const buildLayers = (
     hexMap,
     catchmentLayer,
     buildingsLayer,
+    roadLayer,
     settlementsLayer,
     caravansLayer,
     banditCampsLayer,
@@ -430,8 +432,33 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     recordTick(history, world);
     recordEvents(history, world.day, result.events);
 
-    // Sync caravan layer's prev/cur for interpolation.
-    layers.caravansLayer.syncTick(world);
+    // Build per-caravan path from caravan_moved events so the layer
+    // interpolates along the actual hex path (not a straight line that
+    // visually cuts through lakes / mountains).
+    const pathPerCaravan = new Map<
+      string,
+      { q: number; r: number }[]
+    >();
+    for (const ev of result.events) {
+      if (ev.type !== 'caravan_moved') continue;
+      let arr = pathPerCaravan.get(String(ev.caravan));
+      if (arr === undefined) {
+        arr = [{ q: ev.from.q, r: ev.from.r }];
+        pathPerCaravan.set(String(ev.caravan), arr);
+      }
+      arr.push({ q: ev.to.q, r: ev.to.r });
+    }
+
+    // Sync caravan layer's prev/cur + polyline path for interpolation.
+    // Cast through unknown so the branded CaravanId type lines up — the
+    // map keys are CaravanId values (we just stringified them above).
+    layers.caravansLayer.syncTick(
+      world,
+      pathPerCaravan as unknown as ReadonlyMap<
+        import('../src/sim/types.js').CaravanId,
+        readonly { q: number; r: number }[]
+      >,
+    );
 
     // Aggregate recipe outputs from the events for the resource panel.
     const outputDelta = new Map<ResourceId, number>();
@@ -453,18 +480,31 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     layers.banditCampsLayer.sync(world, hexSize);
 
     // Rebuild building markers if a tick produced a building_completed event;
-    // rebuild catchment shading on catchment_resized. v1 simple approach
-    // (task spec §3): wipe + redraw the affected layer entirely on the tick
-    // an event lands. For 100s of settlements this is well under a frame.
+    // rebuild catchment shading on catchment_resized; rebuild road layer
+    // on any road state change (trail wear upgrade/downgrade, road reset,
+    // unmaintained Roman demote). v1 simple approach: wipe + redraw the
+    // affected layer entirely on the tick an event lands. For 6,400 hexes
+    // and 100s of settlements this is well under a frame.
     let needsBuildingsRebuild = false;
     let needsCatchmentRebuild = false;
+    let needsRoadRebuild = false;
     for (const ev of result.events) {
-      if (ev.type === 'building_completed') needsBuildingsRebuild = true;
-      else if (ev.type === 'catchment_resized') needsCatchmentRebuild = true;
-      if (needsBuildingsRebuild && needsCatchmentRebuild) break;
+      if (ev.type === 'building_completed' || ev.type === 'building_demolished') {
+        needsBuildingsRebuild = true;
+      } else if (ev.type === 'catchment_resized') {
+        needsCatchmentRebuild = true;
+      } else if (
+        ev.type === 'road_upgraded' ||
+        ev.type === 'road_downgraded' ||
+        ev.type === 'road_reset' ||
+        ev.type === 'road_unmaintained'
+      ) {
+        needsRoadRebuild = true;
+      }
     }
     if (needsBuildingsRebuild) layers.buildingsLayer.rebuild(world, hexSize);
     if (needsCatchmentRebuild) layers.catchmentLayer.rebuild(world, hexSize);
+    if (needsRoadRebuild) layers.roadLayer.refresh(world.grid);
 
     if (state.overlay !== 'none') {
       applyOverlay(world, layers.hexMap, state.overlay);

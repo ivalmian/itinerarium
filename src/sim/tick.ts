@@ -4014,7 +4014,7 @@ const investmentPhase = (world: WorldState, _today: Day, events: TickEvent[]): v
     if (best.profitPerDay <= 0) continue;
     if (best.profitPerDay / Math.max(1, best.coinCost) < INVESTMENT_ROI_THRESHOLD) continue;
 
-    const placement = pickBuildingHex(settlement, best.buildingId);
+    const placement = pickBuildingHex(world, settlement, best.buildingId);
     if (placement === null) continue;
 
     const def = getBuilding(best.buildingId);
@@ -4202,19 +4202,72 @@ const computeMasonShare = (id: BuildingId): number => {
   return masonWeight / total;
 };
 
-const pickBuildingHex = (settlement: Settlement, buildingId: BuildingId): Hex | null => {
-  // Prefer urban hexes that don't already host this building type.
+/** Building types that need productive land — placed on a catchment hex.
+ *  Everything else is a workshop / store and lives in the urban core. */
+const LAND_USE_BUILDINGS = new Set<string>([
+  'farm',
+  'pasture',
+  'olive_grove',
+  'vineyard',
+  'orchard',
+  'fishery',
+  'mine',
+  'quarry',
+  'forester_camp',
+]);
+
+const isPassableForBuilding = (
+  world: WorldState,
+  hex: Hex,
+): boolean => {
+  const t = world.grid.get(hex);
+  if (t === undefined) return false;
+  // Lakes are never passable; mountains close in winter; marshes can hold
+  // some buildings but we skip them for safety. Rivers can host fisheries.
+  if (t.terrain === 'lake') return false;
+  if (t.terrain === 'mountains') return false;
+  if (t.terrain === 'river') return false;
+  return true;
+};
+
+const pickBuildingHex = (
+  world: WorldState,
+  settlement: Settlement,
+  buildingId: BuildingId,
+): Hex | null => {
   const occupied = new Set<string>();
   for (const b of settlement.buildings) {
     if (b.buildingId === buildingId) {
       occupied.add(`${b.hex.q},${b.hex.r}`);
     }
   }
-  for (const u of settlement.urbanHexes) {
-    if (!occupied.has(`${u.q},${u.r}`)) return u;
-  }
-  for (const c of settlement.catchmentHexes) {
-    if (!occupied.has(`${c.q},${c.r}`)) return c;
+  // Per the user's note: workshops (mill, smithy, kiln, etc.) belong inside
+  // the village/city. Land-use buildings (farm, mine, forester) need
+  // catchment land. Filter both for passable terrain.
+  const isLandUse = LAND_USE_BUILDINGS.has(String(buildingId));
+  if (isLandUse) {
+    for (const c of settlement.catchmentHexes) {
+      if (occupied.has(`${c.q},${c.r}`)) continue;
+      if (!isPassableForBuilding(world, c)) continue;
+      return c;
+    }
+    // Fallback: urban hex (rare — only when catchment is fully claimed).
+    for (const u of settlement.urbanHexes) {
+      if (occupied.has(`${u.q},${u.r}`)) continue;
+      if (!isPassableForBuilding(world, u)) continue;
+      return u;
+    }
+  } else {
+    for (const u of settlement.urbanHexes) {
+      if (occupied.has(`${u.q},${u.r}`)) continue;
+      if (!isPassableForBuilding(world, u)) continue;
+      return u;
+    }
+    for (const c of settlement.catchmentHexes) {
+      if (occupied.has(`${c.q},${c.r}`)) continue;
+      if (!isPassableForBuilding(world, c)) continue;
+      return c;
+    }
   }
   return null;
 };

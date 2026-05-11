@@ -19,7 +19,10 @@ import { hexToPixel } from './coords.js';
 export interface CaravansLayer {
   readonly container: Container;
   /** Snap previous→current positions; called once per sim tick. */
-  syncTick(world: WorldState): void;
+  syncTick(
+    world: WorldState,
+    pathPerCaravan?: ReadonlyMap<CaravanId, readonly { q: number; r: number }[]>,
+  ): void;
   /** Update interpolated screen positions. t in [0, 1]. */
   setInterpolationT(world: WorldState, t: number, hexSize: number): void;
   setHighlight(id: CaravanId | null): void;
@@ -33,6 +36,10 @@ interface Entry {
   curQ: number;
   curR: number;
   ownerColor: number;
+  /** Polyline of hex coords this caravan walked during the latest tick.
+   *  Used by setInterpolationT to follow the actual hex path instead of
+   *  cutting straight-line through impassable terrain. */
+  path?: { q: number; r: number }[];
 }
 
 const factionColor = (owner: ActorId): number => {
@@ -117,11 +124,27 @@ export const createCaravansLayer = (
     return e;
   };
 
-  const syncTick = (world: WorldState): void => {
+  const syncTick = (
+    world: WorldState,
+    pathPerCaravan?: ReadonlyMap<CaravanId, readonly { q: number; r: number }[]>,
+  ): void => {
     const seen = new Set<CaravanId>();
     for (const c of world.caravans.values()) {
       seen.add(c.id);
       const e = ensureEntry(c);
+      // The path is [prevPos, ...stepsTaken, curPos]. We use this for
+      // polyline interpolation so caravans visually walk along their
+      // actual hex path instead of cutting straight through lakes
+      // and mountains.
+      const sourcePath = pathPerCaravan?.get(c.id);
+      if (sourcePath !== undefined && sourcePath.length > 0) {
+        e.path = sourcePath.map((h) => ({ q: h.q, r: h.r }));
+      } else {
+        e.path = [
+          { q: e.curQ, r: e.curR },
+          { q: c.position.q, r: c.position.r },
+        ];
+      }
       e.prevQ = e.curQ;
       e.prevR = e.curR;
       e.curQ = c.position.q;
@@ -142,8 +165,22 @@ export const createCaravansLayer = (
     for (const c of world.caravans.values()) {
       const e = entries.get(c.id);
       if (e === undefined) continue;
-      const q = e.prevQ + (e.curQ - e.prevQ) * tt;
-      const r = e.prevR + (e.curR - e.prevR) * tt;
+      // Interpolate along the polyline (e.path). t scales the total
+      // arc-length traveled; we walk the segments until we've consumed
+      // enough fraction.
+      let q = e.curQ;
+      let r = e.curR;
+      const path = e.path;
+      if (path !== undefined && path.length >= 2) {
+        const segments = path.length - 1;
+        const local = tt * segments;
+        const i = Math.min(segments - 1, Math.floor(local));
+        const segT = local - i;
+        const a = path[i] as { q: number; r: number };
+        const b = path[i + 1] as { q: number; r: number };
+        q = a.q + (b.q - a.q) * segT;
+        r = a.r + (b.r - a.r) * segT;
+      }
       const px = hexToPixel({ q, r }, hexSize);
       e.graphic.position.set(px.x, px.y);
       drawCaravan(e.graphic, e.ownerColor, e.id === highlightedId);

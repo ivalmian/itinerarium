@@ -18,8 +18,9 @@
 
 import type { WorldState } from '../../src/procgen/seed.js';
 import type { Hex } from '../../src/sim/world/hex.js';
-import { hexDistance } from '../../src/sim/world/hex.js';
-import type { Settlement } from '../../src/sim/world/settlement.js';
+import { hexDistance, hexEquals } from '../../src/sim/world/hex.js';
+import type { Settlement, SettlementBuilding } from '../../src/sim/world/settlement.js';
+import { getBuilding } from '../../src/sim/buildings/catalog.js';
 import { setSelection, type ViewerState } from '../state/viewerState.js';
 
 export interface HexPanel {
@@ -219,10 +220,236 @@ export const createHexPanel = (opts: HexPanelOpts): HexPanel => {
       root.appendChild(list);
     }
 
+    // Settlements containing this hex (urban or catchment, but not anchor —
+    // anchor is already covered above).
+    const containing = findContainingSettlements(world, hex, anchored);
+    if (containing.length > 0) {
+      const h = document.createElement('div');
+      h.style.color = 'var(--muted)';
+      h.style.marginTop = '6px';
+      h.textContent =
+        containing.length === 1
+          ? 'Part of settlement (catchment/urban):'
+          : 'Part of settlements (catchment/urban):';
+      root.appendChild(h);
+      const list = document.createElement('div');
+      for (const { s, role } of containing) {
+        const link = document.createElement('button');
+        link.className = 'copy-btn';
+        link.style.marginRight = '4px';
+        link.style.marginBottom = '2px';
+        link.textContent = `${s.name} (${role})`;
+        link.addEventListener('click', () => {
+          setSelection(state, { kind: 'settlement', id: s.id });
+        });
+        list.appendChild(link);
+      }
+      root.appendChild(list);
+    }
+
+    // Buildings standing on this hex (icons in the buildings layer).
+    const buildings = findBuildingsOnHex(world, hex);
+    if (buildings.length > 0) {
+      const h = document.createElement('div');
+      h.style.color = 'var(--muted)';
+      h.style.marginTop = '6px';
+      h.textContent = buildings.length === 1 ? 'Building:' : `Buildings (${buildings.length}):`;
+      root.appendChild(h);
+      const list = document.createElement('div');
+      list.style.fontSize = '11px';
+      for (const { b, settlement } of buildings) {
+        const def = getBuilding(b.buildingId);
+        const owner = world.actors.get(b.ownerActor);
+        const ownerName = owner?.name ?? '(unknown)';
+        const row = document.createElement('div');
+        row.style.marginBottom = '2px';
+        row.innerHTML =
+          `· <span style="color:var(--text)">${escapeHtml(def.name)}</span>` +
+          ` (cap ${b.capacity}) — owned by ${escapeHtml(ownerName)}` +
+          `, in ${escapeHtml(settlement.name)}`;
+        list.appendChild(row);
+      }
+      root.appendChild(list);
+    }
+
+    // Pending construction on this hex.
+    const pending = findPendingBuildingsOnHex(world, hex);
+    if (pending.length > 0) {
+      const h = document.createElement('div');
+      h.style.color = 'var(--muted)';
+      h.style.marginTop = '6px';
+      h.textContent = `Under construction (${pending.length}):`;
+      root.appendChild(h);
+      const list = document.createElement('div');
+      list.style.fontSize = '11px';
+      for (const { pb, settlement } of pending) {
+        const def = getBuilding(pb.buildingId);
+        const pct = Math.round(
+          (1 - pb.workerDaysRemaining / Math.max(1, pb.workerDaysTotal)) * 100,
+        );
+        const row = document.createElement('div');
+        row.textContent = `· ${def.name} — ${pct}% built (${pb.workerDaysRemaining.toFixed(0)} worker-days left), in ${settlement.name}`;
+        list.appendChild(row);
+      }
+      root.appendChild(list);
+    }
+
+    // Pending demolition.
+    const demos = findPendingDemolitionsOnHex(world, hex);
+    if (demos.length > 0) {
+      const h = document.createElement('div');
+      h.style.color = 'var(--muted)';
+      h.style.marginTop = '6px';
+      h.textContent = 'Being demolished:';
+      root.appendChild(h);
+      for (const { pd, settlement } of demos) {
+        const row = document.createElement('div');
+        row.style.fontSize = '11px';
+        row.textContent = `· ${getBuilding(pd.buildingId).name} (${pd.workerDaysRemaining.toFixed(0)} worker-days left), in ${settlement.name}`;
+        root.appendChild(row);
+      }
+    }
+
+    // Bandit camp on this hex.
+    if (world.banditCamps !== undefined) {
+      for (const camp of world.banditCamps.values()) {
+        if (!hexEquals(camp.hex, hex)) continue;
+        const h = document.createElement('div');
+        h.style.color = 'var(--muted)';
+        h.style.marginTop = '6px';
+        h.textContent = 'Bandit camp:';
+        root.appendChild(h);
+        const link = document.createElement('button');
+        link.className = 'copy-btn';
+        link.style.marginRight = '4px';
+        link.style.marginBottom = '2px';
+        link.textContent = `${camp.name} — ${camp.banditCount} bandits`;
+        link.addEventListener('click', () => {
+          setSelection(state, { kind: 'bandit_camp', id: camp.id });
+        });
+        root.appendChild(link);
+      }
+    }
+
+    // Caravans + patrols + news carriers physically here right now.
+    const caravansHere: { id: string; label: string }[] = [];
+    for (const c of world.caravans.values()) {
+      if (!hexEquals(c.position, hex)) continue;
+      const owner = world.actors.get(c.ownerActor);
+      caravansHere.push({
+        id: String(c.id),
+        label: `${owner?.name ?? String(c.ownerActor)}'s caravan (${c.crew.reduce((s, m) => s + m.count, 0)} crew)`,
+      });
+    }
+    if (caravansHere.length > 0) {
+      const h = document.createElement('div');
+      h.style.color = 'var(--muted)';
+      h.style.marginTop = '6px';
+      h.textContent = `Caravans here (${caravansHere.length}):`;
+      root.appendChild(h);
+      for (const c of caravansHere) {
+        const row = document.createElement('div');
+        row.style.fontSize = '11px';
+        row.textContent = `· ${c.label}`;
+        root.appendChild(row);
+      }
+    }
+
+    let patrolsHere = 0;
+    if (world.patrols !== undefined) {
+      for (const p of world.patrols.values()) {
+        if (hexEquals(p.position, hex)) patrolsHere++;
+      }
+    }
+    let newsCarriersHere = 0;
+    if (world.newsCarriers !== undefined) {
+      for (const n of world.newsCarriers.values()) {
+        if (hexEquals(n.position, hex)) newsCarriersHere++;
+      }
+    }
+    if (patrolsHere > 0 || newsCarriersHere > 0) {
+      const h = document.createElement('div');
+      h.style.color = 'var(--muted)';
+      h.style.marginTop = '6px';
+      h.textContent = 'Other units here:';
+      root.appendChild(h);
+      if (patrolsHere > 0) {
+        const row = document.createElement('div');
+        row.style.fontSize = '11px';
+        row.textContent = `· ${patrolsHere} patrol(s)`;
+        root.appendChild(row);
+      }
+      if (newsCarriersHere > 0) {
+        const row = document.createElement('div');
+        row.style.fontSize = '11px';
+        row.textContent = `· ${newsCarriersHere} news carrier(s)`;
+        root.appendChild(row);
+      }
+    }
+
     appendDeselect(root, opts.onClear);
   };
 
   return { update };
+};
+
+const findContainingSettlements = (
+  world: WorldState,
+  hex: Hex,
+  alreadyAnchored: readonly Settlement[],
+): readonly { s: Settlement; role: 'urban' | 'catchment' }[] => {
+  const out: { s: Settlement; role: 'urban' | 'catchment' }[] = [];
+  const anchorIds = new Set(alreadyAnchored.map((s) => String(s.id)));
+  for (const s of world.settlements.values()) {
+    if (anchorIds.has(String(s.id))) continue;
+    if (s.urbanHexes.some((u) => hexEquals(u, hex))) {
+      out.push({ s, role: 'urban' });
+      continue;
+    }
+    if (s.catchmentHexes.some((c) => hexEquals(c, hex))) {
+      out.push({ s, role: 'catchment' });
+    }
+  }
+  return out;
+};
+
+const findBuildingsOnHex = (
+  world: WorldState,
+  hex: Hex,
+): readonly { b: SettlementBuilding; settlement: Settlement }[] => {
+  const out: { b: SettlementBuilding; settlement: Settlement }[] = [];
+  for (const s of world.settlements.values()) {
+    for (const b of s.buildings) {
+      if (hexEquals(b.hex, hex)) out.push({ b, settlement: s });
+    }
+  }
+  return out;
+};
+
+const findPendingBuildingsOnHex = (
+  world: WorldState,
+  hex: Hex,
+): readonly { pb: Settlement['pendingBuildings'][number]; settlement: Settlement }[] => {
+  const out: { pb: Settlement['pendingBuildings'][number]; settlement: Settlement }[] = [];
+  for (const s of world.settlements.values()) {
+    for (const pb of s.pendingBuildings) {
+      if (hexEquals(pb.hex, hex)) out.push({ pb, settlement: s });
+    }
+  }
+  return out;
+};
+
+const findPendingDemolitionsOnHex = (
+  world: WorldState,
+  hex: Hex,
+): readonly { pd: Settlement['pendingDemolitions'][number]; settlement: Settlement }[] => {
+  const out: { pd: Settlement['pendingDemolitions'][number]; settlement: Settlement }[] = [];
+  for (const s of world.settlements.values()) {
+    for (const pd of s.pendingDemolitions) {
+      if (hexEquals(pd.hex, hex)) out.push({ pd, settlement: s });
+    }
+  }
+  return out;
 };
 
 const appendDeselect = (host: HTMLElement, onClear: () => void): void => {

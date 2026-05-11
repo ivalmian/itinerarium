@@ -1367,18 +1367,32 @@ const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void =
   const catchment = settlement.catchmentHexes;
   if (catchment.length === 0) return;
 
-  const cHex = (i: number): Hex => (catchment[i % catchment.length] ?? (catchment[0] as Hex)) as Hex;
-  const uHex = (i: number): Hex =>
-    (settlement.urbanHexes[i % settlement.urbanHexes.length] ?? (settlement.urbanHexes[0] as Hex)) as Hex;
+  // Filter both hex pools for passable terrain — no lakes, no high mountains,
+  // no impassable rivers. Workshops belong in the urban core; land-use
+  // buildings (farm, pasture, mine, forester, vineyard, etc.) need
+  // catchment land. Per the user's note + docs/05.
+  const passable = (h: Hex): boolean => {
+    const t = ctx.grid.get(h);
+    if (t === undefined) return false;
+    return t.terrain !== 'lake' && t.terrain !== 'mountains' && t.terrain !== 'river';
+  };
+  const passableCatchment = catchment.filter(passable);
+  const passableUrban = settlement.urbanHexes.filter(passable);
+  if (passableCatchment.length === 0 || passableUrban.length === 0) return;
 
-  // Every settlement: pasture + farm + forester_camp + sawmill so wood
-  // and lumber regenerate (closing the chain that supplies bake_bread,
-  // smithy maintenance, etc.). Pasture provides year-round protein
-  // alongside grain.
+  const cHex = (i: number): Hex =>
+    (passableCatchment[i % passableCatchment.length] ?? (passableCatchment[0] as Hex)) as Hex;
+  const uHex = (i: number): Hex =>
+    (passableUrban[i % passableUrban.length] ?? (passableUrban[0] as Hex)) as Hex;
+
+  // Every settlement: pasture + farm + forester_camp need land.
+  // sawmill is a workshop — moved to urban (the user's note: "for kiln
+  // presumably it's just in the village; for forest camps/farms it makes
+  // sense to be in catchments").
   tryAddBuilding(settlement, 'pasture', cHex(0), owner, capOf('pasture'));
   tryAddBuilding(settlement, 'farm', cHex(1), owner, capOf('farm'));
   tryAddBuilding(settlement, 'forester_camp', cHex(2), owner, capOf('forester_camp'));
-  tryAddBuilding(settlement, 'sawmill', cHex(3), owner, capOf('sawmill'));
+  tryAddBuilding(settlement, 'sawmill', uHex(0), owner, capOf('sawmill'));
 
   // Village+: add charcoal_kiln so smithies have fuel; mine + bloomery so
   // iron production isn't gated on a procgen ore deposit landing in the
@@ -1391,12 +1405,15 @@ const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void =
     settlement.tier === 'small_city' ||
     settlement.tier === 'large_city'
   ) {
-    tryAddBuilding(settlement, 'charcoal_kiln', cHex(4), owner, capOf('charcoal_kiln'));
-    tryAddBuilding(settlement, 'mine', cHex(5), owner, capOf('mine'));
-    tryAddBuilding(settlement, 'bloomery', uHex(0), owner, capOf('bloomery'));
-    tryAddBuilding(settlement, 'smithy', uHex(0), owner, capOf('smithy'));
-    tryAddBuilding(settlement, 'dairy', uHex(0), owner, capOf('dairy'));
-    tryAddBuilding(settlement, 'quarry', cHex(8), owner, capOf('quarry'));
+    // charcoal_kiln is a workshop (kiln in the village outskirts);
+    // mine + quarry need catchment land; bloomery/smithy/dairy are
+    // urban workshops.
+    tryAddBuilding(settlement, 'charcoal_kiln', uHex(1), owner, capOf('charcoal_kiln'));
+    tryAddBuilding(settlement, 'mine', cHex(3), owner, capOf('mine'));
+    tryAddBuilding(settlement, 'bloomery', uHex(2), owner, capOf('bloomery'));
+    tryAddBuilding(settlement, 'smithy', uHex(3), owner, capOf('smithy'));
+    tryAddBuilding(settlement, 'dairy', uHex(4), owner, capOf('dairy'));
+    tryAddBuilding(settlement, 'quarry', cHex(4), owner, capOf('quarry'));
   }
 
   // Town+: refining chain (mill + bakery + granary) and weaver_workshop.
@@ -1411,15 +1428,17 @@ const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void =
     settlement.tier === 'small_city' ||
     settlement.tier === 'large_city'
   ) {
-    tryAddBuilding(settlement, 'mill', uHex(0), owner, capOf('mill'));
-    tryAddBuilding(settlement, 'bakery', uHex(0), owner, capOf('bakery'));
-    tryAddBuilding(settlement, 'granary', uHex(0), owner, capOf('granary'));
-    tryAddBuilding(settlement, 'weaver_workshop', uHex(1), owner, capOf('weaver_workshop'));
-    tryAddBuilding(settlement, 'olive_grove', cHex(6), owner, capOf('olive_grove'));
-    tryAddBuilding(settlement, 'vineyard', cHex(7), owner, capOf('vineyard'));
-    tryAddBuilding(settlement, 'oil_press', uHex(2), owner, capOf('oil_press'));
-    tryAddBuilding(settlement, 'winery', uHex(2), owner, capOf('winery'));
-    tryAddBuilding(settlement, 'pottery', uHex(3), owner, capOf('pottery')); // amphorae for olive_oil/wine
+    // Refining + storage workshops in the urban core; olive grove +
+    // vineyard need catchment land.
+    tryAddBuilding(settlement, 'mill', uHex(5), owner, capOf('mill'));
+    tryAddBuilding(settlement, 'bakery', uHex(6), owner, capOf('bakery'));
+    tryAddBuilding(settlement, 'granary', uHex(7), owner, capOf('granary'));
+    tryAddBuilding(settlement, 'weaver_workshop', uHex(8), owner, capOf('weaver_workshop'));
+    tryAddBuilding(settlement, 'olive_grove', cHex(5), owner, capOf('olive_grove'));
+    tryAddBuilding(settlement, 'vineyard', cHex(6), owner, capOf('vineyard'));
+    tryAddBuilding(settlement, 'oil_press', uHex(9), owner, capOf('oil_press'));
+    tryAddBuilding(settlement, 'winery', uHex(10), owner, capOf('winery'));
+    tryAddBuilding(settlement, 'pottery', uHex(11), owner, capOf('pottery'));
   }
 };
 
