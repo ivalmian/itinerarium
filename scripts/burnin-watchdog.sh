@@ -19,9 +19,12 @@
 #
 # Project-scoped: wired in .claude/settings.json.
 #
-# Note: typecheck ~5s, lint ~5s, test+coverage ~20s, 10-year burn-in
-# ~20–60s on a recent laptop. The hook timeout in settings.json is
-# 900s for headroom.
+# Note: typecheck ~5s, lint ~5s, test+coverage ~30s, 10-year burn-in
+# ~3-10 min on a recent laptop (grew with disaggregation, trail wear,
+# crew demographics). The hook timeout in settings.json is 1800s
+# (30 min) for headroom; if a future change pushes past that, profile
+# the tick and either optimize or split the burn-in into a faster
+# smoke test + a separate slow-pass.
 
 set -u
 cd "$(dirname "$0")/.."
