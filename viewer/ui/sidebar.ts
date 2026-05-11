@@ -17,6 +17,7 @@ import { createBanditCampPanel, type BanditCampPanel } from './banditCampPanel.j
 import { createHexPanel, type HexPanel } from './hexPanel.js';
 import { createResourcePanel, type ResourcePanel } from './resourcePanel.js';
 import { createEventLog, type EventLog } from './eventLog.js';
+import type { ViewerHistory } from '../state/history.js';
 
 interface RollingCounts {
   caravan_robbed: number;
@@ -52,6 +53,7 @@ const fmt = (n: number): string => {
 export interface SidebarOpts {
   readonly host: HTMLElement;
   readonly state: ViewerState;
+  readonly history: ViewerHistory;
   readonly onPlayPause: () => void;
   readonly onSpeedCycle: () => void;
   readonly onReset: () => void;
@@ -103,6 +105,7 @@ export const createSidebar = (opts: SidebarOpts): Sidebar => {
   const settlementPanel = createSettlementPanel({
     host: selectedHost,
     state,
+    history: opts.history,
     onClear: () => setSelection(state, { kind: 'none' }),
   });
   const caravanPanel = createCaravanPanel({

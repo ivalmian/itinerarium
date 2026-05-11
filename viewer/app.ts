@@ -44,6 +44,13 @@ import {
   SPEED_LADDER,
   type ViewerState,
 } from './state/viewerState.js';
+import {
+  clearHistory,
+  createViewerHistory,
+  recordEvents,
+  recordTick,
+  type ViewerHistory,
+} from './state/history.js';
 import { createSidebar, type Sidebar } from './ui/sidebar.js';
 
 export interface ViewerApp {
@@ -291,6 +298,7 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
   }
 
   const state = createViewerState();
+  const history: ViewerHistory = createViewerHistory();
   let { world } = buildWorld(merged, state);
 
   const app = new Application();
@@ -330,12 +338,14 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     world = fresh.world;
     layers = buildLayers(app, world, hexSize, state);
     sidebar.eventLog.clear();
+    clearHistory(history);
     setSelection(state, { kind: 'none' });
   };
 
   sidebar = createSidebar({
     host: sidebarHost,
     state,
+    history,
     onPlayPause,
     onSpeedCycle,
     onReset: reset,
@@ -414,6 +424,12 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     const result = tick({ world, rng });
     state.ticksThisRun += 1;
 
+    // Per-entity history: snapshot every settlement/caravan/camp and route
+    // this tick's events into per-entity event buffers. Done before the
+    // sidebar.update call so panels render against fresh history.
+    recordTick(history, world);
+    recordEvents(history, world.day, result.events);
+
     // Sync caravan layer's prev/cur for interpolation.
     layers.caravansLayer.syncTick(world);
 
@@ -460,6 +476,9 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
   };
 
   // Initial UI render so totals are populated before the first tick fires.
+  // Also seed history with the day-0 snapshot so panels show "1 tick" of
+  // data immediately rather than waiting for the first sim advance.
+  recordTick(history, world);
   sidebar.update(world, []);
   refreshHighlights();
 

@@ -7,9 +7,11 @@
  */
 
 import type { WorldState } from '../../src/procgen/seed.js';
-import type { SettlementId } from '../../src/sim/types.js';
+import type { ResourceId, SettlementId } from '../../src/sim/types.js';
 import { hexEquals } from '../../src/sim/world/hex.js';
 import { setSelection, type ViewerState } from '../state/viewerState.js';
+import type { ViewerHistory } from '../state/history.js';
+import { createSparkline, fmtCompact } from './sparkline.js';
 
 export interface SettlementPanel {
   update(world: WorldState): void;
@@ -18,11 +20,12 @@ export interface SettlementPanel {
 export interface SettlementPanelOpts {
   readonly host: HTMLElement;
   readonly state: ViewerState;
+  readonly history: ViewerHistory;
   readonly onClear: () => void;
 }
 
 export const createSettlementPanel = (opts: SettlementPanelOpts): SettlementPanel => {
-  const { host, state } = opts;
+  const { host, state, history } = opts;
   const root = document.createElement('div');
   host.appendChild(root);
 
@@ -148,6 +151,9 @@ export const createSettlementPanel = (opts: SettlementPanelOpts): SettlementPane
       root.appendChild(list);
     }
 
+    // Historical trajectories from the per-entity history buffer.
+    renderHistory(root, history, s.id);
+
     addCopyButton(root, () => JSON.stringify(serializeSettlement(world, s.id), null, 2));
 
     const clearBtn = document.createElement('button');
@@ -159,6 +165,168 @@ export const createSettlementPanel = (opts: SettlementPanelOpts): SettlementPane
   };
 
   return { update };
+};
+
+/**
+ * Pull the per-entity ring buffer for this settlement and render:
+ *   1. Population sparkline (downsampled to last ~10 points).
+ *   2. Per-resource clearing-price sparklines for the most-active resources.
+ *   3. Recent (last 20) routed events.
+ *
+ * Downsampling keeps the inline sparkline readable: 100 raw daily points
+ * compressed into ~10 buckets averaged so a city's slow population drift
+ * shows as a smooth line, not a 100-pixel jitter.
+ */
+const renderHistory = (
+  root: HTMLElement,
+  history: ViewerHistory,
+  id: SettlementId,
+): void => {
+  const buf = history.settlements.get(id);
+  if (buf === undefined || buf.length < 2) return;
+
+  const histHeader = document.createElement('div');
+  histHeader.style.color = 'var(--muted)';
+  histHeader.style.marginTop = '8px';
+  histHeader.style.borderTop = '1px solid var(--border)';
+  histHeader.style.paddingTop = '6px';
+  histHeader.textContent = `History (${buf.length} ticks):`;
+  root.appendChild(histHeader);
+
+  // Population sparkline at coarse grain.
+  const popSeries = downsample(
+    buf.map((b) => b.population),
+    10,
+  );
+  appendSparklineRow(root, 'Population', popSeries, fmtCompact(buf[buf.length - 1]!.population));
+
+  // Top-3 most-volatile clearing-price series. We aggregate prices per
+  // resource across ALL recorded ticks so the panel includes prices that
+  // weren't present in the latest snapshot's slice.
+  const series = aggregatePriceSeries(buf);
+  const ranked = Array.from(series.entries())
+    .filter(([, vals]) => vals.length >= 2)
+    .sort((a, b) => b[1].length - a[1].length)
+    .slice(0, 4);
+  if (ranked.length > 0) {
+    const ph = document.createElement('div');
+    ph.style.color = 'var(--muted)';
+    ph.style.fontSize = '11px';
+    ph.style.marginTop = '4px';
+    ph.textContent = 'Recent clearing prices:';
+    root.appendChild(ph);
+    for (const [res, vals] of ranked) {
+      const trimmed = vals.slice(-10);
+      appendSparklineRow(
+        root,
+        String(res),
+        trimmed,
+        fmtCompact(trimmed[trimmed.length - 1] ?? 0),
+      );
+    }
+  }
+
+  // Recent events (chronological, oldest first; cap visible at 8).
+  const events = history.settlementEvents.get(id);
+  if (events !== undefined && events.length > 0) {
+    const eh = document.createElement('div');
+    eh.style.color = 'var(--muted)';
+    eh.style.fontSize = '11px';
+    eh.style.marginTop = '6px';
+    eh.textContent = `Recent events (${events.length}):`;
+    root.appendChild(eh);
+    const list = document.createElement('div');
+    list.style.fontSize = '11px';
+    list.style.fontFamily = 'ui-monospace, SF Mono, monospace';
+    list.style.maxHeight = '120px';
+    list.style.overflowY = 'auto';
+    const visible = events.slice(-8);
+    for (const e of visible) {
+      const row = document.createElement('div');
+      row.style.color = 'var(--muted)';
+      row.style.padding = '1px 0';
+      row.textContent = `d${e.day} · ${e.summary}`;
+      list.appendChild(row);
+    }
+    root.appendChild(list);
+  }
+};
+
+/** Aggregate every snapshot's clearing-price map into one series per resource. */
+const aggregatePriceSeries = (
+  buf: readonly { readonly clearingPrices: ReadonlyMap<ResourceId, number> }[],
+): Map<ResourceId, number[]> => {
+  const series = new Map<ResourceId, number[]>();
+  for (const snap of buf) {
+    for (const [res, price] of snap.clearingPrices) {
+      let arr = series.get(res);
+      if (arr === undefined) {
+        arr = [];
+        series.set(res, arr);
+      }
+      arr.push(price);
+    }
+  }
+  return series;
+};
+
+/** Mean-bucket downsample of a numeric series down to at most `bins` points. */
+const downsample = (vals: readonly number[], bins: number): number[] => {
+  if (vals.length <= bins) return vals.slice();
+  const step = vals.length / bins;
+  const out: number[] = [];
+  for (let i = 0; i < bins; i++) {
+    const lo = Math.floor(i * step);
+    const hi = Math.min(vals.length, Math.floor((i + 1) * step));
+    let sum = 0;
+    let count = 0;
+    for (let j = lo; j < hi; j++) {
+      sum += vals[j] as number;
+      count += 1;
+    }
+    out.push(count > 0 ? sum / count : 0);
+  }
+  return out;
+};
+
+const appendSparklineRow = (
+  host: HTMLElement,
+  label: string,
+  values: readonly number[],
+  current: string,
+): void => {
+  const row = document.createElement('div');
+  row.style.display = 'flex';
+  row.style.alignItems = 'center';
+  row.style.justifyContent = 'space-between';
+  row.style.padding = '1px 0';
+  row.style.gap = '6px';
+
+  const l = document.createElement('span');
+  l.className = 'label';
+  l.style.color = 'var(--muted)';
+  l.style.fontSize = '11px';
+  l.style.flex = '0 0 auto';
+  l.textContent = label;
+  row.appendChild(l);
+
+  const right = document.createElement('span');
+  right.style.display = 'flex';
+  right.style.alignItems = 'center';
+  right.style.gap = '4px';
+  const spark = createSparkline(values);
+  right.appendChild(spark);
+  const cur = document.createElement('span');
+  cur.className = 'value';
+  cur.style.fontSize = '11px';
+  cur.style.fontVariantNumeric = 'tabular-nums';
+  cur.style.minWidth = '36px';
+  cur.style.textAlign = 'right';
+  cur.textContent = current;
+  right.appendChild(cur);
+  row.appendChild(right);
+
+  host.appendChild(row);
 };
 
 const serializeSettlement = (world: WorldState, id: import('../../src/sim/types.js').SettlementId) => {
