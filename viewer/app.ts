@@ -16,7 +16,7 @@
  * (CLAUDE.md tech-stack note).
  */
 
-import { Application, Container, FederatedPointerEvent } from 'pixi.js';
+import { Application, Container, FederatedPointerEvent, Graphics } from 'pixi.js';
 
 import { generateTerrain } from '../src/procgen/terrain.js';
 import { siteSettlements } from '../src/procgen/settlements.js';
@@ -35,9 +35,22 @@ import { createSettlementsLayer, type SettlementsLayer } from './map/settlements
 import { createCaravansLayer, type CaravansLayer } from './map/caravans.js';
 import { createBanditCampsLayer, type BanditCampsLayer } from './map/banditCamps.js';
 import { applyOverlay } from './map/overlays.js';
-import { DEFAULT_HEX_SIZE } from './map/coords.js';
+import { DEFAULT_HEX_SIZE, hexToPixel, pixelToHex } from './map/coords.js';
 
-import { createViewerState, setSelection, SPEED_LADDER, type ViewerState } from './state/viewerState.js';
+import {
+  createViewerState,
+  onSelectionChange,
+  setSelection,
+  SPEED_LADDER,
+  type ViewerState,
+} from './state/viewerState.js';
+import {
+  clearHistory,
+  createViewerHistory,
+  recordEvents,
+  recordTick,
+  type ViewerHistory,
+} from './state/history.js';
 import { createSidebar, type Sidebar } from './ui/sidebar.js';
 
 export interface ViewerApp {
@@ -196,18 +209,24 @@ const buildLayers = (
   };
 };
 
-const wirePanZoom = (app: Application, worldRoot: Container, onBackgroundClick: () => void): void => {
+const wirePanZoom = (
+  app: Application,
+  worldRoot: Container,
+  onBackgroundClick: (worldPoint: { x: number; y: number }) => void,
+): void => {
   const stage = app.stage;
   stage.eventMode = 'static';
   stage.hitArea = app.screen;
   let dragging = false;
   let pressMoved = false;
   let last: { x: number; y: number } | null = null;
+  let lastGlobal: { x: number; y: number } | null = null;
 
   stage.on('pointerdown', (e: FederatedPointerEvent) => {
     dragging = true;
     pressMoved = false;
     last = { x: e.global.x, y: e.global.y };
+    lastGlobal = { x: e.global.x, y: e.global.y };
   });
 
   stage.on('pointermove', (e: FederatedPointerEvent) => {
@@ -218,15 +237,22 @@ const wirePanZoom = (app: Application, worldRoot: Container, onBackgroundClick: 
     worldRoot.position.x += dx;
     worldRoot.position.y += dy;
     last = { x: e.global.x, y: e.global.y };
+    lastGlobal = { x: e.global.x, y: e.global.y };
   });
 
   const endDrag = (): void => {
-    if (dragging && !pressMoved) {
-      // It was a click on background.
-      onBackgroundClick();
+    if (dragging && !pressMoved && lastGlobal !== null) {
+      // It was a click on background. Convert the click's stage-pixel
+      // coordinate into the worldRoot's local frame so the caller can
+      // pixel→hex it. Pixi's federated event already gives us screen-stage
+      // coords; account for worldRoot's pan + zoom transform.
+      const wx = (lastGlobal.x - worldRoot.position.x) / worldRoot.scale.x;
+      const wy = (lastGlobal.y - worldRoot.position.y) / worldRoot.scale.y;
+      onBackgroundClick({ x: wx, y: wy });
     }
     dragging = false;
     last = null;
+    lastGlobal = null;
   };
   stage.on('pointerup', endDrag);
   stage.on('pointerupoutside', endDrag);
@@ -272,6 +298,7 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
   }
 
   const state = createViewerState();
+  const history: ViewerHistory = createViewerHistory();
   let { world } = buildWorld(merged, state);
 
   const app = new Application();
@@ -311,19 +338,30 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     world = fresh.world;
     layers = buildLayers(app, world, hexSize, state);
     sidebar.eventLog.clear();
+    clearHistory(history);
     setSelection(state, { kind: 'none' });
   };
 
   sidebar = createSidebar({
     host: sidebarHost,
     state,
+    history,
     onPlayPause,
     onSpeedCycle,
     onReset: reset,
   });
 
-  // Wire pan / zoom and the background-click deselect.
-  wirePanZoom(app, layers.worldRoot, () => setSelection(state, { kind: 'none' }));
+  // Wire pan / zoom. Background clicks pick a hex from the click position
+  // (so wilderness hexes become inspectable) instead of deselecting; clicks
+  // off the grid (no tile under the cursor) clear the selection.
+  wirePanZoom(app, layers.worldRoot, (worldPoint) => {
+    const h = pixelToHex(worldPoint, hexSize);
+    if (world.grid.has(h)) {
+      setSelection(state, { kind: 'hex', hex: h });
+    } else {
+      setSelection(state, { kind: 'none' });
+    }
+  });
 
   // Heat-map dropdown.
   const overlaySelect = document.getElementById('overlay-select') as HTMLSelectElement | null;
@@ -341,6 +379,13 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
   };
   window.addEventListener('resize', resize);
 
+  // Hex highlight overlay. Owned by app.ts so it survives layer rebuilds
+  // implicitly via re-attachment in refreshHighlights below; the Graphics
+  // itself is re-created on reset because the old worldRoot is destroyed
+  // with children: true.
+  let hexHighlight: Graphics = makeHexHighlight(hexSize);
+  layers.worldRoot.addChild(hexHighlight);
+
   // Selection highlighting.
   const refreshHighlights = (): void => {
     layers.settlementsLayer.setHighlight(
@@ -352,6 +397,22 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     layers.banditCampsLayer.setHighlight(
       state.selection.kind === 'bandit_camp' ? state.selection.id : null,
     );
+    // Re-create the outline if it was destroyed by a worldRoot tear-down.
+    if (hexHighlight.destroyed) {
+      hexHighlight = makeHexHighlight(hexSize);
+    }
+    if (hexHighlight.parent !== layers.worldRoot) {
+      layers.worldRoot.addChild(hexHighlight);
+    }
+    if (state.selection.kind === 'hex') {
+      const px = hexToPixel(state.selection.hex, hexSize);
+      hexHighlight.position.set(px.x, px.y);
+      hexHighlight.visible = true;
+      // Keep it on top after sibling layers re-added themselves.
+      layers.worldRoot.addChild(hexHighlight);
+    } else {
+      hexHighlight.visible = false;
+    }
   };
 
   // --- Tick scheduler --------------------------------------------------------
@@ -362,6 +423,12 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     const rng = createRng(`${merged.seed}|tick-${today}`);
     const result = tick({ world, rng });
     state.ticksThisRun += 1;
+
+    // Per-entity history: snapshot every settlement/caravan/camp and route
+    // this tick's events into per-entity event buffers. Done before the
+    // sidebar.update call so panels render against fresh history.
+    recordTick(history, world);
+    recordEvents(history, world.day, result.events);
 
     // Sync caravan layer's prev/cur for interpolation.
     layers.caravansLayer.syncTick(world);
@@ -409,8 +476,19 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
   };
 
   // Initial UI render so totals are populated before the first tick fires.
+  // Also seed history with the day-0 snapshot so panels show "1 tick" of
+  // data immediately rather than waiting for the first sim advance.
+  recordTick(history, world);
   sidebar.update(world, []);
   refreshHighlights();
+
+  // Re-render the selected-entity panels and the hex highlight whenever the
+  // selection changes. Without this, paused-time clicks wouldn't update the
+  // sidebar (sidebar.update only runs on a sim tick).
+  onSelectionChange(() => {
+    sidebar.update(world, []);
+    refreshHighlights();
+  });
 
   // PIXI ticker drives both interpolation and tick scheduling.
   app.ticker.add(() => {
@@ -476,4 +554,22 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
       return layers.worldRoot;
     },
   };
+};
+
+/**
+ * Build a stroke-only hex outline ready to be positioned in worldRoot
+ * space. We allocate a fresh Graphics so reset() can drop the old one
+ * along with its parent worldRoot.
+ */
+const makeHexHighlight = (size: number): Graphics => {
+  const g = new Graphics();
+  g.eventMode = 'none';
+  g.visible = false;
+  const path: number[] = [];
+  for (let i = 0; i < 6; i++) {
+    const angle = (Math.PI / 180) * (60 * i - 30);
+    path.push(size * Math.cos(angle), size * Math.sin(angle));
+  }
+  g.poly(path).stroke({ color: 0xffffff, width: 1.5, alpha: 0.95 });
+  return g;
 };

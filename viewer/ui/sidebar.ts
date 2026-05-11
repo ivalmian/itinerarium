@@ -14,8 +14,10 @@ import { createTimeControls, type TimeControls } from './timeControls.js';
 import { createSettlementPanel, type SettlementPanel } from './settlementPanel.js';
 import { createCaravanPanel, type CaravanPanel } from './caravanPanel.js';
 import { createBanditCampPanel, type BanditCampPanel } from './banditCampPanel.js';
+import { createHexPanel, type HexPanel } from './hexPanel.js';
 import { createResourcePanel, type ResourcePanel } from './resourcePanel.js';
 import { createEventLog, type EventLog } from './eventLog.js';
+import type { ViewerHistory } from '../state/history.js';
 
 interface RollingCounts {
   caravan_robbed: number;
@@ -36,6 +38,7 @@ export interface Sidebar {
   readonly settlementPanel: SettlementPanel;
   readonly caravanPanel: CaravanPanel;
   readonly banditCampPanel: BanditCampPanel;
+  readonly hexPanel: HexPanel;
   readonly resourcePanel: ResourcePanel;
   readonly eventLog: EventLog;
 }
@@ -50,6 +53,7 @@ const fmt = (n: number): string => {
 export interface SidebarOpts {
   readonly host: HTMLElement;
   readonly state: ViewerState;
+  readonly history: ViewerHistory;
   readonly onPlayPause: () => void;
   readonly onSpeedCycle: () => void;
   readonly onReset: () => void;
@@ -101,14 +105,22 @@ export const createSidebar = (opts: SidebarOpts): Sidebar => {
   const settlementPanel = createSettlementPanel({
     host: selectedHost,
     state,
+    history: opts.history,
     onClear: () => setSelection(state, { kind: 'none' }),
   });
   const caravanPanel = createCaravanPanel({
     host: selectedHost,
     state,
+    history: opts.history,
     onClear: () => setSelection(state, { kind: 'none' }),
   });
   const banditCampPanel = createBanditCampPanel({
+    host: selectedHost,
+    state,
+    history: opts.history,
+    onClear: () => setSelection(state, { kind: 'none' }),
+  });
+  const hexPanel = createHexPanel({
     host: selectedHost,
     state,
     onClear: () => setSelection(state, { kind: 'none' }),
@@ -208,6 +220,7 @@ export const createSidebar = (opts: SidebarOpts): Sidebar => {
     settlementPanel.update(world);
     caravanPanel.update(world);
     banditCampPanel.update(world);
+    hexPanel.update(world);
     eventLog.append(world, events);
   };
 
@@ -222,6 +235,7 @@ export const createSidebar = (opts: SidebarOpts): Sidebar => {
     settlementPanel,
     caravanPanel,
     banditCampPanel,
+    hexPanel,
     resourcePanel,
     eventLog,
   };

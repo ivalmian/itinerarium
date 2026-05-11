@@ -8,7 +8,10 @@
  */
 
 import type { WorldState } from '../../src/procgen/seed.js';
+import type { BanditCampId } from '../../src/sim/types.js';
 import type { ViewerState } from '../state/viewerState.js';
+import type { ViewerHistory } from '../state/history.js';
+import { createSparkline, fmtCompact } from './sparkline.js';
 
 export interface BanditCampPanel {
   update(world: WorldState): void;
@@ -17,11 +20,12 @@ export interface BanditCampPanel {
 export interface BanditCampPanelOpts {
   readonly host: HTMLElement;
   readonly state: ViewerState;
+  readonly history: ViewerHistory;
   readonly onClear: () => void;
 }
 
 export const createBanditCampPanel = (opts: BanditCampPanelOpts): BanditCampPanel => {
-  const { host, state } = opts;
+  const { host, state, history } = opts;
   const root = document.createElement('div');
   host.appendChild(root);
 
@@ -84,6 +88,9 @@ export const createBanditCampPanel = (opts: BanditCampPanelOpts): BanditCampPane
       root.appendChild(list);
     }
 
+    // Historical trajectories (banditCount, treasury, health) + raid history.
+    renderCampHistory(root, history, camp.id);
+
     const copy = document.createElement('button');
     copy.className = 'copy-btn';
     copy.textContent = 'Copy state JSON';
@@ -112,4 +119,107 @@ export const createBanditCampPanel = (opts: BanditCampPanelOpts): BanditCampPane
   };
 
   return { update };
+};
+
+const renderCampHistory = (
+  root: HTMLElement,
+  history: ViewerHistory,
+  id: BanditCampId,
+): void => {
+  const buf = history.banditCamps.get(id);
+  if (buf === undefined || buf.length < 2) return;
+
+  const hh = document.createElement('div');
+  hh.style.color = 'var(--muted)';
+  hh.style.marginTop = '8px';
+  hh.style.borderTop = '1px solid var(--border)';
+  hh.style.paddingTop = '6px';
+  hh.textContent = `History (${buf.length} ticks):`;
+  root.appendChild(hh);
+
+  const recent = buf.slice(-30);
+  const lastSnap = recent[recent.length - 1];
+  if (lastSnap === undefined) return;
+  appendCampSparkRow(
+    root,
+    'Bandits',
+    recent.map((b) => b.banditCount),
+    String(lastSnap.banditCount),
+  );
+  appendCampSparkRow(
+    root,
+    'Hangers-on',
+    recent.map((b) => b.hangersOnCount),
+    String(lastSnap.hangersOnCount),
+  );
+  appendCampSparkRow(
+    root,
+    'Treasury',
+    recent.map((b) => b.treasury),
+    fmtCompact(lastSnap.treasury),
+  );
+  appendCampSparkRow(
+    root,
+    'Health',
+    recent.map((b) => b.averageHealth),
+    `${(lastSnap.averageHealth * 100).toFixed(0)}%`,
+  );
+
+  const events = history.banditCampEvents.get(id);
+  if (events !== undefined && events.length > 0) {
+    const eh = document.createElement('div');
+    eh.style.color = 'var(--muted)';
+    eh.style.fontSize = '11px';
+    eh.style.marginTop = '6px';
+    eh.textContent = `Recent events (${events.length}):`;
+    root.appendChild(eh);
+    const list = document.createElement('div');
+    list.style.fontSize = '11px';
+    list.style.fontFamily = 'ui-monospace, SF Mono, monospace';
+    list.style.maxHeight = '120px';
+    list.style.overflowY = 'auto';
+    for (const e of events.slice(-8)) {
+      const row = document.createElement('div');
+      row.style.color = 'var(--muted)';
+      row.style.padding = '1px 0';
+      row.textContent = `d${e.day} · ${e.summary}`;
+      list.appendChild(row);
+    }
+    root.appendChild(list);
+  }
+};
+
+const appendCampSparkRow = (
+  host: HTMLElement,
+  label: string,
+  values: readonly number[],
+  current: string,
+): void => {
+  const row = document.createElement('div');
+  row.style.display = 'flex';
+  row.style.alignItems = 'center';
+  row.style.justifyContent = 'space-between';
+  row.style.padding = '1px 0';
+  row.style.gap = '6px';
+  const l = document.createElement('span');
+  l.className = 'label';
+  l.style.color = 'var(--muted)';
+  l.style.fontSize = '11px';
+  l.textContent = label;
+  row.appendChild(l);
+  const right = document.createElement('span');
+  right.style.display = 'flex';
+  right.style.alignItems = 'center';
+  right.style.gap = '4px';
+  right.appendChild(createSparkline(values));
+  const cur = document.createElement('span');
+  cur.className = 'value';
+  cur.style.fontSize = '11px';
+  cur.style.fontVariantNumeric = 'tabular-nums';
+  cur.style.minWidth = '36px';
+  cur.style.textAlign = 'right';
+  cur.textContent = current;
+  right.appendChild(cur);
+  row.appendChild(right);
+  host.appendChild(row);
 };

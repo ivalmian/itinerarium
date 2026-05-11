@@ -8,6 +8,7 @@
  */
 
 import type { BanditCampId, CaravanId, SettlementId } from '../../src/sim/types.js';
+import type { Hex } from '../../src/sim/world/hex.js';
 
 export type Speed = 0 | 1 | 4 | 16 | 64;
 export const SPEED_LADDER: readonly Speed[] = [1, 4, 16, 64] as const;
@@ -23,7 +24,8 @@ export type Selection =
   | { readonly kind: 'none' }
   | { readonly kind: 'settlement'; readonly id: SettlementId }
   | { readonly kind: 'caravan'; readonly id: CaravanId }
-  | { readonly kind: 'bandit_camp'; readonly id: BanditCampId };
+  | { readonly kind: 'bandit_camp'; readonly id: BanditCampId }
+  | { readonly kind: 'hex'; readonly hex: Hex };
 
 export interface ViewerState {
   speed: Speed;
