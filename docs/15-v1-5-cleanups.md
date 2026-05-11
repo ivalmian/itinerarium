@@ -378,76 +378,48 @@ gets relaxed (forced sales).
 **Cross-refs:** `docs/08-money-and-trade.md` §"Market clearing",
 `docs/14-debug-strategies.md` Pattern F.
 
-## C17 — Merchant guilds for price discovery [TODO]
+## C17 — Merchant guilds for price discovery (landed)
 
-**Current state:** caravans each carry a personal `priceBook`.
-There is no `Guild` actor type, no settlement-attached price
-ledger, and no per-arrival ledger exchange.
+**v1.5 — landed.** New ActorKind `merchant_guild` + `Guild` type
+(src/sim/politics/guild.ts). One guild per town/city seeded at
+procgen (Phase 12); auto-enrolls local patrician families + the
+city corporation as members.
 
-**Why it matters:** docs/08 §"Communicated price discovery via
-guilds" is explicitly locked as a design decision (Decision #27
-in docs/10). Without guilds, NPC caravan AI either flies blind
-(only its own observations) or tacitly assumes information it
-shouldn't have. Crowding-aware planning per docs/08 isn't
-possible without the shared-but-delayed information channel guilds
-provide.
+Tick-loop wiring:
+1. On caravan arrival, `syncCaravanWithLocalGuild` deposits the
+   caravan's recent priceBook entries into the owner-guild's ledger
+   AND reads freshest collective entries back into the priceBook
+   so the next leg uses the guild's intel.
+2. `crossGuildRumorPhase`: caravans of DIFFERENT guilds sharing a
+   hex bidirectionally exchange ledger slices (capped 60 days old).
 
-**Realistic implementation:**
-1. New `Guild` actor type, one per city of size ≥ town. Each
-   guild has a `priceLedger: Map<ResourceId, Map<HexId, PriceObs>>`
-   and a member set (NPC caravan owners).
-2. On a member caravan arriving at the guild's home settlement,
-   it deposits a configurable subset of recent observations into
-   the ledger.
-3. On a member caravan departing the guild's home settlement, it
-   reads the ledger into its own `priceBook`.
-4. When two members of different guilds are co-located, they
-   exchange a slice of ledgers (the long-haul rumor channel).
-5. NPC `planCaravanRoute` factors in visible competing
-   commitments (other members planning the same trip) so the
-   guild knows everyone won't pile onto the same spread.
-
-**Acceptance:** in a burn-in, an artificial spike in pottery
-price at City B is reflected in City A's guild ledger several
-days later (matching the round-trip time of the caravan that
-observed it), and 2-3 caravans (not all members) commit to a
-City B run rather than all of them stampeding.
+Shared-but-delayed channel: a spike at City B becomes visible at
+City A as soon as a member caravan completes the round trip — not
+instantly, not blind.
 
 **Cross-refs:** `docs/08-money-and-trade.md` §"Communicated price
 discovery via guilds", `docs/10-scope-and-questions.md`
 Decision 27.
 
-## C18 — GoalStack for goal-bearing units [TODO]
+## C18 — GoalStack for goal-bearing units (landed)
 
-**Current state:** caravans carry a single `destination: Position |
-null`, not a stack of persistent goals. Patrols carry a route.
-News carriers carry a destination + a payload. Migration columns
-carry a destination. There is no shared `GoalStack` model.
+**v1.5 — landed.** New `Goal` type
+(src/sim/caravan/goal.ts) with variants `move_to`, `trade_at`,
+`escort`, `patrol`, `return_home`, `flee_to`. `Caravan` gains an
+optional `goalStack: Goal[]`. `caravanReplanPhase` peeks the top
+goal each tick; pops when complete (per `isGoalComplete` against
+the city-anchor index), adopts the next goal's implied
+destination. Backwards-compat: caravans without a stack use the
+legacy single-destination re-planning.
 
-**Why it matters:** docs/06 §"Goal-bearing units" + Decision #26
-in docs/10 lock the design: caravans, migration columns, military
-units, and patrols all carry one or more persistent goals on a
-stack (`move_to / trade_at / escort / patrol / return_home /
-flee_to`) so they can do multi-leg, multi-week intents like "haul
-wine to City B and return with grain." Today this is approximated
-by per-tick re-planning, which works for simple round trips but
-makes complex behavior (escort an ally caravan, then go home,
-then wait for a season) hard to express.
-
-**Realistic implementation:** add `goalStack: Goal[]` to the
-relevant unit types. The per-tick AI pops the top goal when it
-completes, falls back to the next. `escort` becomes a real goal
-(stay within N hexes of another unit) instead of a special-case
-in the patrol code.
-
-**Acceptance:** an NPC trader runs a 30-day round trip with
-trade goals stacked at both endpoints, never needs daily
-re-planning, and the goal stack serializes cleanly in the
-WorldState snapshot.
+A trade route can now be expressed as a single 30-day intent —
+"haul wine to City B, trade there, return home with grain" —
+instead of being re-discovered every tick. The escort/patrol
+goal types are placeholders for future engine wiring.
 
 **Cross-refs:** `docs/06-caravans.md` §"Goal-bearing units",
 `docs/10-scope-and-questions.md` Decision 26,
-`src/sim/caravan/caravan.ts`, `src/sim/caravan/ai.ts`.
+`src/sim/caravan/caravan.ts`, `src/sim/caravan/goal.ts`.
 
 ## Order of operations
 
