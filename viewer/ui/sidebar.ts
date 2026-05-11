@@ -111,6 +111,7 @@ export const createSidebar = (opts: SidebarOpts): Sidebar => {
   const caravanPanel = createCaravanPanel({
     host: selectedHost,
     state,
+    history: opts.history,
     onClear: () => setSelection(state, { kind: 'none' }),
   });
   const banditCampPanel = createBanditCampPanel({
