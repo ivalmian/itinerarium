@@ -275,7 +275,9 @@ export const populationSane: Invariant = ({ world, day, previousSummary }) => {
   const prev = previousSummary.totalPop;
   if (prev <= 0 && cur <= 0) return [];
   if (prev <= 0) {
-    // Growing from zero: any population is fine; bootstrap can seed people.
+    // Growing from zero would mean a settlement got re-founded between
+    // ticks — that doesn't happen in the current sim, but if it ever
+    // does, we don't want to flag it as runaway growth.
     return [];
   }
   const yearsElapsed = dt / 365;
