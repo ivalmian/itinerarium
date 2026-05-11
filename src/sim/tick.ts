@@ -1228,11 +1228,29 @@ const tradePhase = (
     const localTradable = tradable.filter((r) => presentResources.has(String(r)));
     if (localTradable.length === 0) continue;
 
+    // Synthesize a recentLocalPrices map: use the observed clearing
+    // price if present + non-zero, else fall back to the global-market
+    // baseline (or 1 coin/unit). Without a non-zero baseline,
+    // buildSettlementSchedules sets productionCost = 0.8 × 0 = 0,
+    // sellers have reservation 0, market clears at 0, and the next
+    // tick's "recent price" is still 0 → permanent zero-price death
+    // spiral. The baseline kicks the spiral so the price discovers a
+    // real local floor.
+    const seededPrices = new Map<ResourceId, number>();
+    for (const r of localTradable) {
+      const observed = settlement.market.lastClearingPrice.get(r) ?? 0;
+      if (observed > 0) {
+        seededPrices.set(r, observed);
+      } else {
+        seededPrices.set(r, DEFAULT_GLOBAL_PRICES.get(r) ?? 1);
+      }
+    }
+
     const schedules = buildSettlementSchedules({
       settlement,
       stockpilesByOwner,
       resources: localTradable,
-      recentLocalPrices: settlement.market.lastClearingPrice,
+      recentLocalPrices: seededPrices,
       today,
       season,
       ownerKindByActor,

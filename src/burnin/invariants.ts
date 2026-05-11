@@ -203,6 +203,40 @@ export const priceFinite: Invariant = ({ world }) => {
   return out;
 };
 
+/**
+ * Pathological clearing prices: a healthy market never has its clearing
+ * price go to literal 0 (free goods don't exist when production has any
+ * cost). If >50% of cleared markets are at price 0 (after a startup
+ * grace period of 30 days), the market clearing logic is broken and
+ * the burn-in should fast-fail instead of running for 6 years
+ * collecting garbage data. Per the user observation: "pathological
+ * clearing prices should cause burn in to fast fail."
+ */
+export const noPathologicalZeroPrices: Invariant = ({ world }) => {
+  const out: InvariantViolation[] = [];
+  if (world.day < 30) return out; // grace period
+  let total = 0;
+  let zero = 0;
+  for (const settlement of world.settlements.values()) {
+    for (const [, price] of settlement.market.lastClearingPrice) {
+      total++;
+      if (price === 0) zero++;
+    }
+  }
+  if (total === 0) return out;
+  const fraction = zero / total;
+  if (fraction > 0.5) {
+    out.push(
+      violation(
+        'noPathologicalZeroPrices',
+        `${zero}/${total} (${(fraction * 100).toFixed(0)}%) of cleared markets are at price 0 — sellers giving goods away. The trade phase is broken.`,
+        'fatal',
+      ),
+    );
+  }
+  return out;
+};
+
 export const reputationClamped: Invariant = ({ world }) => {
   const out: InvariantViolation[] = [];
   for (const entry of world.reputation.entries()) {
@@ -436,6 +470,7 @@ export const STANDARD_INVARIANTS: readonly Invariant[] = Object.freeze([
   caravanCrewPositive,
   caravanCargoNonNegative,
   priceFinite,
+  noPathologicalZeroPrices,
   reputationClamped,
   populationSane,
   noOrphanedActorRefs,
