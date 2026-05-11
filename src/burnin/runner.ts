@@ -44,12 +44,28 @@ import {
   type InvariantViolation,
   type PreviousSummary,
 } from './invariants.js';
+import {
+  createTimeSeriesInstrument,
+  type TimeSeriesInstrument,
+} from './instruments/timeSeriesCsv.js';
 import type { Day } from '../sim/types.js';
 
 // --- Public types -----------------------------------------------------------
 
 export type InvariantFrequency = 'day' | 'week' | 'month';
 export type SnapshotFrequency = 'never' | 'month' | 'year';
+
+/**
+ * Optional debug instruments. See docs/14 §"Standard runtime instruments" and
+ * docs/15 §C15. Each entry adds a per-tick recording hook that flushes its
+ * output to `outDir` when the run finishes.
+ *
+ * - `time-series`: per-(settlement, resource) CSV time series. Writes one
+ *   `outDir/settlement-<id>-resource-<r>.csv` file per pair. Generates
+ *   thousands of files on a realistic burn-in — intended for manual debug
+ *   invocations only, NOT the watchdog.
+ */
+export type Instrument = 'time-series';
 
 export interface BurnInOpts {
   readonly seed: string;
@@ -74,6 +90,17 @@ export interface BurnInOpts {
    * burn-ins remain interruptible. Defaults to 365 (one in-game year).
    */
   readonly yieldEveryDays?: number;
+  /**
+   * Optional debug instruments to record (docs/15 §C15). Each instrument
+   * writes to `outDir`; passing instruments without an `outDir` set throws.
+   * Default behavior (empty / undefined) writes nothing.
+   */
+  readonly instruments?: readonly Instrument[];
+  /**
+   * Per-CSV row cap for the `time-series` instrument. See
+   * `DEFAULT_MAX_ROWS_PER_CSV` for the default. Exposed primarily for tests.
+   */
+  readonly timeSeriesMaxRowsPerCsv?: number;
 }
 
 export interface BurnInSummary {
@@ -176,6 +203,23 @@ export const runBurnIn = async (opts: BurnInOpts): Promise<BurnInReport> => {
   const wantOut = opts.outDir.length > 0;
   if (wantOut) {
     await mkdir(opts.outDir, { recursive: true });
+  }
+
+  // 5b. Configure optional debug instruments. The watchdog never enables
+  //     these (a 100-settlement burn-in would write ~thousands of CSVs);
+  //     they're for manual debug invocations.
+  const instruments = opts.instruments ?? [];
+  if (instruments.length > 0 && !wantOut) {
+    throw new Error('runBurnIn: instruments requested but outDir is empty');
+  }
+  let timeSeriesInstrument: TimeSeriesInstrument | null = null;
+  if (instruments.includes('time-series')) {
+    timeSeriesInstrument = createTimeSeriesInstrument({
+      outDir: opts.outDir,
+      ...(opts.timeSeriesMaxRowsPerCsv !== undefined
+        ? { maxRowsPerCsv: opts.timeSeriesMaxRowsPerCsv }
+        : {}),
+    });
   }
 
   const summaryAtStart: BurnInSummary = {
@@ -288,6 +332,11 @@ export const runBurnIn = async (opts: BurnInOpts): Promise<BurnInReport> => {
       snapshotPaths.push(path);
     }
 
+    // Per-tick instruments (docs/15 §C15).
+    if (timeSeriesInstrument !== null) {
+      timeSeriesInstrument.tick(world, checkDay as Day);
+    }
+
     // Yield to the event loop occasionally so very long runs don't stall it.
     if ((dayCount + 1) % yieldEvery === 0) {
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -334,6 +383,10 @@ export const runBurnIn = async (opts: BurnInOpts): Promise<BurnInReport> => {
   if (wantOut) {
     const reportPath = join(opts.outDir, 'report.json');
     await writeFile(reportPath, JSON.stringify(report, null, 2), 'utf8');
+  }
+
+  if (timeSeriesInstrument !== null) {
+    await timeSeriesInstrument.flush();
   }
 
   if (abortReason !== null && opts.silent !== true) {

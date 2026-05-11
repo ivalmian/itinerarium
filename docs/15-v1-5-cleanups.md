@@ -207,69 +207,85 @@ deleted once the corresponding current-scope TODO lands.
 (Comments about the old charcoal/iron/timber hacks have already
 been removed by the C2 work.)
 
-## C10 — Storage capacity discipline [TODO]
+## C10 — Storage capacity discipline (landed, post-production sweep)
 
-**Current state:** docs/05 §"Storage capacity" specifies finite
-per-resource stockpile capacity backed by `granary` / `warehouse` /
-`cistern` buildings + a small per-capita household baseline. **Code
-does not enforce any capacity limit at any point.** Stockpiles can
-grow without bound.
+**Pre-v1.5 hack:** stockpiles grew without bound; the `granary`/
+`warehouse`/`cistern` buildings were decorative.
 
-**Why it doesn't bite today:** with the current burn-in scale and
-the 180-day grain bootstrap (C5), no settlement accumulates enough
-of any one resource to exceed a realistic granary's capacity. So the
-absent constraint isn't visible in test output. It would matter
-once C5 reduces bootstraps and once dynamic investment (C4) drives
-real surpluses.
+**v1.5 — landed:**
+1. Each building catalog entry now carries a
+   `storageCapacity: ReadonlyMap<ResourceId, Quantity>` field.
+   Storage buildings carry the bulk of the capacity:
+   - `granary`: +5000 modii of `food.grain` (≈ 33 t — a sturdy
+     Roman provincial granary).
+   - `warehouse`: +10 000 kg "generic" pool, expressed as a
+     wildcard slot (any non-grain tradable can occupy it).
+   - `cistern`: +50 000 kg of water (water resource not yet in the
+     catalog, so this is dormant until C12 lands).
+   All other buildings carry a small implicit ~100 kg pool for
+   in-process work (per-resource for tradables they actively touch,
+   tracked as the wildcard pool to avoid thousands of dead Map
+   entries).
+2. A per-capita household baseline of ~50 kg mixed is added on top
+   so buildingless hamlets don't reject every delivery.
+3. After the production phase each tick,
+   `storageCapacityPhase` walks every (settlement, owner, resource)
+   and, if the owner's stockpile of a resource exceeds the
+   settlement's allocated capacity for that resource, the excess is
+   force-sold at the spoilage floor (0.5 × the resource's baseline
+   global price). The seller's treasury credits the proceeds; the
+   resource is removed from the world (we don't model who eats it).
+   A `storage_overflow` TickEvent records the rejected delta.
+4. `seedWorld` is allowed to seed past the cap (no clamp at procgen
+   — the bootstrap explicitly over-provisions). Only the tick loop
+   enforces the cap.
 
-**Realistic implementation:**
-1. Add `storageCapacity: Map<ResourceId, Quantity>` to each
-   building catalog entry that stores anything (granary, warehouse,
-   cistern); zero/absent for buildings that don't store.
-2. Add a small per-capita household baseline (~50 kg mixed) so even
-   buildingless hamlets don't reject all goods.
-3. Compute `effectiveCapacity(settlement, resource)` = sum across
-   buildings + per-adult baseline.
-4. In every code path that adds to a stockpile (production output,
-   caravan delivery, grant), clamp at `effectiveCapacity` and emit a
-   `stockpile_capped` event for the rejected delta. Producers can
-   either let goods spoil or sell at depressed prices.
-5. Initial seed flows past the cap by setting `bypassCapacity = true`
-   during `seedWorld`; no bypass during the tick loop.
-
-**Acceptance:** at year 10, no settlement holds >2× the realistic
-capacity of any resource. Bursting harvests visibly cap; granary-
-poor settlements show the constraint in their event log.
+**Acceptance:** at year 6 burn-in, no settlement holds >2× the
+realistic capacity of any one resource — bursting harvests visibly
+cap, and the `storage_overflow` event log shows the rejected
+deliveries flowing back to the market.
 
 **Cross-refs:** `docs/05-settlements.md` §"Storage capacity",
 `docs/02-resources.md` (unit weights),
-`src/sim/buildings/catalog.ts`.
+`src/sim/buildings/catalog.ts`,
+`src/sim/world/settlement.ts` (`computeStorageCapacity`),
+`src/sim/tick.ts` (`storageCapacityPhase`).
 
-## C11 — Roman-road maintenance cost [TODO]
+## C11 — Roman-road maintenance cost (landed, quarterly drain)
 
-**Current state:** Roman roads neither accrue wear nor decay (per
-`addRoadWear` and `trailWearTickPhase` in `src/sim/tick.ts`). They
-are effectively immortal.
+**Pre-v1.5 hack:** Roman roads neither accrued wear nor decayed —
+they were effectively immortal regardless of whether the governor
+existed at all.
 
-**Why it's a hack:** historically Roman roads required active
-maintenance — labor, lime mortar, occasional reconstruction. A
-province whose tax revenue is captured by bandits or a corrupt
-governor should eventually see its arteries degrade. Today they
-don't, so a defunded province retains its full transport advantage.
+**v1.5 — landed:** every Roman-road hex now consumes a small
+quarterly resource flow from the governor's office:
+- 0.1 coin per hex per quarter (≈ 0.4 coin/hex/year, affordable
+  for a 20–50k-coin governor with ~hundreds of Roman hexes).
+- 0.01 cut_stone per hex per quarter (~0.04/hex/year — the
+  governor maintains a small repair stockpile).
 
-**Realistic implementation:** every Roman-road hex consumes a small
-daily resource flow (lumber + cut_stone + a few road_worker hours)
-from the governor's office or the local family that owns the
-adjacent estate. A road that goes unmaintained for N days
-(default ~365) downgrades to `dirt` and starts accruing wear like
-any other dirt road.
+`roadMaintenancePhase` runs quarterly (every 91 days). For each
+Roman hex, it tries to drain the per-hex cost from the
+`governor_office` actor's treasury + cut_stone stockpile. If the
+governor can pay, the hex resets `romanQuartersUnmaintained = 0`
+(via deletion of the optional field). If they can't, the field
+increments. Once a hex has missed 4 consecutive quarters
+(≈ 1 year unmaintained), it downgrades to `road = 'dirt'` and a
+`road_unmaintained` TickEvent fires — from then on it accrues +
+decays wear like any other dirt road.
 
-**Acceptance:** in a burn-in where the governor's treasury is
-deliberately drained (by ambushed tax shipments), the Roman road
-network visibly degrades over 1-2 years.
+When the governor partially recovers (treasury back up), payment
+resumes; mid-quarter resets clear the missed-quarter counter.
+
+**Acceptance:** in the standard 6y burn-in the governor's
+treasury keeps up easily (~0.4 coin/hex/year × ~50–200 Roman
+hexes ≈ 20–80 coin/year, vs. the seeded 20–50k coin treasury).
+In a deliberately-drained burn-in, the network visibly degrades
+within 1–2 years.
 
 **Cross-refs:** `docs/06-caravans.md` §"Trail wear",
-`src/sim/tick.ts` `trailWearTickPhase`.
+`src/sim/tick.ts` (`roadMaintenancePhase`),
+`src/sim/world/terrain.ts` (`romanQuartersUnmaintained` field).
 
 ## C12 — Promote raw milk to a tracked resource [TODO]
 
@@ -323,27 +339,54 @@ settlements take longer to complete heavy stoneworks.
 **Cross-refs:** `docs/08-money-and-trade.md` §"Construction is
 heavy", `src/sim/tick.ts` `constructionPhase`.
 
-## C15 — Per-settlement, per-resource time-series CSV [TODO]
+## C15 — Per-settlement, per-resource time-series CSV (landed; partial)
 
-**Current state:** `scripts/debug-activity.ts` dumps global yearly
-aggregates and a pyramid snapshot. There is no per-settlement,
-per-resource per-tick time series.
+**Status (2026-05):** v1 instrument landed. `--instruments=time-series`
+on the burn-in CLI writes one
+`outDir/settlement-<id>-resource-<r>.csv` per (settlement, resource)
+pair, with one row per tick:
 
-**Why it matters:** docs/14 lists this as the workhorse instrument
-for triaging burn-in failures (famine cascades, price explosions,
-production starvation). Without it, we read tea leaves from
-aggregate counters.
+    day,stockpile,inflow,outflow,lastClearingPrice,unmetDemandAtClearingPrice
 
-**Realistic implementation:** runner-side flag (`--instruments`)
-that, per (settlement, resource) on a configurable subset (or
-all), accumulates `{stockpile, inflows, outflows, lastClearingPrice,
-unmetDemandAtClearingPrice}` per tick into one CSV. Acceptance:
-charting one such CSV during a known-failing burn-in shows the
-collapse pattern.
+- `stockpile` = sum across every actor in
+  `settlement.stockpileOwners`.
+- `inflow` / `outflow` = per-tick deltas of
+  `market.recentInflows[r]` / `recentOutflows[r]` (those counters
+  accumulate monotonically; the instrument differences them).
+- `lastClearingPrice` = `market.lastClearingPrice[r]`, blank when
+  the resource has never cleared on the settlement.
+- `unmetDemandAtClearingPrice` = always 0 in v1. The trade phase in
+  `src/sim/tick.ts` discards `clearMarket()`'s
+  `unmetDemandAtClearingPrice` field; surfacing it requires
+  extending the `market_cleared` TickEvent (or adding a sibling).
+  Tracked as the remaining piece of C15 — the column is in the CSV
+  schema so a downstream consumer can ignore-or-read uniformly once
+  it's plumbed.
+
+**Default behavior unchanged:** without `--instruments=time-series`,
+no CSVs are written. The 6-year burn-in watchdog deliberately does
+NOT enable it (a 100-settlement realistic burn-in would write tens
+of thousands of files per run).
+
+**Cap:** per-CSV row count is capped at 10,000 by default
+(~27 in-game years) so a 50-year debug invocation can't OOM.
+Configurable via the `timeSeriesMaxRowsPerCsv` runner option.
+
+**Resource selection:** records every resource that any owner in
+the settlement holds at burn-in start, plus any resource discovered
+during the run (e.g. a producer's first output day). New series
+backfill zero rows so all CSVs share the same row count.
+
+**Sample invocation:**
+
+    npm run burnin -- --seed=debug --days=365 \
+      --width=32 --height=32 --cities=1 --towns=2 --villages=4 --hamlets=2 \
+      --out=./burnin-debug --instruments=time-series
 
 **Cross-refs:** `docs/14-debug-strategies.md`
 §"Per-settlement, per-resource time series",
-`src/burnin/runner.ts`.
+`src/burnin/instruments/timeSeriesCsv.ts`,
+`src/burnin/runner.ts`, `src/cli/burnin.ts`.
 
 ## C16 — Cascading consequences of price explosion [TODO]
 
@@ -445,8 +488,8 @@ order:
   the cushion.
 - Delete C7 bootstrap-only safeguards once C5-final lands.
 - C10–C18 are independent and can be tackled in any order; pick by
-  burn-in pain (C15 unblocks better diagnostics; C10 + C17 are
-  the highest-leverage realism gaps).
+  burn-in pain (C15 has landed in v1; C10 + C17 are the
+  highest-leverage realism gaps).
 
 ## Already landed
 
@@ -470,3 +513,13 @@ order:
 - ✅ C8 — Construction time + labor cost: investments create
   `pendingBuilding` records that consume worker-days before becoming
   productive. Demolition remains [TODO].
+- ✅ C10 — Storage capacity discipline: per-resource cap enforced
+  every tick after production; overflow forced-sold at spoilage
+  floor (0.5 × baseline) with a `storage_overflow` event.
+- ✅ C11 — Roman-road maintenance cost: governor pays
+  0.1 coin + 0.01 cut_stone per Roman hex per quarter; missed
+  quarters accumulate; after 4 missed quarters the hex demotes
+  to dirt with a `road_unmaintained` event.
+- ✅ C15 (partial) — Per-(settlement, resource) CSV time-series
+  instrument. `--instruments=time-series` writes one CSV per pair;
+  `unmetDemandAtClearingPrice` plumbing remains the open piece.

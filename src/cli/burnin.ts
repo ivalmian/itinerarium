@@ -14,10 +14,21 @@
  *     --cities=5 --towns=15 --villages=300 --hamlets=200 \
  *     --invariants=week --snapshots=year \
  *     --out=./burnin-out
+ *
+ * Debug instrument example (writes per-(settlement, resource) CSVs):
+ *   npm run burnin -- \
+ *     --seed=debug --days=365 \
+ *     --width=32 --height=32 --cities=1 --towns=2 --villages=4 --hamlets=2 \
+ *     --out=./burnin-debug \
+ *     --instruments=time-series
+ *
+ * Note: `--instruments=time-series` writes one CSV per (settlement, resource)
+ * — easily thousands of files on a realistic burn-in. Intended for manual
+ * debug runs only; the watchdog deliberately does NOT enable it.
  */
 
 import { parseArgs } from 'node:util';
-import { runBurnIn, type BurnInOpts } from '../burnin/runner.js';
+import { runBurnIn, type BurnInOpts, type Instrument } from '../burnin/runner.js';
 
 interface ParsedFlags {
   seed: string;
@@ -33,7 +44,28 @@ interface ParsedFlags {
   snapshots: 'never' | 'month' | 'year';
   out: string;
   silent: boolean;
+  instruments: readonly Instrument[];
 }
+
+const SUPPORTED_INSTRUMENTS = ['time-series'] as const satisfies readonly Instrument[];
+
+const parseInstruments = (raw: string): readonly Instrument[] => {
+  const parts = raw
+    .split(',')
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+  const out: Instrument[] = [];
+  for (const p of parts) {
+    const found = SUPPORTED_INSTRUMENTS.find((s) => s === p);
+    if (found === undefined) {
+      throw new Error(
+        `--instruments has unknown value '${p}'. Supported: [${SUPPORTED_INSTRUMENTS.join(', ')}]`,
+      );
+    }
+    if (!out.includes(found)) out.push(found);
+  }
+  return out;
+};
 
 const DEFAULTS: ParsedFlags = {
   seed: 'default-burnin',
@@ -48,6 +80,7 @@ const DEFAULTS: ParsedFlags = {
   snapshots: 'year',
   out: './burnin-out',
   silent: false,
+  instruments: [],
 };
 
 const parseInt10 = (label: string, raw: string): number => {
@@ -84,6 +117,7 @@ const parseFlags = (argv: readonly string[]): ParsedFlags => {
       snapshots: { type: 'string' },
       out: { type: 'string' },
       silent: { type: 'boolean' },
+      instruments: { type: 'string' },
     },
   });
 
@@ -121,6 +155,10 @@ const parseFlags = (argv: readonly string[]): ParsedFlags => {
         : DEFAULTS.snapshots,
     out: typeof values['out'] === 'string' ? values['out'] : DEFAULTS.out,
     silent: values['silent'] === true,
+    instruments:
+      typeof values['instruments'] === 'string'
+        ? parseInstruments(values['instruments'])
+        : DEFAULTS.instruments,
   };
   if (typeof values['days'] === 'string') {
     out.days = parseInt10('days', values['days']);
@@ -151,6 +189,7 @@ const main = async (): Promise<void> => {
     snapshotEvery: flags.snapshots,
     outDir: flags.out,
     silent: flags.silent,
+    instruments: flags.instruments,
     ...(flags.days !== undefined ? { daysOverride: flags.days } : {}),
   };
 
