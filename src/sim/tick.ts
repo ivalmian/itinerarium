@@ -3577,21 +3577,48 @@ const spawnNewsFromPatrolBattle = (
 const constructionPhase = (world: WorldState, today: Day, events: TickEvent[]): void => {
   for (const settlement of world.settlements.values()) {
     if (settlement.pendingBuildings.length === 0) continue;
-    // Available worker-days per tick = mason + carpenter allocations.
-    const masonDays = settlement.jobAllocations.get(jobId('mason')) ?? 0;
-    const carpenterDays = settlement.jobAllocations.get(jobId('carpenter')) ?? 0;
-    let budget = masonDays + carpenterDays;
-    if (budget <= 0) continue;
-    // FIFO drain. We don't pre-claim labor — it's a soft accounting that
-    // says "these workers also do a fraction of mason/carpenter recipe
-    // labor". The abstraction is acceptable for v1.5.
+    // Per docs/15 §C14: mason and carpenter pools drain INDEPENDENTLY.
+    // A granary (heavy stone+brick) bottleneck on masons, a smithy
+    // (heavy lumber) bottlenecks on carpenters.
+    let masonBudget = settlement.jobAllocations.get(jobId('mason')) ?? 0;
+    let carpenterBudget = settlement.jobAllocations.get(jobId('carpenter')) ?? 0;
+    if (masonBudget <= 0 && carpenterBudget <= 0) continue;
+
     const completed: number[] = [];
-    for (let i = 0; i < settlement.pendingBuildings.length && budget > 0; i++) {
+    for (let i = 0; i < settlement.pendingBuildings.length; i++) {
       const pb = settlement.pendingBuildings[i] as PendingBuilding;
-      const apply = Math.min(budget, pb.workerDaysRemaining);
-      pb.workerDaysRemaining -= apply;
-      budget -= apply;
+      // Mason work first.
+      if (pb.masonDaysRemaining !== undefined && pb.masonDaysRemaining > 0 && masonBudget > 0) {
+        const apply = Math.min(masonBudget, pb.masonDaysRemaining);
+        pb.masonDaysRemaining -= apply;
+        pb.workerDaysRemaining -= apply;
+        masonBudget -= apply;
+      }
+      // Then carpenter work.
+      if (
+        pb.carpenterDaysRemaining !== undefined &&
+        pb.carpenterDaysRemaining > 0 &&
+        carpenterBudget > 0
+      ) {
+        const apply = Math.min(carpenterBudget, pb.carpenterDaysRemaining);
+        pb.carpenterDaysRemaining -= apply;
+        pb.workerDaysRemaining -= apply;
+        carpenterBudget -= apply;
+      }
+      // Legacy projects without the split: drain from combined pool.
+      if (pb.masonDaysRemaining === undefined && pb.carpenterDaysRemaining === undefined) {
+        const combined = masonBudget + carpenterBudget;
+        if (combined > 0) {
+          const apply = Math.min(combined, pb.workerDaysRemaining);
+          pb.workerDaysRemaining -= apply;
+          // Drain proportionally.
+          const masonShare = combined > 0 ? masonBudget / combined : 0;
+          masonBudget -= apply * masonShare;
+          carpenterBudget -= apply * (1 - masonShare);
+        }
+      }
       if (pb.workerDaysRemaining <= 0) completed.push(i);
+      if (masonBudget <= 0 && carpenterBudget <= 0) break;
     }
     // Materialize completed builds in reverse index order so splice is safe.
     for (let j = completed.length - 1; j >= 0; j--) {
@@ -3675,13 +3702,21 @@ const investmentPhase = (world: WorldState, _today: Day, events: TickEvent[]): v
     // Per docs/08 §"Construction is heavy" + docs/15 §C8: don't add the
     // building immediately. Push a pendingBuilding; the construction
     // phase drains mason + carpenter worker-days each tick until done.
+    // Per docs/15 §C14: split worker-days into mason (stone/brick work)
+    // vs. carpenter (lumber work) pools per construction-cost mix.
+    const totalDays = constructionWorkerDays(def.id);
+    const masonShare = computeMasonShare(def.id);
+    const masonDays = Math.round(totalDays * masonShare);
+    const carpenterDays = totalDays - masonDays;
     settlement.pendingBuildings.push({
       buildingId: def.id,
       hex: placement,
       ownerActor: owner.id,
       beganOnDay: _today,
-      workerDaysRemaining: constructionWorkerDays(def.id),
-      workerDaysTotal: constructionWorkerDays(def.id),
+      workerDaysRemaining: totalDays,
+      workerDaysTotal: totalDays,
+      masonDaysRemaining: masonDays,
+      carpenterDaysRemaining: carpenterDays,
     });
 
     events.push({
@@ -3813,6 +3848,29 @@ const constructionWorkerDays = (id: BuildingId): number => {
   // Each cost unit ≈ ~5 worker-days on average. Floor 30, cap 90.
   const raw = Math.round(totalUnits * 5);
   return Math.max(30, Math.min(90, raw));
+};
+
+/**
+ * Per docs/15 §C14: fraction of a building's construction labor that
+ * masons handle (vs. carpenters). Derived from the construction-cost
+ * mix: stone + brick + cut_stone weight → masons; lumber + wood
+ * weight → carpenters. Default 0.5 if neither weighs in.
+ */
+const computeMasonShare = (id: BuildingId): number => {
+  const def = getBuilding(id);
+  let masonWeight = 0;
+  let carpenterWeight = 0;
+  for (const [r, qty] of def.constructionCost) {
+    const k = String(r);
+    if (k === 'material.stone' || k === 'material.cut_stone' || k === 'material.brick_tile') {
+      masonWeight += qty;
+    } else if (k === 'material.lumber' || k === 'material.wood') {
+      carpenterWeight += qty;
+    }
+  }
+  const total = masonWeight + carpenterWeight;
+  if (total <= 0) return 0.5;
+  return masonWeight / total;
 };
 
 const pickBuildingHex = (settlement: Settlement, buildingId: BuildingId): Hex | null => {

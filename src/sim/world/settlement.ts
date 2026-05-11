@@ -120,6 +120,14 @@ export interface PendingBuilding {
   workerDaysRemaining: number;
   /** Total at start, kept for telemetry / progress display. */
   readonly workerDaysTotal: number;
+  /**
+   * Per docs/15 §C14: construction labor is split between masons (stone
+   * + brick work) and carpenters (lumber work). When 0, treated as legacy
+   * "any worker-day counts" projects (ignored for the labor-split rule).
+   * Mason and carpenter pools drain independently.
+   */
+  masonDaysRemaining?: number;
+  carpenterDaysRemaining?: number;
 }
 
 export interface CreateSettlementInput {
