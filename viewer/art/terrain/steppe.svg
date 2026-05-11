@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
+    <linearGradient id="lg-base" x1="0" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#c3b07a"/>
+      <stop offset="1" stop-color="#80693a"/>
+    </linearGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="0.95" numOctaves="2" seed="31"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.22 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+  </defs>
+  <g clip-path="url(#hex)">
+    <rect x="0" y="0" width="128" height="148" fill="url(#lg-base)"/>
+    <rect x="0" y="0" width="128" height="148" fill="#3e3218" filter="url(#nz)" opacity="0.55"/>
+    <!-- horizontal wind streaks -->
+    <g stroke="#7a6230" stroke-width="0.4" fill="none" opacity="0.5">
+      <path d="M 6 38 Q 32 36 60 38 Q 96 40 124 36"/>
+      <path d="M 6 56 Q 32 54 60 56 Q 96 58 124 54"/>
+      <path d="M 6 78 Q 32 76 60 78 Q 96 80 124 76"/>
+      <path d="M 6 98 Q 32 96 60 98 Q 96 100 124 96"/>
+      <path d="M 6 118 Q 32 116 60 118 Q 96 120 124 116"/>
+    </g>
+    <!-- sparse grass tufts -->
+    <g stroke="#5a4a20" stroke-width="0.7" stroke-linecap="round" opacity="0.7">
+      <line x1="22" y1="48" x2="22" y2="42"/>
+      <line x1="24" y1="48" x2="25" y2="43"/>
+      <line x1="46" y1="72" x2="46" y2="66"/>
+      <line x1="48" y1="72" x2="49" y2="67"/>
+      <line x1="84" y1="64" x2="84" y2="58"/>
+      <line x1="100" y1="88" x2="100" y2="82"/>
+      <line x1="38" y1="108" x2="38" y2="102"/>
+      <line x1="40" y1="108" x2="41" y2="103"/>
+      <line x1="78" y1="116" x2="78" y2="110"/>
+      <line x1="106" y1="124" x2="106" y2="118"/>
+    </g>
+    <!-- dots (small rocks / dry shrubs) -->
+    <g fill="#6a542a" opacity="0.65">
+      <circle cx="34" cy="80" r="0.8"/>
+      <circle cx="68" cy="44" r="0.8"/>
+      <circle cx="92" cy="102" r="0.8"/>
+      <circle cx="58" cy="118" r="0.8"/>
+      <circle cx="110" cy="64" r="0.8"/>
+    </g>
+    <ellipse cx="44" cy="44" rx="46" ry="22" fill="#dccc94" opacity="0.18"/>
+  </g>
+  <polygon points="64,0 128,37 128,111 64,148 0,111 0,37" fill="none" stroke="#3e3218" stroke-width="0.6" opacity="0.45"/>
+</svg>

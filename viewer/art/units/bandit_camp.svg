@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="lg-tent" x1="0" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#5a4030"/>
+      <stop offset="1" stop-color="#1a0e08"/>
+    </linearGradient>
+    <radialGradient id="lg-fire" cx="0.5" cy="0.6" r="0.5">
+      <stop offset="0" stop-color="#fee076"/>
+      <stop offset="0.5" stop-color="#e8501a"/>
+      <stop offset="1" stop-color="#7a1e08"/>
+    </radialGradient>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.6"/>
+      <feOffset dx="0.5" dy="1"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <!-- ground / shadow -->
+  <ellipse cx="16" cy="26" rx="14" ry="2" fill="#2a1e10" opacity="0.55"/>
+  <g filter="url(#ds)">
+    <!-- back tent (smaller) -->
+    <polygon points="6,22 14,22 10,12" fill="url(#lg-tent)" stroke="#0a0604" stroke-width="0.3"/>
+    <polygon points="9,22 11,22 10,18" fill="#1a0e08"/>
+    <!-- front tent -->
+    <polygon points="16,24 28,24 22,10" fill="url(#lg-tent)" stroke="#0a0604" stroke-width="0.4"/>
+    <line x1="22" y1="10" x2="22" y2="24" stroke="#0a0604" stroke-width="0.3"/>
+    <polygon points="21,24 23,24 22,20" fill="#1a0e08"/>
+    <!-- crude wood-stake totem (skull on a spike) -->
+    <line x1="4" y1="24" x2="4" y2="14" stroke="#3a2010" stroke-width="0.6"/>
+    <circle cx="4" cy="12" r="1.4" fill="#dcd0b0" stroke="#1a0e04" stroke-width="0.3"/>
+    <circle cx="3.5" cy="12" r="0.3" fill="#1a0e04"/>
+    <circle cx="4.5" cy="12" r="0.3" fill="#1a0e04"/>
+    <path d="M 3.4 13 L 4.6 13" stroke="#1a0e04" stroke-width="0.3"/>
+  </g>
+  <!-- campfire -->
+  <ellipse cx="16" cy="22" rx="3" ry="1" fill="#3a2814"/>
+  <polygon points="16,15 13,22 19,22" fill="url(#lg-fire)"/>
+  <polygon points="16,17 14,22 18,22" fill="#fee076" opacity="0.85"/>
+  <!-- smoke -->
+  <ellipse cx="17" cy="10" rx="2" ry="1.4" fill="#9a8d80" opacity="0.55"/>
+  <ellipse cx="18" cy="6" rx="1.5" ry="1.2" fill="#9a8d80" opacity="0.4"/>
+  <!-- crossed weapons in front -->
+  <line x1="22" y1="26" x2="28" y2="22" stroke="#7a5a2a" stroke-width="0.7"/>
+  <polygon points="28,22 30,22 28,24" fill="#a8a098" stroke="#3a342a" stroke-width="0.3"/>
+  <line x1="28" y1="26" x2="22" y2="22" stroke="#7a5a2a" stroke-width="0.7"/>
+  <ellipse cx="22" cy="22" rx="1" ry="0.8" fill="#3a2814"/>
+</svg>

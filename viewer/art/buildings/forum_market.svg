@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="lg-stone" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#e0d2a8"/>
+      <stop offset="1" stop-color="#80683c"/>
+    </linearGradient>
+    <linearGradient id="lg-awning" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c84838"/>
+      <stop offset="1" stop-color="#7a1c10"/>
+    </linearGradient>
+    <linearGradient id="lg-awning2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a78a8"/>
+      <stop offset="1" stop-color="#1c3a5a"/>
+    </linearGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="0.95" numOctaves="2" seed="59"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.16 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.5"/>
+      <feOffset dx="0.4" dy="0.8"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <!-- paved plaza -->
+  <rect x="2" y="14" width="60" height="48" rx="2" fill="url(#lg-stone)"/>
+  <rect x="2" y="14" width="60" height="48" rx="2" fill="#3a2814" filter="url(#nz)" opacity="0.25"/>
+  <!-- paving grid -->
+  <g stroke="#7a6240" stroke-width="0.3" opacity="0.5">
+    <line x1="2" y1="24" x2="62" y2="24"/>
+    <line x1="2" y1="38" x2="62" y2="38"/>
+    <line x1="2" y1="52" x2="62" y2="52"/>
+    <line x1="16" y1="14" x2="16" y2="62"/>
+    <line x1="32" y1="14" x2="32" y2="62"/>
+    <line x1="48" y1="14" x2="48" y2="62"/>
+  </g>
+  <!-- central altar/dais -->
+  <g filter="url(#ds)">
+    <ellipse cx="32" cy="38" rx="6" ry="2" fill="#4a3a26"/>
+    <rect x="28" y="32" width="8" height="6" fill="#d8c499" stroke="#3a2814" stroke-width="0.3"/>
+    <polygon points="28,32 36,32 35,30 29,30" fill="#a89868" stroke="#3a2814" stroke-width="0.3"/>
+    <rect x="31" y="26" width="2" height="6" fill="#a8a098"/>
+  </g>
+  <g filter="url(#ds)">
+    <!-- market stall 1 (top-left, red awning) -->
+    <rect x="6" y="22" width="14" height="8" fill="#a87a3a" stroke="#3a2010" stroke-width="0.3"/>
+    <path d="M 4 22 L 22 22 L 20 18 L 6 18 Z" fill="url(#lg-awning)" stroke="#3a1408" stroke-width="0.3"/>
+    <line x1="8" y1="18" x2="9" y2="22" stroke="#fff" stroke-width="0.3" opacity="0.7"/>
+    <line x1="12" y1="18" x2="12" y2="22" stroke="#fff" stroke-width="0.3" opacity="0.7"/>
+    <line x1="16" y1="18" x2="15" y2="22" stroke="#fff" stroke-width="0.3" opacity="0.7"/>
+    <!-- goods on stall (sacks) -->
+    <circle cx="9" cy="26" r="1.5" fill="#a83828"/>
+    <circle cx="13" cy="26" r="1.5" fill="#daca7a"/>
+    <circle cx="17" cy="26" r="1.5" fill="#5a7a3a"/>
+    <!-- stall 2 (top-right, blue awning) -->
+    <rect x="44" y="22" width="14" height="8" fill="#a87a3a" stroke="#3a2010" stroke-width="0.3"/>
+    <path d="M 42 22 L 60 22 L 58 18 L 44 18 Z" fill="url(#lg-awning2)" stroke="#0e2842" stroke-width="0.3"/>
+    <line x1="46" y1="18" x2="47" y2="22" stroke="#fff" stroke-width="0.3" opacity="0.7"/>
+    <line x1="50" y1="18" x2="50" y2="22" stroke="#fff" stroke-width="0.3" opacity="0.7"/>
+    <line x1="54" y1="18" x2="53" y2="22" stroke="#fff" stroke-width="0.3" opacity="0.7"/>
+    <!-- fish on stall -->
+    <path d="M 46 26 L 50 25 L 51 26 L 50 27 Z" fill="#7e9eb8"/>
+    <path d="M 52 26 L 56 25 L 57 26 L 56 27 Z" fill="#7e9eb8"/>
+    <!-- stall 3 (bottom-left, terracotta amphorae) -->
+    <rect x="6" y="46" width="14" height="8" fill="#a87a3a" stroke="#3a2010" stroke-width="0.3"/>
+    <path d="M 4 46 L 22 46 L 20 42 L 6 42 Z" fill="#7a4a1c" stroke="#3a1408" stroke-width="0.3"/>
+    <!-- amphorae -->
+    <path d="M 8 51 Q 7 49 8 48 L 9 47 L 10 47 L 11 48 Q 12 49 11 51 Z" fill="#b56a3a" stroke="#3a1808" stroke-width="0.3"/>
+    <path d="M 14 51 Q 13 49 14 48 L 15 47 L 16 47 L 17 48 Q 18 49 17 51 Z" fill="#b56a3a" stroke="#3a1808" stroke-width="0.3"/>
+    <!-- stall 4 (bottom-right, fruit) -->
+    <rect x="44" y="46" width="14" height="8" fill="#a87a3a" stroke="#3a2010" stroke-width="0.3"/>
+    <path d="M 42 46 L 60 46 L 58 42 L 44 42 Z" fill="#5a7d3a" stroke="#1a2008" stroke-width="0.3"/>
+    <circle cx="47" cy="50" r="1.4" fill="#d8403a"/>
+    <circle cx="50" cy="50" r="1.4" fill="#e8b03a"/>
+    <circle cx="53" cy="50" r="1.4" fill="#a83cad"/>
+    <circle cx="56" cy="50" r="1.4" fill="#d8403a"/>
+  </g>
+  <!-- a few merchant dots -->
+  <circle cx="24" cy="38" r="1.2" fill="#3a3024"/>
+  <circle cx="40" cy="38" r="1.2" fill="#3a3024"/>
+  <circle cx="26" cy="56" r="1" fill="#5a4a32"/>
+</svg>

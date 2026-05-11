@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="lg-grass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8aa848"/>
+      <stop offset="1" stop-color="#506b22"/>
+    </linearGradient>
+    <linearGradient id="lg-wool" x1="0" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#f4ecd6"/>
+      <stop offset="1" stop-color="#a89876"/>
+    </linearGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="3"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.18 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.6"/>
+      <feOffset dx="0.5" dy="1"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <!-- meadow -->
+  <rect x="2" y="22" width="60" height="40" rx="3" fill="url(#lg-grass)"/>
+  <rect x="2" y="22" width="60" height="40" rx="3" fill="#1f2c0e" filter="url(#nz)" opacity="0.45"/>
+  <!-- fence -->
+  <g stroke="#5a3e1c" stroke-width="0.8" opacity="0.9">
+    <line x1="6" y1="24" x2="58" y2="24"/>
+    <line x1="6" y1="28" x2="58" y2="28"/>
+    <line x1="10" y1="22" x2="10" y2="30"/>
+    <line x1="22" y1="22" x2="22" y2="30"/>
+    <line x1="34" y1="22" x2="34" y2="30"/>
+    <line x1="46" y1="22" x2="46" y2="30"/>
+    <line x1="58" y1="22" x2="58" y2="30"/>
+  </g>
+  <g filter="url(#ds)">
+    <!-- sheep 1 (large) -->
+    <ellipse cx="20" cy="42" rx="9" ry="6" fill="url(#lg-wool)"/>
+    <ellipse cx="16" cy="38" rx="3" ry="3" fill="#f4ecd6"/>
+    <ellipse cx="22" cy="37" rx="3" ry="3" fill="#f4ecd6"/>
+    <ellipse cx="26" cy="40" rx="2.5" ry="2.5" fill="#f4ecd6"/>
+    <ellipse cx="14" cy="42" rx="2.4" ry="2.4" fill="#5a4a3a"/>
+    <line x1="18" y1="48" x2="18" y2="51" stroke="#3a2818" stroke-width="0.8"/>
+    <line x1="23" y1="48" x2="23" y2="51" stroke="#3a2818" stroke-width="0.8"/>
+    <!-- sheep 2 -->
+    <ellipse cx="42" cy="48" rx="8" ry="5" fill="url(#lg-wool)"/>
+    <ellipse cx="39" cy="45" rx="2.8" ry="2.8" fill="#f4ecd6"/>
+    <ellipse cx="44" cy="44" rx="2.8" ry="2.8" fill="#f4ecd6"/>
+    <ellipse cx="48" cy="46" rx="2.2" ry="2.2" fill="#f4ecd6"/>
+    <ellipse cx="36" cy="48" rx="2.2" ry="2.2" fill="#5a4a3a"/>
+    <line x1="40" y1="52" x2="40" y2="55" stroke="#3a2818" stroke-width="0.8"/>
+    <line x1="45" y1="52" x2="45" y2="55" stroke="#3a2818" stroke-width="0.8"/>
+    <!-- sheep 3 small back -->
+    <ellipse cx="50" cy="34" rx="5" ry="3.5" fill="url(#lg-wool)" opacity="0.95"/>
+    <ellipse cx="48" cy="32" rx="2" ry="2" fill="#f4ecd6"/>
+    <ellipse cx="52" cy="32" rx="2" ry="2" fill="#f4ecd6"/>
+    <ellipse cx="46" cy="34" rx="1.5" ry="1.5" fill="#5a4a3a"/>
+  </g>
+  <!-- grass tufts -->
+  <g stroke="#3e4a18" stroke-width="0.5" stroke-linecap="round" opacity="0.6">
+    <line x1="8" y1="58" x2="8" y2="54"/>
+    <line x1="30" y1="60" x2="30" y2="56"/>
+    <line x1="56" y1="58" x2="56" y2="54"/>
+  </g>
+</svg>

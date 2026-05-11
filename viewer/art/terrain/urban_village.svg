@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
+    <linearGradient id="lg-base" x1="0" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#a89968"/>
+      <stop offset="1" stop-color="#5a4a28"/>
+    </linearGradient>
+    <linearGradient id="lg-wall" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#d8b67c"/>
+      <stop offset="1" stop-color="#7a5a30"/>
+    </linearGradient>
+    <linearGradient id="lg-thatch" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a8783a"/>
+      <stop offset="1" stop-color="#4a2e12"/>
+    </linearGradient>
+    <linearGradient id="lg-tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a4502c"/>
+      <stop offset="1" stop-color="#3e1c0c"/>
+    </linearGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="0.95" numOctaves="2" seed="85"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.2 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.7"/>
+      <feOffset dx="0.6" dy="1.2"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.5"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g clip-path="url(#hex)">
+    <rect x="0" y="0" width="128" height="148" fill="url(#lg-base)"/>
+    <rect x="0" y="0" width="128" height="148" fill="#3a2c14" filter="url(#nz)" opacity="0.4"/>
+    <!-- a single dirt main street -->
+    <path d="M 8 100 L 120 80" stroke="#6a523a" stroke-width="3" opacity="0.7"/>
+    <g filter="url(#ds)">
+      <!-- house 1 (thatch) -->
+      <rect x="22" y="60" width="16" height="14" fill="url(#lg-wall)" stroke="#3a2814" stroke-width="0.4"/>
+      <polygon points="20,60 40,60 36,50 24,50" fill="url(#lg-thatch)" stroke="#2a1408" stroke-width="0.4"/>
+      <rect x="28" y="66" width="4" height="8" fill="#3a2814"/>
+      <!-- house 2 (tile) -->
+      <rect x="48" y="50" width="16" height="14" fill="url(#lg-wall)" stroke="#3a2814" stroke-width="0.4"/>
+      <polygon points="46,50 66,50 62,40 50,40" fill="url(#lg-tile)" stroke="#2a1408" stroke-width="0.4"/>
+      <rect x="54" y="56" width="4" height="8" fill="#3a2814"/>
+      <!-- house 3 (thatch, larger barn-like) -->
+      <rect x="74" y="48" width="22" height="18" fill="url(#lg-wall)" stroke="#3a2814" stroke-width="0.4"/>
+      <polygon points="72,48 98,48 92,36 78,36" fill="url(#lg-thatch)" stroke="#2a1408" stroke-width="0.4"/>
+      <rect x="82" y="56" width="6" height="10" fill="#3a2814"/>
+      <rect x="76" y="52" width="3" height="3" fill="#3a2814"/>
+      <!-- house 4 -->
+      <rect x="36" y="90" width="16" height="14" fill="url(#lg-wall)" stroke="#3a2814" stroke-width="0.4"/>
+      <polygon points="34,90 54,90 50,80 38,80" fill="url(#lg-tile)" stroke="#2a1408" stroke-width="0.4"/>
+      <rect x="42" y="96" width="4" height="8" fill="#3a2814"/>
+      <!-- house 5 -->
+      <rect x="68" y="92" width="16" height="14" fill="url(#lg-wall)" stroke="#3a2814" stroke-width="0.4"/>
+      <polygon points="66,92 86,92 82,82 70,82" fill="url(#lg-thatch)" stroke="#2a1408" stroke-width="0.4"/>
+      <rect x="74" y="98" width="4" height="8" fill="#3a2814"/>
+      <!-- house 6 small -->
+      <rect x="96" y="100" width="14" height="12" fill="url(#lg-wall)" stroke="#3a2814" stroke-width="0.4"/>
+      <polygon points="94,100 112,100 108,92 98,92" fill="url(#lg-tile)" stroke="#2a1408" stroke-width="0.4"/>
+      <!-- well -->
+      <ellipse cx="58" cy="118" rx="4" ry="1.4" fill="#7a7268" stroke="#3a342a" stroke-width="0.3"/>
+      <ellipse cx="58" cy="118" rx="3" ry="1" fill="#2a4a6a"/>
+    </g>
+    <!-- chimney smokes -->
+    <ellipse cx="84" cy="34" rx="3" ry="2" fill="#9a8d80" opacity="0.5"/>
+    <ellipse cx="42" cy="46" rx="2" ry="1.4" fill="#9a8d80" opacity="0.4"/>
+    <!-- garden patches between houses -->
+    <g stroke="#3e3014" stroke-width="0.4" opacity="0.55">
+      <line x1="14" y1="76" x2="22" y2="76"/>
+      <line x1="14" y1="80" x2="22" y2="80"/>
+      <line x1="100" y1="68" x2="116" y2="68"/>
+      <line x1="100" y1="72" x2="116" y2="72"/>
+    </g>
+  </g>
+  <polygon points="64,0 128,37 128,111 64,148 0,111 0,37" fill="none" stroke="#3a2c14" stroke-width="0.6" opacity="0.5"/>
+</svg>

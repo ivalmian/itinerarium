@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="lg-wall" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#8a7858"/>
+      <stop offset="1" stop-color="#3e3220"/>
+    </linearGradient>
+    <linearGradient id="lg-roof" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5a3a26"/>
+      <stop offset="1" stop-color="#1f1206"/>
+    </linearGradient>
+    <radialGradient id="lg-forge" cx="0.5" cy="0.6" r="0.5">
+      <stop offset="0" stop-color="#fee076"/>
+      <stop offset="0.5" stop-color="#e8501a"/>
+      <stop offset="1" stop-color="#7a1e08"/>
+    </radialGradient>
+    <linearGradient id="lg-anvil" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#6a6a72"/>
+      <stop offset="1" stop-color="#2a2a32"/>
+    </linearGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="1.0" numOctaves="2" seed="31"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.2 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.6"/>
+      <feOffset dx="0.5" dy="1"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="2" y="48" width="60" height="14" rx="2" fill="#4a3e28"/>
+  <rect x="2" y="48" width="60" height="14" rx="2" fill="#1a1208" filter="url(#nz)" opacity="0.45"/>
+  <g filter="url(#ds)">
+    <!-- open-front workshop -->
+    <rect x="8" y="24" width="48" height="24" fill="url(#lg-wall)" stroke="#1f1408" stroke-width="0.5"/>
+    <!-- roof -->
+    <polygon points="6,24 58,24 52,12 12,12" fill="url(#lg-roof)" stroke="#1a0e04" stroke-width="0.5"/>
+    <!-- open archway (forge visible) -->
+    <path d="M 22 48 L 22 32 A 10 8 0 0 1 42 32 L 42 48 Z" fill="#1a1208"/>
+    <!-- forge fire inside -->
+    <ellipse cx="32" cy="42" rx="8" ry="4" fill="url(#lg-forge)"/>
+    <!-- anvil silhouette in the dark -->
+    <path d="M 28 42 L 28 40 L 26 40 L 26 38 L 38 38 L 38 40 L 36 40 L 36 42 Z" fill="url(#lg-anvil)" opacity="0.9"/>
+    <!-- chimney -->
+    <rect x="48" y="6" width="4" height="14" fill="#3a2a18"/>
+    <ellipse cx="50" cy="6" rx="4" ry="2" fill="#5a5044" opacity="0.7"/>
+    <ellipse cx="48" cy="2" rx="3.5" ry="1.8" fill="#6a5e52" opacity="0.55"/>
+    <!-- hammer above the anvil (decorative) -->
+    <rect x="20" y="18" width="8" height="2" fill="#3a342a"/>
+    <rect x="26" y="16" width="3" height="6" fill="#6a6a72" stroke="#1f1f24" stroke-width="0.3"/>
+  </g>
+  <!-- sparks -->
+  <g fill="#fee076">
+    <circle cx="30" cy="40" r="0.5"/>
+    <circle cx="34" cy="38" r="0.5"/>
+    <circle cx="32" cy="36" r="0.4"/>
+    <circle cx="36" cy="40" r="0.4"/>
+  </g>
+  <!-- anvil outside (for clarity) -->
+  <g>
+    <path d="M 48 56 L 60 56 L 60 52 L 58 52 L 58 50 L 50 50 L 50 52 L 48 52 Z" fill="url(#lg-anvil)" stroke="#1a1a1e" stroke-width="0.4"/>
+  </g>
+</svg>

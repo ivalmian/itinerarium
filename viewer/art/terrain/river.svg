@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
+  <!-- Directionless water-base for a river hex. Directional flow is added
+       by compositing one of viewer/art/rivers/<dir>.svg per connected
+       neighbor. -->
+  <defs>
+    <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
+    <linearGradient id="lg-water" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#5e92b8"/>
+      <stop offset="1" stop-color="#1f4a6a"/>
+    </linearGradient>
+    <linearGradient id="lg-bank" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b89b65"/>
+      <stop offset="1" stop-color="#6a542a"/>
+    </linearGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="0.6" numOctaves="2" seed="93"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.18 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+  </defs>
+  <g clip-path="url(#hex)">
+    <!-- bank ring (visible only where no directional segment overlays it) -->
+    <rect x="0" y="0" width="128" height="148" fill="url(#lg-bank)"/>
+    <rect x="0" y="0" width="128" height="148" fill="#3e2e14" filter="url(#nz)" opacity="0.45"/>
+    <!-- central pool of water -->
+    <circle cx="64" cy="74" r="22" fill="url(#lg-water)"/>
+    <g stroke="#a8c8d8" stroke-width="0.5" fill="none" opacity="0.65">
+      <path d="M 50 70 Q 56 68 62 70"/>
+      <path d="M 66 78 Q 72 76 78 78"/>
+    </g>
+  </g>
+  <polygon points="64,0 128,37 128,111 64,148 0,111 0,37" fill="none" stroke="#3a2c14" stroke-width="0.6" opacity="0.5"/>
+</svg>

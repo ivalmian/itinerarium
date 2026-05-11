@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="lg-brick" x1="0" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#b87248"/>
+      <stop offset="1" stop-color="#583020"/>
+    </linearGradient>
+    <radialGradient id="lg-fire" cx="0.5" cy="0.7" r="0.6">
+      <stop offset="0" stop-color="#fee076"/>
+      <stop offset="0.5" stop-color="#e8501a"/>
+      <stop offset="1" stop-color="#7a1e08"/>
+    </radialGradient>
+    <linearGradient id="lg-smoke" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8e8276" stop-opacity="0.1"/>
+      <stop offset="1" stop-color="#5a5044" stop-opacity="0.7"/>
+    </linearGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="1.0" numOctaves="2" seed="19"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.22 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.6"/>
+      <feOffset dx="0.5" dy="1"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="2" y="50" width="60" height="12" rx="2" fill="#5a4030"/>
+  <rect x="2" y="50" width="60" height="12" rx="2" fill="#1a0e08" filter="url(#nz)" opacity="0.5"/>
+  <!-- smoke column -->
+  <g>
+    <ellipse cx="34" cy="16" rx="7" ry="4" fill="url(#lg-smoke)"/>
+    <ellipse cx="38" cy="8" rx="6" ry="3.5" fill="url(#lg-smoke)" opacity="0.7"/>
+    <ellipse cx="32" cy="3" rx="5" ry="3" fill="url(#lg-smoke)" opacity="0.5"/>
+  </g>
+  <g filter="url(#ds)">
+    <!-- beehive kiln (dome) -->
+    <path d="M 14 50 A 18 18 0 0 1 50 50 Z" fill="url(#lg-brick)" stroke="#2a1208" stroke-width="0.6"/>
+    <!-- vent at top -->
+    <ellipse cx="32" cy="33" rx="5" ry="1.5" fill="#1a0a04"/>
+    <!-- brick courses (curved) -->
+    <g fill="none" stroke="#3a1c0c" stroke-width="0.3" opacity="0.7">
+      <path d="M 16 50 A 16 16 0 0 1 48 50"/>
+      <path d="M 18 50 A 14 14 0 0 1 46 50"/>
+      <path d="M 20 50 A 12 12 0 0 1 44 50"/>
+      <path d="M 22 50 A 10 10 0 0 1 42 50"/>
+    </g>
+    <!-- stoking mouth -->
+    <path d="M 26 50 L 26 42 A 6 6 0 0 1 38 42 L 38 50 Z" fill="url(#lg-fire)"/>
+    <ellipse cx="32" cy="49" rx="7" ry="1.4" fill="#ffc664" opacity="0.8"/>
+    <!-- wood pile -->
+    <rect x="4" y="48" width="9" height="2" rx="0.5" fill="#7a5a2a"/>
+    <rect x="6" y="50" width="9" height="2" rx="0.5" fill="#8a6a3a"/>
+    <ellipse cx="4" cy="49" rx="0.8" ry="1" fill="#a87a3a"/>
+    <ellipse cx="6" cy="51" rx="0.8" ry="1" fill="#a87a3a"/>
+  </g>
+  <!-- ash on ground -->
+  <g fill="#3a342a" opacity="0.6">
+    <ellipse cx="32" cy="55" rx="22" ry="2"/>
+  </g>
+</svg>

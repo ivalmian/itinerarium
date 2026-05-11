@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
+    <linearGradient id="lg-base" x1="0" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#7c6e54"/>
+      <stop offset="1" stop-color="#3e3424"/>
+    </linearGradient>
+    <linearGradient id="lg-stone" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#c0b496"/>
+      <stop offset="1" stop-color="#5e5240"/>
+    </linearGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="1.0" numOctaves="2" seed="47"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.28 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.7"/>
+      <feOffset dx="0.6" dy="1.2"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g clip-path="url(#hex)">
+    <rect x="0" y="0" width="128" height="148" fill="url(#lg-base)"/>
+    <rect x="0" y="0" width="128" height="148" fill="#2a2218" filter="url(#nz)" opacity="0.55"/>
+    <!-- moss patches -->
+    <g fill="#5a6a32" opacity="0.4">
+      <ellipse cx="28" cy="88" rx="14" ry="5"/>
+      <ellipse cx="92" cy="64" rx="12" ry="4"/>
+      <ellipse cx="68" cy="120" rx="14" ry="4"/>
+    </g>
+    <g filter="url(#ds)">
+      <!-- broken column 1 -->
+      <rect x="32" y="48" width="6" height="36" fill="url(#lg-stone)"/>
+      <ellipse cx="35" cy="48" rx="4" ry="1.5" fill="#d8ccac"/>
+      <!-- broken column 2 -->
+      <rect x="50" y="40" width="6" height="22" fill="url(#lg-stone)"/>
+      <ellipse cx="53" cy="40" rx="4" ry="1.5" fill="#d8ccac"/>
+      <!-- fallen lintel (across columns 1-2) -->
+      <rect x="28" y="36" width="32" height="5" fill="url(#lg-stone)" transform="rotate(-3 44 38.5)"/>
+      <!-- broken wall fragment -->
+      <path d="M 70 90 L 70 70 L 78 70 L 78 60 L 90 60 L 90 78 L 96 78 L 96 90 Z" fill="url(#lg-stone)"/>
+      <!-- collapsed arch fragment -->
+      <path d="M 80 102 A 14 14 0 0 1 108 102 L 108 110 L 100 110 L 100 106 A 8 8 0 0 0 88 106 L 88 110 L 80 110 Z" fill="url(#lg-stone)"/>
+      <!-- scattered rubble -->
+      <rect x="44" y="100" width="6" height="3" fill="#7e7258"/>
+      <rect x="52" y="106" width="5" height="3" fill="#7e7258"/>
+      <rect x="20" y="116" width="7" height="3" fill="#7e7258"/>
+      <rect x="100" y="120" width="6" height="3" fill="#7e7258"/>
+    </g>
+    <!-- crack lines -->
+    <g stroke="#3a3020" stroke-width="0.5" fill="none" opacity="0.6">
+      <path d="M 32 48 L 30 38 L 34 30"/>
+      <path d="M 78 70 L 80 62"/>
+    </g>
+  </g>
+  <polygon points="64,0 128,37 128,111 64,148 0,111 0,37" fill="none" stroke="#2a2218" stroke-width="0.6" opacity="0.5"/>
+</svg>

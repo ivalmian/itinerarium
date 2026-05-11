@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="lg-ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#bca87a"/>
+      <stop offset="1" stop-color="#7a623a"/>
+    </linearGradient>
+    <radialGradient id="lg-canopy" cx="0.35" cy="0.35" r="0.6">
+      <stop offset="0" stop-color="#a8c074"/>
+      <stop offset="0.6" stop-color="#6a8a42"/>
+      <stop offset="1" stop-color="#2e4818"/>
+    </radialGradient>
+    <linearGradient id="lg-trunk" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#7a5a2a"/>
+      <stop offset="1" stop-color="#3a2010"/>
+    </linearGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="49"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.2 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.6"/>
+      <feOffset dx="0.5" dy="1"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="2" y="14" width="60" height="48" rx="2" fill="url(#lg-ground)"/>
+  <rect x="2" y="14" width="60" height="48" rx="2" fill="#3a2810" filter="url(#nz)" opacity="0.4"/>
+  <!-- shadow ovals -->
+  <g fill="#3a2812" opacity="0.45">
+    <ellipse cx="16" cy="34" rx="9" ry="3"/>
+    <ellipse cx="44" cy="36" rx="9" ry="3"/>
+    <ellipse cx="28" cy="54" rx="8" ry="3"/>
+    <ellipse cx="52" cy="56" rx="7" ry="2.5"/>
+  </g>
+  <g filter="url(#ds)">
+    <!-- tree 1 (large back-left) -->
+    <g transform="translate(16 22)">
+      <rect x="-1" y="8" width="2" height="6" fill="url(#lg-trunk)"/>
+      <ellipse cx="0" cy="6" rx="10" ry="9" fill="url(#lg-canopy)"/>
+      <ellipse cx="-3" cy="3" rx="4" ry="4" fill="#a8c074" opacity="0.7"/>
+      <ellipse cx="4" cy="7" rx="3" ry="3" fill="#7a9a4a" opacity="0.8"/>
+    </g>
+    <!-- tree 2 (large back-right) -->
+    <g transform="translate(44 24)">
+      <rect x="-1" y="8" width="2" height="6" fill="url(#lg-trunk)"/>
+      <ellipse cx="0" cy="6" rx="9" ry="9" fill="url(#lg-canopy)"/>
+      <ellipse cx="-3" cy="3" rx="4" ry="4" fill="#a8c074" opacity="0.7"/>
+      <!-- olives -->
+      <circle cx="-3" cy="8" r="0.6" fill="#3a4818"/>
+      <circle cx="2" cy="9" r="0.6" fill="#3a4818"/>
+      <circle cx="-1" cy="10" r="0.6" fill="#5a3818"/>
+    </g>
+    <!-- tree 3 (front-left) -->
+    <g transform="translate(28 42)">
+      <rect x="-1" y="8" width="2" height="6" fill="url(#lg-trunk)"/>
+      <ellipse cx="0" cy="6" rx="8" ry="8" fill="url(#lg-canopy)"/>
+      <ellipse cx="-3" cy="3" rx="3.5" ry="3.5" fill="#a8c074" opacity="0.7"/>
+      <circle cx="-2" cy="9" r="0.6" fill="#3a4818"/>
+      <circle cx="2" cy="10" r="0.6" fill="#3a4818"/>
+    </g>
+    <!-- tree 4 (front-right) -->
+    <g transform="translate(52 44)">
+      <rect x="-1" y="7" width="2" height="5" fill="url(#lg-trunk)"/>
+      <ellipse cx="0" cy="5" rx="7" ry="7" fill="url(#lg-canopy)"/>
+      <ellipse cx="-2" cy="3" rx="3" ry="3" fill="#a8c074" opacity="0.7"/>
+    </g>
+  </g>
+</svg>

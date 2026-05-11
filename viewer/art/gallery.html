@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ecogame — SVG art gallery</title>
+<style>
+  body { background:#1c1812; color:#d8c8a4; font-family:system-ui,sans-serif; margin:0; padding:24px; }
+  h1 { font-size:18px; margin:0 0 8px 0; font-weight:600; letter-spacing:.5px; }
+  h2 { font-size:14px; margin:32px 0 12px 0; font-weight:600; letter-spacing:.5px; color:#e8d8a4; border-bottom:1px solid #3a342a; padding-bottom:6px; }
+  p { font-size:12px; color:#a89868; margin:4px 0 0 0; max-width:720px; line-height:1.5; }
+  .grid { display:grid; gap:10px; margin-top:14px; }
+  .grid.hex { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  .grid.sq  { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); }
+  .cell { background:#2a2418; border:1px solid #3a342a; border-radius:4px; padding:6px; display:flex; flex-direction:column; align-items:center; }
+  .cell.hex { background-image: linear-gradient(135deg,#2a2418 25%,#231e14 25%,#231e14 50%,#2a2418 50%,#2a2418 75%,#231e14 75%); background-size:8px 8px; }
+  .cell svg { width:100%; height:auto; display:block; }
+  .cell.hex svg { aspect-ratio: 128/148; }
+  .cell.sq svg { aspect-ratio: 1/1; }
+  .label { font-size:10px; color:#a89868; margin-top:6px; text-align:center; font-family:monospace; }
+  .label small { display:block; color:#7a6a48; font-size:9px; margin-top:2px; }
+  .composite { background:#1f2c0e; }
+  .composite.water { background:#0e3654; }
+  .stitch-row { display:flex; gap:12px; align-items:flex-start; flex-wrap:wrap; margin-top:14px; }
+  .stitch-box { background:#2a2418; border:1px solid #3a342a; border-radius:4px; padding:8px; }
+  .stitch-box h3 { font-size:11px; margin:0 0 6px 0; color:#caa874; font-family:monospace; }
+  .stitch-box .stack { position:relative; width:200px; aspect-ratio: 128/148; }
+  .stitch-box .stack img { position:absolute; inset:0; width:100%; height:100%; }
+  footer { margin-top:48px; color:#7a6a48; font-size:11px; }
+</style>
+</head>
+<body>
+<h1>Ecogame — SVG art gallery</h1>
+<p>88 SVGs in <code>viewer/art/</code>. Painterly-vector style: linear-gradient fills, fractal-noise overlays, soft drop shadows, NW light convention. Edge-segment SVGs (rivers, roads, lake shores, biome edges) compose against their base tile to handle natural stitching to neighbors. Files are intended to be loaded by the viewer at startup as PixiJS textures.</p>
+
+<h2>Terrain — 16 hex tiles</h2>
+<p>Hex viewBox 128×148, pointy-top, inscribed. Urban hex has 5 tier-specific variants — sparser at hamlet, denser and stone-built at large_city.</p>
+<div class="grid hex" id="g-terrain"></div>
+
+<h2>Buildings — 34 glyphs</h2>
+<p>64×64 viewBox, ground line ≈ y=48. Each glyph has 3-tone shading + drop shadow + texture noise.</p>
+<div class="grid sq" id="g-buildings"></div>
+
+<h2>Settlements — 5 tiers</h2>
+<p>Tier-specific architecture: round wattle hut (hamlet) → cluster of houses (village) → multi-house town with bell tower → walled small city → multi-tower large city with grand temple.</p>
+<div class="grid sq" id="g-settlements"></div>
+
+<h2>Units — 2</h2>
+<div class="grid sq" id="g-units"></div>
+
+<h2>River segments — 6 directional</h2>
+<p>Composed over <code>terrain/river.svg</code> (directionless water-base, central pool). One per connected neighbor edge. E / NE / NW / W / SW / SE.</p>
+<div class="grid hex" id="g-rivers"></div>
+<div class="stitch-row">
+  <div class="stitch-box">
+    <h3>composite: NE+SW (straight river)</h3>
+    <div class="stack">
+      <img src="terrain/river.svg" alt="">
+      <img src="rivers/ne.svg" alt="">
+      <img src="rivers/sw.svg" alt="">
+    </div>
+  </div>
+  <div class="stitch-box">
+    <h3>composite: NW+SE+E (T-junction)</h3>
+    <div class="stack">
+      <img src="terrain/river.svg" alt="">
+      <img src="rivers/nw.svg" alt="">
+      <img src="rivers/se.svg" alt="">
+      <img src="rivers/e.svg" alt="">
+    </div>
+  </div>
+</div>
+
+<h2>Roman roads — 6 directional</h2>
+<p>Stone-paved with parallel curbs and cobble joints.</p>
+<div class="grid hex" id="g-roman"></div>
+<div class="stitch-row">
+  <div class="stitch-box">
+    <h3>composite: E+W (straight road)</h3>
+    <div class="stack">
+      <img src="terrain/plains.svg" alt="">
+      <img src="roads/roman/e.svg" alt="">
+      <img src="roads/roman/w.svg" alt="">
+    </div>
+  </div>
+  <div class="stitch-box">
+    <h3>composite: NE+SE+W (Y-junction)</h3>
+    <div class="stack">
+      <img src="terrain/plains.svg" alt="">
+      <img src="roads/roman/ne.svg" alt="">
+      <img src="roads/roman/se.svg" alt="">
+      <img src="roads/roman/w.svg" alt="">
+    </div>
+  </div>
+</div>
+
+<h2>Dirt roads — 6 directional</h2>
+<p>Wavy brown line with subtle drop shadow.</p>
+<div class="grid hex" id="g-dirt"></div>
+
+<h2>Lake shores — 6 directional</h2>
+<p>Sandy-grass band along ONE hex edge. Composited over <code>terrain/lake.svg</code> when that edge has land on the other side.</p>
+<div class="grid hex" id="g-shore"></div>
+<div class="stitch-row">
+  <div class="stitch-box">
+    <h3>composite: shore on N edges (lake with land to N)</h3>
+    <div class="stack">
+      <img src="terrain/lake.svg" alt="">
+      <img src="lake_shore/ne.svg" alt="">
+      <img src="lake_shore/nw.svg" alt="">
+    </div>
+  </div>
+</div>
+
+<h2>Biome-edge feathers — 6 directional</h2>
+<p>Color-tintable (<code>color="currentColor"</code>) feather strips. The viewer sets the source-terrain color before rasterizing, replacing the procedural biome-edge darkening currently in <code>hexMap.ts</code>. Shown here in black.</p>
+<div class="grid hex" id="g-biome"></div>
+
+<footer>Total: <span id="count">88</span> SVGs. Open any file directly in a browser to inspect; SVGs are hand-authored and editable in any vector tool.</footer>
+
+<script>
+const terrain = ['plains','fertile_valley','hills','mountains','forest','dense_forest','marsh','desert','steppe','river','lake','urban_hamlet','urban_village','urban_town','urban_small_city','urban_large_city','ruin'];
+const buildings = ['farm','pasture','mine','quarry','forester_camp','sawmill','mill','bakery','bloomery','kiln','pottery','charcoal_kiln','granary','warehouse','cistern','smithy','weaver_workshop','tailor_shop','winery','oil_press','dairy','tannery','fishery','vineyard','olive_grove','orchard','cart_wright','mint','temple','forum_market','walls','barracks','aqueduct_segment','road_segment'];
+const settlements = ['hamlet','village','town','small_city','large_city'];
+const units = ['caravan','bandit_camp'];
+const dirs = ['e','ne','nw','w','sw','se'];
+
+const makeCell = (path, label, shape='sq', bg=null) => {
+  const cell = document.createElement('div');
+  cell.className = `cell ${shape}` + (bg ? ` composite ${bg}` : '');
+  const img = document.createElement('img');
+  img.src = path;
+  img.style.width = '100%';
+  img.style.height = 'auto';
+  img.style.aspectRatio = shape === 'hex' ? '128/148' : '1/1';
+  img.alt = label;
+  cell.appendChild(img);
+  const lab = document.createElement('div');
+  lab.className = 'label';
+  lab.innerHTML = label.replace(/^[^\/]*\//, '<small>$&</small>');
+  cell.appendChild(lab);
+  return cell;
+};
+
+const fill = (id, names, prefix, ext='.svg', shape='sq', bg=null) => {
+  const host = document.getElementById(id);
+  for (const n of names) host.appendChild(makeCell(`${prefix}${n}${ext}`, n, shape, bg));
+};
+
+fill('g-terrain', terrain, 'terrain/', '.svg', 'hex');
+fill('g-buildings', buildings, 'buildings/', '.svg', 'sq');
+fill('g-settlements', settlements, 'settlements/', '.svg', 'sq');
+fill('g-units', units, 'units/', '.svg', 'sq');
+fill('g-rivers', dirs, 'rivers/', '.svg', 'hex', 'water');
+fill('g-roman', dirs, 'roads/roman/', '.svg', 'hex', '');
+fill('g-dirt', dirs, 'roads/dirt/', '.svg', 'hex', '');
+fill('g-shore', dirs, 'lake_shore/', '.svg', 'hex', 'water');
+fill('g-biome', dirs, 'biome_edges/', '.svg', 'hex', '');
+</script>
+</body>
+</html>

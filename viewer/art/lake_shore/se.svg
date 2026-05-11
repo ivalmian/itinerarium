@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
+    <!-- Inward fade for SE edge. Edge midpoint (96,129.5); inward normal (-0.5, -0.866). -->
+    <linearGradient id="lg-sand" gradientUnits="userSpaceOnUse"
+                    x1="96" y1="129.5" x2="81" y2="103.5">
+      <stop offset="0" stop-color="#e8d6a2"/>
+      <stop offset="0.5" stop-color="#bca072" stop-opacity="0.7"/>
+      <stop offset="1" stop-color="#bca072" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <g clip-path="url(#hex)">
+    <!-- Strip along SE hex edge (128,111)→(64,148), 30 px inward toward center. -->
+    <polygon points="64,148 128,111 113,85 49,122" fill="url(#lg-sand)"/>
+    <path d="M 49 122 L 113 85" fill="none" stroke="#f4ecd6" stroke-width="0.6" opacity="0.65"/>
+    <g fill="#7a6238" opacity="0.7">
+      <circle cx="74" cy="134" r="0.8"/>
+      <circle cx="92" cy="124" r="0.8"/>
+      <circle cx="108" cy="112" r="0.8"/>
+    </g>
+  </g>
+</svg>

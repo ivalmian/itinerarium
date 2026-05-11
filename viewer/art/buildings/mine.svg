@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="lg-rock" x1="0" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#8e8478"/>
+      <stop offset="1" stop-color="#3a342e"/>
+    </linearGradient>
+    <radialGradient id="lg-mouth" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#1a1410"/>
+      <stop offset="1" stop-color="#000000"/>
+    </radialGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="1.1" numOctaves="2" seed="5"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.28 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.7"/>
+      <feOffset dx="0.6" dy="1.2"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <!-- mountainside -->
+  <path d="M 4 56 L 18 18 L 36 8 L 50 22 L 60 56 Z" fill="url(#lg-rock)"/>
+  <path d="M 4 56 L 18 18 L 36 8 L 50 22 L 60 56 Z" fill="#2a221a" filter="url(#nz)" opacity="0.5"/>
+  <!-- ridge highlight -->
+  <path d="M 18 18 L 36 8 L 50 22" fill="none" stroke="#bcb2a4" stroke-width="0.6" opacity="0.7"/>
+  <!-- shadow side -->
+  <path d="M 36 8 L 50 22 L 60 56 L 50 56 L 42 22 Z" fill="#2a241e" opacity="0.55"/>
+  <g filter="url(#ds)">
+    <!-- entrance arch -->
+    <path d="M 22 56 L 22 42 A 10 10 0 0 1 42 42 L 42 56 Z" fill="url(#lg-mouth)"/>
+    <!-- support beams (vertical) -->
+    <rect x="22" y="42" width="2" height="14" fill="#5a3e1c"/>
+    <rect x="40" y="42" width="2" height="14" fill="#5a3e1c"/>
+    <!-- lintel -->
+    <rect x="20" y="40" width="24" height="3" fill="#6a4a26" stroke="#3a2818" stroke-width="0.4"/>
+    <!-- cart rails into mine (perspective lines) -->
+    <line x1="28" y1="56" x2="30" y2="48" stroke="#2a2218" stroke-width="0.5"/>
+    <line x1="36" y1="56" x2="34" y2="48" stroke="#2a2218" stroke-width="0.5"/>
+  </g>
+  <!-- ore tailings pile outside -->
+  <path d="M 8 56 L 18 50 L 24 56 Z" fill="#5e5246" opacity="0.85"/>
+  <path d="M 46 56 L 56 50 L 60 56 Z" fill="#5e5246" opacity="0.85"/>
+  <!-- pickaxe leaning -->
+  <line x1="48" y1="54" x2="56" y2="44" stroke="#6a4a26" stroke-width="1.2"/>
+  <path d="M 53 42 L 58 42 L 60 46 L 53 46 Z" fill="#7a7268" stroke="#3a342a" stroke-width="0.3"/>
+</svg>

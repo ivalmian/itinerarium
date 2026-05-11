@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="lg-marble" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#f4ecd6"/>
+      <stop offset="1" stop-color="#a89868"/>
+    </linearGradient>
+    <linearGradient id="lg-roof" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c84e2c"/>
+      <stop offset="1" stop-color="#5a200c"/>
+    </linearGradient>
+    <linearGradient id="lg-shadow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#dac8a8"/>
+      <stop offset="1" stop-color="#6e5a36"/>
+    </linearGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="0.95" numOctaves="2" seed="57"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.16 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.6"/>
+      <feOffset dx="0.5" dy="1"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="2" y="48" width="60" height="14" rx="2" fill="#9a8a68"/>
+  <rect x="2" y="48" width="60" height="14" rx="2" fill="#2a2010" filter="url(#nz)" opacity="0.3"/>
+  <g filter="url(#ds)">
+    <!-- broad temple base -->
+    <rect x="6" y="44" width="52" height="4" fill="url(#lg-shadow)" stroke="#3a2814" stroke-width="0.3"/>
+    <rect x="8" y="42" width="48" height="2" fill="url(#lg-marble)" stroke="#3a2814" stroke-width="0.3"/>
+    <!-- six columns -->
+    <g>
+      <rect x="11" y="22" width="3" height="20" fill="url(#lg-marble)" stroke="#3a2814" stroke-width="0.3"/>
+      <rect x="19" y="22" width="3" height="20" fill="url(#lg-marble)" stroke="#3a2814" stroke-width="0.3"/>
+      <rect x="27" y="22" width="3" height="20" fill="url(#lg-marble)" stroke="#3a2814" stroke-width="0.3"/>
+      <rect x="35" y="22" width="3" height="20" fill="url(#lg-marble)" stroke="#3a2814" stroke-width="0.3"/>
+      <rect x="43" y="22" width="3" height="20" fill="url(#lg-marble)" stroke="#3a2814" stroke-width="0.3"/>
+      <rect x="51" y="22" width="3" height="20" fill="url(#lg-marble)" stroke="#3a2814" stroke-width="0.3"/>
+    </g>
+    <!-- column flutes -->
+    <g stroke="#a89868" stroke-width="0.3" opacity="0.7">
+      <line x1="12.5" y1="24" x2="12.5" y2="40"/>
+      <line x1="20.5" y1="24" x2="20.5" y2="40"/>
+      <line x1="28.5" y1="24" x2="28.5" y2="40"/>
+      <line x1="36.5" y1="24" x2="36.5" y2="40"/>
+      <line x1="44.5" y1="24" x2="44.5" y2="40"/>
+      <line x1="52.5" y1="24" x2="52.5" y2="40"/>
+    </g>
+    <!-- capitals -->
+    <g fill="#dccab2" stroke="#3a2814" stroke-width="0.3">
+      <rect x="10" y="20" width="5" height="2"/>
+      <rect x="18" y="20" width="5" height="2"/>
+      <rect x="26" y="20" width="5" height="2"/>
+      <rect x="34" y="20" width="5" height="2"/>
+      <rect x="42" y="20" width="5" height="2"/>
+      <rect x="50" y="20" width="5" height="2"/>
+    </g>
+    <!-- entablature -->
+    <rect x="6" y="18" width="52" height="3" fill="url(#lg-marble)" stroke="#3a2814" stroke-width="0.3"/>
+    <!-- pediment (triangle) -->
+    <polygon points="6,18 58,18 32,6" fill="url(#lg-roof)" stroke="#2a1408" stroke-width="0.5"/>
+    <!-- pediment shadow line -->
+    <line x1="32" y1="6" x2="58" y2="18" stroke="#2a1408" stroke-width="0.4"/>
+    <!-- pediment decoration -->
+    <circle cx="32" cy="14" r="1.4" fill="#daca7a" stroke="#3a2814" stroke-width="0.3"/>
+  </g>
+  <!-- offering bowl in front -->
+  <ellipse cx="32" cy="56" rx="3" ry="0.8" fill="#3a2814"/>
+  <ellipse cx="32" cy="55" rx="3" ry="0.8" fill="url(#lg-shadow)" stroke="#3a2814" stroke-width="0.3"/>
+  <ellipse cx="32" cy="54.5" rx="2.4" ry="0.6" fill="#e8501a" opacity="0.85"/>
+</svg>

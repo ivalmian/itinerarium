@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
+    <linearGradient id="lg-base" x1="0" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#b8b067"/>
+      <stop offset="1" stop-color="#7a6f3a"/>
+    </linearGradient>
+    <linearGradient id="lg-grass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9c9355" stop-opacity="0"/>
+      <stop offset="1" stop-color="#5a4f25" stop-opacity="0.45"/>
+    </linearGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="2" seed="3"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.22 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+  </defs>
+  <g clip-path="url(#hex)">
+    <rect x="0" y="0" width="128" height="148" fill="url(#lg-base)"/>
+    <rect x="0" y="0" width="128" height="148" fill="url(#lg-grass)"/>
+    <rect x="0" y="0" width="128" height="148" fill="#3b321a" filter="url(#nz)" opacity="0.6"/>
+    <!-- scattered grass tufts -->
+    <g stroke="#3e3618" stroke-width="0.8" stroke-linecap="round" opacity="0.55">
+      <line x1="22" y1="52" x2="22" y2="46"/>
+      <line x1="25" y1="53" x2="26" y2="47"/>
+      <line x1="58" y1="78" x2="58" y2="72"/>
+      <line x1="61" y1="79" x2="62" y2="73"/>
+      <line x1="91" y1="58" x2="91" y2="52"/>
+      <line x1="100" y1="92" x2="100" y2="86"/>
+      <line x1="103" y1="93" x2="104" y2="87"/>
+      <line x1="40" y1="108" x2="40" y2="102"/>
+      <line x1="78" y1="118" x2="79" y2="112"/>
+    </g>
+    <!-- subtle warm highlight from NW -->
+    <ellipse cx="44" cy="40" rx="44" ry="22" fill="#d8c97c" opacity="0.18"/>
+  </g>
+  <polygon points="64,0 128,37 128,111 64,148 0,111 0,37" fill="none" stroke="#3a321a" stroke-width="0.6" opacity="0.4"/>
+</svg>

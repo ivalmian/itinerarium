@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
+    <linearGradient id="lg-base" x1="0" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#586a3e"/>
+      <stop offset="1" stop-color="#2e3a1c"/>
+    </linearGradient>
+    <radialGradient id="lg-pool" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#5a7060"/>
+      <stop offset="1" stop-color="#2c3a2e"/>
+    </radialGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="1.2" numOctaves="2" seed="23"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.25 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+  </defs>
+  <g clip-path="url(#hex)">
+    <rect x="0" y="0" width="128" height="148" fill="url(#lg-base)"/>
+    <rect x="0" y="0" width="128" height="148" fill="#1c2410" filter="url(#nz)" opacity="0.5"/>
+    <!-- standing water pools -->
+    <ellipse cx="40" cy="60" rx="22" ry="9" fill="url(#lg-pool)" opacity="0.85"/>
+    <ellipse cx="86" cy="92" rx="26" ry="10" fill="url(#lg-pool)" opacity="0.85"/>
+    <ellipse cx="60" cy="116" rx="18" ry="7" fill="url(#lg-pool)" opacity="0.78"/>
+    <!-- water highlights -->
+    <ellipse cx="36" cy="58" rx="12" ry="3" fill="#86998a" opacity="0.35"/>
+    <ellipse cx="82" cy="90" rx="14" ry="3" fill="#86998a" opacity="0.35"/>
+    <!-- reeds -->
+    <g stroke="#4a5a28" stroke-width="0.8" stroke-linecap="round">
+      <line x1="22" y1="58" x2="22" y2="48"/>
+      <line x1="24" y1="58" x2="25" y2="49"/>
+      <line x1="58" y1="60" x2="58" y2="50"/>
+      <line x1="60" y1="60" x2="61" y2="51"/>
+      <line x1="68" y1="98" x2="68" y2="88"/>
+      <line x1="100" y1="94" x2="100" y2="84"/>
+      <line x1="102" y1="94" x2="103" y2="85"/>
+      <line x1="44" y1="112" x2="44" y2="102"/>
+      <line x1="74" y1="118" x2="74" y2="108"/>
+    </g>
+    <!-- reed tops -->
+    <g fill="#7c6a32" opacity="0.85">
+      <rect x="21.5" y="46" width="1" height="3"/>
+      <rect x="24.5" y="47" width="1" height="3"/>
+      <rect x="57.5" y="48" width="1" height="3"/>
+      <rect x="60.5" y="49" width="1" height="3"/>
+      <rect x="67.5" y="86" width="1" height="3"/>
+      <rect x="99.5" y="82" width="1" height="3"/>
+      <rect x="43.5" y="100" width="1" height="3"/>
+      <rect x="73.5" y="106" width="1" height="3"/>
+    </g>
+  </g>
+  <polygon points="64,0 128,37 128,111 64,148 0,111 0,37" fill="none" stroke="#1c2410" stroke-width="0.6" opacity="0.5"/>
+</svg>

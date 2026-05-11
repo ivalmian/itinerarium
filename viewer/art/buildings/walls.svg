@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="lg-stone" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#bcb09a"/>
+      <stop offset="1" stop-color="#5e564a"/>
+    </linearGradient>
+    <linearGradient id="lg-shadow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8a8278"/>
+      <stop offset="1" stop-color="#3a342e"/>
+    </linearGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="1.0" numOctaves="2" seed="61"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.2 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.6"/>
+      <feOffset dx="0.5" dy="1"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="2" y="48" width="60" height="14" rx="2" fill="#7a6a48"/>
+  <rect x="2" y="48" width="60" height="14" rx="2" fill="#2a2010" filter="url(#nz)" opacity="0.3"/>
+  <g filter="url(#ds)">
+    <!-- main wall body -->
+    <rect x="6" y="24" width="52" height="22" fill="url(#lg-stone)" stroke="#2a241e" stroke-width="0.5"/>
+    <!-- crenellation (battlements) -->
+    <g fill="url(#lg-stone)" stroke="#2a241e" stroke-width="0.4">
+      <rect x="6" y="18" width="6" height="6"/>
+      <rect x="16" y="18" width="6" height="6"/>
+      <rect x="26" y="18" width="6" height="6"/>
+      <rect x="36" y="18" width="6" height="6"/>
+      <rect x="46" y="18" width="6" height="6"/>
+      <rect x="56" y="18" width="2" height="6"/>
+    </g>
+    <!-- battlement shadows under each crenel -->
+    <g fill="#3a342e" opacity="0.7">
+      <rect x="12" y="24" width="4" height="3"/>
+      <rect x="22" y="24" width="4" height="3"/>
+      <rect x="32" y="24" width="4" height="3"/>
+      <rect x="42" y="24" width="4" height="3"/>
+      <rect x="52" y="24" width="4" height="3"/>
+    </g>
+    <!-- stone block courses (subtle) -->
+    <g stroke="#3a342e" stroke-width="0.3" opacity="0.55">
+      <line x1="6" y1="30" x2="58" y2="30"/>
+      <line x1="6" y1="36" x2="58" y2="36"/>
+      <line x1="6" y1="42" x2="58" y2="42"/>
+      <!-- staggered verticals -->
+      <line x1="16" y1="24" x2="16" y2="30"/>
+      <line x1="26" y1="24" x2="26" y2="30"/>
+      <line x1="36" y1="24" x2="36" y2="30"/>
+      <line x1="46" y1="24" x2="46" y2="30"/>
+      <line x1="11" y1="30" x2="11" y2="36"/>
+      <line x1="21" y1="30" x2="21" y2="36"/>
+      <line x1="31" y1="30" x2="31" y2="36"/>
+      <line x1="41" y1="30" x2="41" y2="36"/>
+      <line x1="51" y1="30" x2="51" y2="36"/>
+      <line x1="16" y1="36" x2="16" y2="42"/>
+      <line x1="26" y1="36" x2="26" y2="42"/>
+      <line x1="36" y1="36" x2="36" y2="42"/>
+      <line x1="46" y1="36" x2="46" y2="42"/>
+      <line x1="11" y1="42" x2="11" y2="46"/>
+      <line x1="21" y1="42" x2="21" y2="46"/>
+      <line x1="31" y1="42" x2="31" y2="46"/>
+      <line x1="41" y1="42" x2="41" y2="46"/>
+      <line x1="51" y1="42" x2="51" y2="46"/>
+    </g>
+    <!-- arrow slits -->
+    <rect x="13" y="32" width="1" height="4" fill="#1a1208"/>
+    <rect x="33" y="32" width="1" height="4" fill="#1a1208"/>
+    <rect x="53" y="32" width="1" height="4" fill="#1a1208"/>
+    <!-- gate -->
+    <path d="M 28 46 L 28 38 A 4 4 0 0 1 36 38 L 36 46 Z" fill="#3a2814"/>
+    <line x1="32" y1="46" x2="32" y2="40" stroke="#1a0e04" stroke-width="0.3"/>
+    <!-- portcullis hatching -->
+    <g stroke="#5a4a32" stroke-width="0.3" opacity="0.85">
+      <line x1="29" y1="42" x2="35" y2="42"/>
+      <line x1="30" y1="44" x2="34" y2="44"/>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet" color="#000000">
+  <!-- Tintable biome-edge feather: a strip along the east edge that fades
+       from opaque inside the hex to transparent at the edge. Use this on
+       any hex whose E neighbor is a different biome category. The viewer
+       sets `color` to the source-terrain color before rasterizing. -->
+  <defs>
+    <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
+    <linearGradient id="lg-feather" x1="1" y1="0" x2="0" y2="0">
+      <stop offset="0" stop-color="currentColor" stop-opacity="0.55"/>
+      <stop offset="0.4" stop-color="currentColor" stop-opacity="0.3"/>
+      <stop offset="1" stop-color="currentColor" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <g clip-path="url(#hex)">
+    <!-- 24-px-wide feather along the east edge -->
+    <rect x="104" y="0" width="24" height="148" fill="url(#lg-feather)"/>
+  </g>
+</svg>

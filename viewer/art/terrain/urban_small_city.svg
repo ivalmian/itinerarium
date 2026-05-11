@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
+    <linearGradient id="lg-base" x1="0" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#a89968"/>
+      <stop offset="1" stop-color="#5e4a28"/>
+    </linearGradient>
+    <linearGradient id="lg-wall" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#e8d2a4"/>
+      <stop offset="1" stop-color="#806237"/>
+    </linearGradient>
+    <linearGradient id="lg-roof" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c8542c"/>
+      <stop offset="1" stop-color="#4a1c08"/>
+    </linearGradient>
+    <linearGradient id="lg-marble" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#f4ecd6"/>
+      <stop offset="1" stop-color="#a89868"/>
+    </linearGradient>
+    <linearGradient id="lg-stone" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#cabe96"/>
+      <stop offset="1" stop-color="#5a4e36"/>
+    </linearGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="89"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.22 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.6"/>
+      <feOffset dx="0.5" dy="1"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g clip-path="url(#hex)">
+    <rect x="0" y="0" width="128" height="148" fill="url(#lg-base)"/>
+    <rect x="0" y="0" width="128" height="148" fill="#3a2c14" filter="url(#nz)" opacity="0.35"/>
+    <!-- city wall (running around outer hex edge area) -->
+    <path d="M 8 38 L 64 8 L 120 38 L 120 110 L 64 140 L 8 110 Z" fill="none" stroke="url(#lg-stone)" stroke-width="3" stroke-linejoin="miter"/>
+    <!-- wall crenellations along top edges -->
+    <g fill="url(#lg-stone)" stroke="#3a2814" stroke-width="0.3">
+      <rect x="20" y="34" width="4" height="3"/>
+      <rect x="40" y="22" width="4" height="3"/>
+      <rect x="60" y="10" width="4" height="3"/>
+      <rect x="80" y="22" width="4" height="3"/>
+      <rect x="100" y="34" width="4" height="3"/>
+    </g>
+    <!-- cobbled streets (denser grid) -->
+    <g stroke="#3a2c14" stroke-width="1.2" opacity="0.75">
+      <line x1="14" y1="58" x2="114" y2="58"/>
+      <line x1="14" y1="90" x2="114" y2="90"/>
+      <line x1="40" y1="20" x2="40" y2="128"/>
+      <line x1="64" y1="14" x2="64" y2="134"/>
+      <line x1="88" y1="20" x2="88" y2="128"/>
+    </g>
+    <g filter="url(#ds)">
+      <!-- temple (top-center, prominent) -->
+      <rect x="50" y="26" width="28" height="14" fill="url(#lg-marble)" stroke="#3a2814" stroke-width="0.5"/>
+      <polygon points="48,26 80,26 64,14" fill="url(#lg-roof)" stroke="#2a1408" stroke-width="0.4"/>
+      <g stroke="#a89868" stroke-width="0.4">
+        <line x1="53" y1="28" x2="53" y2="38"/>
+        <line x1="58" y1="28" x2="58" y2="38"/>
+        <line x1="63" y1="28" x2="63" y2="38"/>
+        <line x1="68" y1="28" x2="68" y2="38"/>
+        <line x1="73" y1="28" x2="73" y2="38"/>
+        <line x1="76" y1="28" x2="76" y2="38"/>
+      </g>
+      <!-- bath house (right) -->
+      <rect x="92" y="62" width="20" height="24" fill="url(#lg-marble)" stroke="#3a2814" stroke-width="0.4"/>
+      <polygon points="92,62 112,62 108,54 96,54" fill="url(#lg-roof)" stroke="#2a1408" stroke-width="0.4"/>
+      <circle cx="102" cy="70" r="3" fill="#3a2c14"/>
+      <!-- insula 1-7 (apartments) -->
+      <rect x="14" y="62" width="22" height="26" fill="url(#lg-wall)" stroke="#3a2814" stroke-width="0.4"/>
+      <polygon points="14,62 36,62 32,54 18,54" fill="url(#lg-roof)" stroke="#2a1408" stroke-width="0.4"/>
+      <rect x="42" y="64" width="20" height="24" fill="url(#lg-wall)" stroke="#3a2814" stroke-width="0.4"/>
+      <polygon points="42,64 62,64 58,56 46,56" fill="url(#lg-roof)" stroke="#2a1408" stroke-width="0.4"/>
+      <rect x="66" y="62" width="22" height="26" fill="url(#lg-wall)" stroke="#3a2814" stroke-width="0.4"/>
+      <polygon points="66,62 88,62 84,54 70,54" fill="url(#lg-roof)" stroke="#2a1408" stroke-width="0.4"/>
+      <!-- bottom row -->
+      <rect x="14" y="94" width="22" height="26" fill="url(#lg-wall)" stroke="#3a2814" stroke-width="0.4"/>
+      <polygon points="14,94 36,94 32,86 18,86" fill="url(#lg-roof)" stroke="#2a1408" stroke-width="0.4"/>
+      <rect x="42" y="94" width="20" height="26" fill="url(#lg-wall)" stroke="#3a2814" stroke-width="0.4"/>
+      <polygon points="42,94 62,94 58,86 46,86" fill="url(#lg-roof)" stroke="#2a1408" stroke-width="0.4"/>
+      <rect x="66" y="94" width="22" height="26" fill="url(#lg-wall)" stroke="#3a2814" stroke-width="0.4"/>
+      <polygon points="66,94 88,94 84,86 70,86" fill="url(#lg-roof)" stroke="#2a1408" stroke-width="0.4"/>
+      <rect x="92" y="94" width="20" height="26" fill="url(#lg-wall)" stroke="#3a2814" stroke-width="0.4"/>
+      <polygon points="92,94 112,94 108,86 96,86" fill="url(#lg-roof)" stroke="#2a1408" stroke-width="0.4"/>
+    </g>
+    <!-- windows -->
+    <g fill="#3a2c14">
+      <rect x="20" y="72" width="2" height="3"/><rect x="28" y="72" width="2" height="3"/>
+      <rect x="48" y="74" width="2" height="3"/><rect x="56" y="74" width="2" height="3"/>
+      <rect x="72" y="72" width="2" height="3"/><rect x="80" y="72" width="2" height="3"/>
+      <rect x="20" y="104" width="2" height="3"/><rect x="28" y="104" width="2" height="3"/>
+      <rect x="48" y="104" width="2" height="3"/><rect x="56" y="104" width="2" height="3"/>
+      <rect x="72" y="104" width="2" height="3"/><rect x="80" y="104" width="2" height="3"/>
+      <rect x="98" y="104" width="2" height="3"/><rect x="106" y="104" width="2" height="3"/>
+    </g>
+    <!-- many chimney smokes -->
+    <ellipse cx="26" cy="46" rx="2" ry="1.4" fill="#9a8d80" opacity="0.45"/>
+    <ellipse cx="78" cy="46" rx="2" ry="1.4" fill="#9a8d80" opacity="0.4"/>
+    <ellipse cx="100" cy="44" rx="1.8" ry="1.2" fill="#9a8d80" opacity="0.4"/>
+  </g>
+  <polygon points="64,0 128,37 128,111 64,148 0,111 0,37" fill="none" stroke="#3a2c14" stroke-width="0.6" opacity="0.5"/>
+</svg>

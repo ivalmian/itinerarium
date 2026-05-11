@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.6"/>
+      <feOffset dx="0" dy="1"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g clip-path="url(#hex)" filter="url(#ds)">
+    <!-- dirt road from center (64,74) to E midpoint (128,74), wavy -->
+    <path d="M 64 74 Q 86 70 106 76 Q 120 80 128 74" fill="none" stroke="#7a5a30" stroke-width="5" stroke-linecap="round"/>
+    <path d="M 64 74 Q 86 70 106 76 Q 120 80 128 74" fill="none" stroke="#a07a3e" stroke-width="3" stroke-linecap="round" opacity="0.7"/>
+    <!-- center wear line -->
+    <path d="M 70 73 Q 86 70 106 76 Q 118 79 124 74" fill="none" stroke="#5a4022" stroke-width="0.5" opacity="0.6"/>
+  </g>
+</svg>

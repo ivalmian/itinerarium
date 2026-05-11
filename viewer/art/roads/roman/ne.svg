@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
+    <linearGradient id="lg-stone" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#cabe96"/>
+      <stop offset="1" stop-color="#7a6a48"/>
+    </linearGradient>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.5"/>
+      <feOffset dx="0.4" dy="0.6"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g clip-path="url(#hex)" filter="url(#ds)">
+    <!-- from (64,74) toward NE (96,18.5): straight strip, ~12 wide -->
+    <polygon points="58,72 68,80 102,28 92,20" fill="url(#lg-stone)"/>
+    <line x1="58" y1="72" x2="92" y2="20" stroke="#3a342a" stroke-width="0.6"/>
+    <line x1="68" y1="80" x2="102" y2="28" stroke="#3a342a" stroke-width="0.6"/>
+    <g stroke="#5a4e36" stroke-width="0.4" opacity="0.7">
+      <line x1="63" y1="76" x2="97" y2="24"/>
+      <!-- cobble joints (perpendicular slices) -->
+      <line x1="60" y1="68" x2="70" y2="74"/>
+      <line x1="65" y1="60" x2="75" y2="66"/>
+      <line x1="71" y1="50" x2="81" y2="56"/>
+      <line x1="77" y1="40" x2="87" y2="46"/>
+      <line x1="84" y1="30" x2="94" y2="36"/>
+    </g>
+  </g>
+</svg>

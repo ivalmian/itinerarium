@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
+    <linearGradient id="lg-base" x1="0" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#8aa848"/>
+      <stop offset="1" stop-color="#506b22"/>
+    </linearGradient>
+    <linearGradient id="lg-rows" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a3c354" stop-opacity="0"/>
+      <stop offset="1" stop-color="#314818" stop-opacity="0.5"/>
+    </linearGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="0.7" numOctaves="2" seed="7"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.2 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+  </defs>
+  <g clip-path="url(#hex)">
+    <rect x="0" y="0" width="128" height="148" fill="url(#lg-base)"/>
+    <rect x="0" y="0" width="128" height="148" fill="url(#lg-rows)"/>
+    <rect x="0" y="0" width="128" height="148" fill="#1f2c0e" filter="url(#nz)" opacity="0.55"/>
+    <!-- furrow rows, slightly curved -->
+    <g stroke="#3b541a" stroke-width="1.4" fill="none" opacity="0.85">
+      <path d="M 8 56 Q 64 50 120 58"/>
+      <path d="M 6 72 Q 64 66 122 74"/>
+      <path d="M 6 88 Q 64 82 122 90"/>
+      <path d="M 8 104 Q 64 98 120 106"/>
+    </g>
+    <g stroke="#b6d268" stroke-width="0.6" fill="none" opacity="0.7">
+      <path d="M 8 55 Q 64 49 120 57"/>
+      <path d="M 6 71 Q 64 65 122 73"/>
+      <path d="M 6 87 Q 64 81 122 89"/>
+      <path d="M 8 103 Q 64 97 120 105"/>
+    </g>
+    <ellipse cx="44" cy="44" rx="46" ry="22" fill="#c4dc78" opacity="0.18"/>
+  </g>
+  <polygon points="64,0 128,37 128,111 64,148 0,111 0,37" fill="none" stroke="#2b3a10" stroke-width="0.6" opacity="0.45"/>
+</svg>

@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="lg-tent" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#8a6a3a"/>
+      <stop offset="1" stop-color="#3e2a14"/>
+    </linearGradient>
+    <linearGradient id="lg-pine" x1="0" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#4a7d3a"/>
+      <stop offset="1" stop-color="#1a3a14"/>
+    </linearGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="1.0" numOctaves="2" seed="9"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.22 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.7"/>
+      <feOffset dx="0.6" dy="1.2"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <!-- forest floor -->
+  <rect x="2" y="44" width="60" height="18" rx="2" fill="#5a542a"/>
+  <rect x="2" y="44" width="60" height="18" rx="2" fill="#2a2410" filter="url(#nz)" opacity="0.5"/>
+  <g filter="url(#ds)">
+    <!-- back pine -->
+    <polygon points="14,18 4,40 24,40" fill="url(#lg-pine)"/>
+    <polygon points="14,12 6,28 22,28" fill="url(#lg-pine)" opacity="0.95"/>
+    <rect x="13" y="40" width="2" height="6" fill="#3a2818"/>
+    <!-- right pine -->
+    <polygon points="52,22 42,44 62,44" fill="url(#lg-pine)"/>
+    <polygon points="52,16 44,30 60,30" fill="url(#lg-pine)" opacity="0.95"/>
+    <rect x="51" y="44" width="2" height="6" fill="#3a2818"/>
+    <!-- tent -->
+    <polygon points="22,46 42,46 32,30" fill="url(#lg-tent)" stroke="#2a1a08" stroke-width="0.5"/>
+    <line x1="32" y1="30" x2="32" y2="46" stroke="#2a1a08" stroke-width="0.5"/>
+    <!-- tent opening -->
+    <polygon points="30,46 34,46 32,38" fill="#1a0e04"/>
+    <!-- stack of cut logs -->
+    <rect x="42" y="50" width="14" height="3" rx="1" fill="#7a5a2a"/>
+    <rect x="44" y="46" width="12" height="3" rx="1" fill="#8a6a3a"/>
+    <ellipse cx="42" cy="51.5" rx="1" ry="1.5" fill="#a87a3a"/>
+    <ellipse cx="44" cy="47.5" rx="1" ry="1.5" fill="#a87a3a"/>
+  </g>
+  <!-- campfire -->
+  <ellipse cx="14" cy="54" rx="3" ry="1" fill="#3a2818"/>
+  <polygon points="14,46 10,54 18,54" fill="#d97232" opacity="0.9"/>
+  <polygon points="14,49 12,54 16,54" fill="#f4c054" opacity="0.95"/>
+  <!-- axe -->
+  <line x1="34" y1="58" x2="40" y2="50" stroke="#6a4a26" stroke-width="1.2"/>
+  <polygon points="40,50 44,48 42,53" fill="#7a7268" stroke="#3a342a" stroke-width="0.3"/>
+</svg>

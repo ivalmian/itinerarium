@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="lg-stone" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#dccab2"/>
+      <stop offset="1" stop-color="#7a6438"/>
+    </linearGradient>
+    <linearGradient id="lg-tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c8542c"/>
+      <stop offset="1" stop-color="#4a1c08"/>
+    </linearGradient>
+    <linearGradient id="lg-tile2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a84830"/>
+      <stop offset="1" stop-color="#3a1208"/>
+    </linearGradient>
+    <linearGradient id="lg-marble" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#f4ecd6"/>
+      <stop offset="1" stop-color="#a89868"/>
+    </linearGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="0.95" numOctaves="2" seed="77"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.18 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.6"/>
+      <feOffset dx="0.5" dy="1"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <ellipse cx="32" cy="60" rx="30" ry="4" fill="#3a3024" opacity="0.45"/>
+  <g filter="url(#ds)">
+    <!-- defensive curtain wall ring -->
+    <rect x="2" y="40" width="60" height="16" fill="url(#lg-stone)" stroke="#3a2814" stroke-width="0.5"/>
+    <!-- crenellation on wall top -->
+    <g fill="url(#lg-stone)" stroke="#3a2814" stroke-width="0.3">
+      <rect x="2" y="36" width="4" height="4"/>
+      <rect x="9" y="36" width="4" height="4"/>
+      <rect x="16" y="36" width="4" height="4"/>
+      <rect x="23" y="36" width="4" height="4"/>
+      <rect x="37" y="36" width="4" height="4"/>
+      <rect x="44" y="36" width="4" height="4"/>
+      <rect x="51" y="36" width="4" height="4"/>
+      <rect x="58" y="36" width="4" height="4"/>
+    </g>
+    <!-- shadow under crenels -->
+    <g fill="#3a2814" opacity="0.55">
+      <rect x="6" y="40" width="3" height="2"/>
+      <rect x="13" y="40" width="3" height="2"/>
+      <rect x="20" y="40" width="3" height="2"/>
+      <rect x="27" y="40" width="3" height="2"/>
+      <rect x="41" y="40" width="3" height="2"/>
+      <rect x="48" y="40" width="3" height="2"/>
+      <rect x="55" y="40" width="3" height="2"/>
+    </g>
+    <!-- arched gate (center) -->
+    <path d="M 28 56 L 28 46 A 4 4 0 0 1 36 46 L 36 56 Z" fill="#1a0e04"/>
+    <line x1="32" y1="56" x2="32" y2="48" stroke="#3a2814" stroke-width="0.3"/>
+    <!-- gate towers -->
+    <rect x="24" y="32" width="6" height="20" fill="url(#lg-stone)" stroke="#3a2814" stroke-width="0.4"/>
+    <rect x="34" y="32" width="6" height="20" fill="url(#lg-stone)" stroke="#3a2814" stroke-width="0.4"/>
+    <g fill="url(#lg-stone)" stroke="#3a2814" stroke-width="0.3">
+      <rect x="23" y="28" width="3" height="4"/>
+      <rect x="28" y="28" width="3" height="4"/>
+      <rect x="33" y="28" width="3" height="4"/>
+      <rect x="38" y="28" width="3" height="4"/>
+    </g>
+    <rect x="25" y="36" width="2" height="3" fill="#1a0e04"/>
+    <rect x="37" y="36" width="2" height="3" fill="#1a0e04"/>
+    <!-- corner towers -->
+    <rect x="2" y="30" width="6" height="18" fill="url(#lg-stone)" stroke="#3a2814" stroke-width="0.4"/>
+    <polygon points="1,30 9,30 5,24" fill="url(#lg-tile)" stroke="#2a1408" stroke-width="0.4"/>
+    <rect x="3" y="34" width="2" height="3" fill="#1a0e04"/>
+    <rect x="56" y="30" width="6" height="18" fill="url(#lg-stone)" stroke="#3a2814" stroke-width="0.4"/>
+    <polygon points="55,30 63,30 59,24" fill="url(#lg-tile)" stroke="#2a1408" stroke-width="0.4"/>
+    <rect x="59" y="34" width="2" height="3" fill="#1a0e04"/>
+    <!-- inner buildings poking up behind wall -->
+    <!-- temple with columns (left of center) -->
+    <rect x="11" y="22" width="14" height="14" fill="url(#lg-marble)" stroke="#3a2814" stroke-width="0.4"/>
+    <polygon points="9,22 27,22 18,12" fill="url(#lg-tile2)" stroke="#2a1408" stroke-width="0.4"/>
+    <g stroke="#a89868" stroke-width="0.4">
+      <line x1="13" y1="24" x2="13" y2="36"/>
+      <line x1="17" y1="24" x2="17" y2="36"/>
+      <line x1="21" y1="24" x2="21" y2="36"/>
+    </g>
+    <!-- bath/forum (right) -->
+    <rect x="38" y="22" width="14" height="14" fill="url(#lg-marble)" stroke="#3a2814" stroke-width="0.4"/>
+    <polygon points="36,22 54,22 45,14" fill="url(#lg-tile)" stroke="#2a1408" stroke-width="0.4"/>
+    <rect x="43" y="28" width="4" height="8" fill="#3a2814"/>
+    <!-- chimney smoke -->
+    <ellipse cx="32" cy="8" rx="2.5" ry="1.6" fill="#9a8d80" opacity="0.5"/>
+    <ellipse cx="46" cy="14" rx="2" ry="1.4" fill="#9a8d80" opacity="0.4"/>
+  </g>
+  <!-- standard / banner on left tower -->
+  <line x1="5" y1="24" x2="5" y2="18" stroke="#3a2814" stroke-width="0.5"/>
+  <path d="M 5 18 L 9 18 L 9 22 L 7 24 L 5 22 Z" fill="#a83828" stroke="#3a1408" stroke-width="0.3"/>
+</svg>

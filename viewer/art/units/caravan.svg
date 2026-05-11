@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="lg-cargo" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#caa074"/>
+      <stop offset="1" stop-color="#5a3a18"/>
+    </linearGradient>
+    <linearGradient id="lg-mule" x1="0" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#a87a4a"/>
+      <stop offset="1" stop-color="#3e2208"/>
+    </linearGradient>
+    <linearGradient id="lg-cloak" x1="0" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#7a3a52"/>
+      <stop offset="1" stop-color="#2a0e1c"/>
+    </linearGradient>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.6"/>
+      <feOffset dx="0.5" dy="1"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <!-- shadow under group -->
+  <ellipse cx="16" cy="26" rx="14" ry="2" fill="#2a1e10" opacity="0.5"/>
+  <g filter="url(#ds)">
+    <!-- back mule -->
+    <ellipse cx="6" cy="20" rx="4" ry="2.4" fill="url(#lg-mule)"/>
+    <!-- mule head -->
+    <ellipse cx="2.5" cy="18" rx="1.6" ry="1.2" fill="url(#lg-mule)"/>
+    <line x1="2" y1="17" x2="1.5" y2="15" stroke="#3a2010" stroke-width="0.4"/>
+    <line x1="3" y1="17" x2="3" y2="15" stroke="#3a2010" stroke-width="0.4"/>
+    <!-- legs -->
+    <line x1="4" y1="22" x2="4" y2="25" stroke="#3a2010" stroke-width="0.7"/>
+    <line x1="6" y1="22" x2="6" y2="25" stroke="#3a2010" stroke-width="0.7"/>
+    <line x1="8" y1="22" x2="8" y2="25" stroke="#3a2010" stroke-width="0.7"/>
+    <!-- pack on mule -->
+    <path d="M 4 18 L 8 18 L 9 20 L 3 20 Z" fill="url(#lg-cargo)" stroke="#2a1408" stroke-width="0.3"/>
+    <!-- merchant (cloaked figure) leading -->
+    <ellipse cx="14" cy="14" rx="1.8" ry="1.6" fill="#e8c894"/>
+    <path d="M 12 16 L 16 16 L 17 24 L 11 24 Z" fill="url(#lg-cloak)" stroke="#1a0e04" stroke-width="0.3"/>
+    <!-- hood -->
+    <path d="M 12 14 L 16 14 L 15 11 L 13 11 Z" fill="url(#lg-cloak)"/>
+    <!-- staff -->
+    <line x1="18" y1="12" x2="19" y2="24" stroke="#6a4a26" stroke-width="0.6"/>
+    <!-- front mule -->
+    <ellipse cx="24" cy="20" rx="4" ry="2.4" fill="url(#lg-mule)"/>
+    <ellipse cx="27.5" cy="18" rx="1.6" ry="1.2" fill="url(#lg-mule)"/>
+    <line x1="28" y1="17" x2="28.5" y2="15" stroke="#3a2010" stroke-width="0.4"/>
+    <line x1="27" y1="17" x2="27" y2="15" stroke="#3a2010" stroke-width="0.4"/>
+    <line x1="22" y1="22" x2="22" y2="25" stroke="#3a2010" stroke-width="0.7"/>
+    <line x1="24" y1="22" x2="24" y2="25" stroke="#3a2010" stroke-width="0.7"/>
+    <line x1="26" y1="22" x2="26" y2="25" stroke="#3a2010" stroke-width="0.7"/>
+    <!-- pack on front mule -->
+    <path d="M 22 18 L 26 18 L 27 20 L 21 20 Z" fill="url(#lg-cargo)" stroke="#2a1408" stroke-width="0.3"/>
+    <!-- tied amphora on top -->
+    <path d="M 23 16 L 25 16 L 25.5 18 L 22.5 18 Z" fill="#b56a3a" stroke="#3a1808" stroke-width="0.3"/>
+  </g>
+  <!-- dust kick -->
+  <ellipse cx="6" cy="26" rx="3" ry="0.6" fill="#daca7a" opacity="0.4"/>
+  <ellipse cx="24" cy="26" rx="3" ry="0.6" fill="#daca7a" opacity="0.4"/>
+</svg>

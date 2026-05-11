@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
+    <linearGradient id="lg-base" x1="0" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#e8c98a"/>
+      <stop offset="1" stop-color="#a07f48"/>
+    </linearGradient>
+    <linearGradient id="lg-dune" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f0d294"/>
+      <stop offset="0.6" stop-color="#c8a464"/>
+      <stop offset="1" stop-color="#8c6c3a"/>
+    </linearGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="0.6" numOctaves="2" seed="29"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.18 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+  </defs>
+  <g clip-path="url(#hex)">
+    <rect x="0" y="0" width="128" height="148" fill="url(#lg-base)"/>
+    <rect x="0" y="0" width="128" height="148" fill="#5a4220" filter="url(#nz)" opacity="0.5"/>
+    <!-- back dune -->
+    <path d="M 0 80 Q 32 60 64 76 Q 96 88 128 64 L 128 148 L 0 148 Z" fill="url(#lg-dune)" opacity="0.85"/>
+    <!-- front dune -->
+    <path d="M 0 116 Q 36 96 70 112 Q 100 124 128 104 L 128 148 L 0 148 Z" fill="url(#lg-dune)"/>
+    <!-- crest highlights -->
+    <path d="M 0 80 Q 32 60 64 76 Q 96 88 128 64" fill="none" stroke="#f4dca0" stroke-width="0.8" opacity="0.7"/>
+    <path d="M 0 116 Q 36 96 70 112 Q 100 124 128 104" fill="none" stroke="#f4dca0" stroke-width="0.8" opacity="0.7"/>
+    <!-- shadow side -->
+    <path d="M 0 82 Q 32 62 64 78 L 64 92 Q 32 76 0 92 Z" fill="#8c6c3a" opacity="0.4"/>
+    <path d="M 0 118 Q 36 98 70 114 L 70 128 Q 36 110 0 128 Z" fill="#8c6c3a" opacity="0.5"/>
+    <!-- sand ripples -->
+    <g stroke="#7a5e30" stroke-width="0.4" fill="none" opacity="0.5">
+      <path d="M 12 90 Q 20 88 28 90"/>
+      <path d="M 80 70 Q 88 68 96 70"/>
+      <path d="M 30 130 Q 40 128 50 130"/>
+      <path d="M 88 122 Q 96 120 104 122"/>
+    </g>
+  </g>
+  <polygon points="64,0 128,37 128,111 64,148 0,111 0,37" fill="none" stroke="#8c6c3a" stroke-width="0.6" opacity="0.5"/>
+</svg>

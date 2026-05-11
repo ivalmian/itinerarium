@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="lg-wall" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#d8c294"/>
+      <stop offset="1" stop-color="#7a5e36"/>
+    </linearGradient>
+    <linearGradient id="lg-roof" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a4502c"/>
+      <stop offset="1" stop-color="#3e1c0c"/>
+    </linearGradient>
+    <linearGradient id="lg-amphora" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#b56a3a"/>
+      <stop offset="1" stop-color="#5a2810"/>
+    </linearGradient>
+    <linearGradient id="lg-grape" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a86ad4"/>
+      <stop offset="1" stop-color="#3e1856"/>
+    </linearGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="1.0" numOctaves="2" seed="37"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.18 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.6"/>
+      <feOffset dx="0.5" dy="1"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="2" y="48" width="60" height="14" rx="2" fill="#6a563a"/>
+  <rect x="2" y="48" width="60" height="14" rx="2" fill="#2a2010" filter="url(#nz)" opacity="0.4"/>
+  <g filter="url(#ds)">
+    <rect x="8" y="24" width="28" height="24" fill="url(#lg-wall)" stroke="#3a2814" stroke-width="0.5"/>
+    <polygon points="6,24 38,24 32,12 12,12" fill="url(#lg-roof)" stroke="#2a1408" stroke-width="0.5"/>
+    <rect x="18" y="34" width="6" height="14" fill="#3a2814"/>
+    <rect x="12" y="28" width="3" height="3" fill="#3a2814"/>
+    <rect x="28" y="28" width="3" height="3" fill="#3a2814"/>
+    <!-- wine press base on right -->
+    <rect x="40" y="38" width="20" height="10" fill="#6a4a26" stroke="#1f1408" stroke-width="0.4"/>
+    <!-- press platform -->
+    <rect x="38" y="32" width="24" height="6" fill="#5a3e1c" stroke="#1f1408" stroke-width="0.4"/>
+    <!-- screw / lever -->
+    <rect x="48" y="14" width="4" height="20" fill="#3a2814"/>
+    <line x1="40" y1="16" x2="60" y2="16" stroke="#3a2814" stroke-width="1"/>
+    <line x1="48" y1="14" x2="46" y2="10" stroke="#3a2814" stroke-width="0.8"/>
+    <line x1="52" y1="14" x2="54" y2="10" stroke="#3a2814" stroke-width="0.8"/>
+    <!-- grape cluster in press -->
+    <g fill="url(#lg-grape)">
+      <circle cx="44" cy="36" r="1.4"/>
+      <circle cx="47" cy="35" r="1.4"/>
+      <circle cx="50" cy="36" r="1.4"/>
+      <circle cx="53" cy="35" r="1.4"/>
+      <circle cx="56" cy="36" r="1.4"/>
+    </g>
+  </g>
+  <!-- amphorae lined up at base -->
+  <g filter="url(#ds)">
+    <path d="M 4 60 Q 2 56 4 54 L 6 50 L 8 50 L 10 54 Q 12 56 10 60 Z" fill="url(#lg-amphora)" stroke="#3a1808" stroke-width="0.3"/>
+    <path d="M 14 60 Q 12 56 14 54 L 16 50 L 18 50 L 20 54 Q 22 56 20 60 Z" fill="url(#lg-amphora)" stroke="#3a1808" stroke-width="0.3"/>
+    <path d="M 24 60 Q 22 56 24 54 L 26 50 L 28 50 L 30 54 Q 32 56 30 60 Z" fill="url(#lg-amphora)" stroke="#3a1808" stroke-width="0.3"/>
+  </g>
+  <!-- spilled wine -->
+  <ellipse cx="50" cy="48" rx="3" ry="1" fill="#5a1830" opacity="0.85"/>
+</svg>

@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="lg-brick" x1="0" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#9a5236"/>
+      <stop offset="1" stop-color="#42201c"/>
+    </linearGradient>
+    <radialGradient id="lg-flame" cx="0.5" cy="0.6" r="0.6">
+      <stop offset="0" stop-color="#fee076"/>
+      <stop offset="0.5" stop-color="#e8501a"/>
+      <stop offset="1" stop-color="#7a1e08"/>
+    </radialGradient>
+    <linearGradient id="lg-smoke" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8e8276" stop-opacity="0.1"/>
+      <stop offset="1" stop-color="#5a5044" stop-opacity="0.7"/>
+    </linearGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="1.1" numOctaves="2" seed="17"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.22 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.6"/>
+      <feOffset dx="0.5" dy="1"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <!-- ground -->
+  <rect x="2" y="50" width="60" height="12" rx="2" fill="#5a4030"/>
+  <rect x="2" y="50" width="60" height="12" rx="2" fill="#1a0e08" filter="url(#nz)" opacity="0.5"/>
+  <!-- smoke -->
+  <g>
+    <ellipse cx="34" cy="14" rx="6" ry="4" fill="url(#lg-smoke)"/>
+    <ellipse cx="38" cy="6" rx="5" ry="3" fill="url(#lg-smoke)" opacity="0.7"/>
+    <ellipse cx="30" cy="8" rx="4" ry="2.5" fill="url(#lg-smoke)" opacity="0.5"/>
+  </g>
+  <g filter="url(#ds)">
+    <!-- bloomery furnace stack (clay chimney) -->
+    <path d="M 24 50 L 26 22 L 38 22 L 40 50 Z" fill="url(#lg-brick)" stroke="#2a1208" stroke-width="0.5"/>
+    <!-- top opening -->
+    <ellipse cx="32" cy="22" rx="6" ry="2" fill="#1a0a04"/>
+    <ellipse cx="32" cy="21" rx="6" ry="1.2" fill="#e8501a" opacity="0.55"/>
+    <!-- brick courses -->
+    <g stroke="#3a1c0c" stroke-width="0.3" opacity="0.7">
+      <line x1="25" y1="30" x2="39" y2="30"/>
+      <line x1="25" y1="36" x2="39" y2="36"/>
+      <line x1="25" y1="42" x2="39" y2="42"/>
+    </g>
+    <!-- fire mouth -->
+    <path d="M 28 50 L 28 42 A 4 4 0 0 1 36 42 L 36 50 Z" fill="url(#lg-flame)"/>
+    <!-- ember pile -->
+    <ellipse cx="32" cy="49" rx="6" ry="1.4" fill="#ffc664" opacity="0.85"/>
+    <!-- bellows on right -->
+    <path d="M 40 38 L 50 36 L 52 42 L 50 46 L 40 44 Z" fill="#6a4a26" stroke="#2a1a08" stroke-width="0.5"/>
+    <line x1="44" y1="38" x2="50" y2="39" stroke="#3a2010" stroke-width="0.3"/>
+    <line x1="44" y1="42" x2="50" y2="44" stroke="#3a2010" stroke-width="0.3"/>
+    <!-- anvil on left -->
+    <path d="M 6 50 L 10 50 L 12 48 L 16 48 L 18 50 L 22 50 L 22 52 L 6 52 Z" fill="#4a4a52" stroke="#1a1a1e" stroke-width="0.4"/>
+  </g>
+  <!-- sparks -->
+  <g fill="#ffc664">
+    <circle cx="34" cy="20" r="0.6"/>
+    <circle cx="30" cy="18" r="0.5"/>
+    <circle cx="36" cy="16" r="0.4"/>
+  </g>
+</svg>

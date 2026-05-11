@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="lg-wall" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#ebd8b0"/>
+      <stop offset="1" stop-color="#7e5e2c"/>
+    </linearGradient>
+    <linearGradient id="lg-roof" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a4502c"/>
+      <stop offset="1" stop-color="#3e1c0c"/>
+    </linearGradient>
+    <radialGradient id="lg-coin" cx="0.4" cy="0.4" r="0.6">
+      <stop offset="0" stop-color="#ffe28c"/>
+      <stop offset="0.5" stop-color="#d8a44c"/>
+      <stop offset="1" stop-color="#6e4a18"/>
+    </radialGradient>
+    <filter id="nz" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency="1.0" numOctaves="2" seed="55"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.16 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.6"/>
+      <feOffset dx="0.5" dy="1"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="2" y="48" width="60" height="14" rx="2" fill="#7a6238"/>
+  <rect x="2" y="48" width="60" height="14" rx="2" fill="#2a2010" filter="url(#nz)" opacity="0.4"/>
+  <g filter="url(#ds)">
+    <!-- temple-like minting hall -->
+    <rect x="10" y="26" width="44" height="22" fill="url(#lg-wall)" stroke="#3a2814" stroke-width="0.5"/>
+    <!-- pediment -->
+    <polygon points="8,26 56,26 50,12 14,12" fill="url(#lg-roof)" stroke="#2a1408" stroke-width="0.5"/>
+    <!-- pediment ornament -->
+    <circle cx="32" cy="20" r="2.5" fill="url(#lg-coin)" stroke="#3a2010" stroke-width="0.4"/>
+    <!-- columns -->
+    <rect x="14" y="26" width="3" height="22" fill="#daca9a" stroke="#3a2814" stroke-width="0.3"/>
+    <rect x="22" y="26" width="3" height="22" fill="#daca9a" stroke="#3a2814" stroke-width="0.3"/>
+    <rect x="30" y="26" width="3" height="22" fill="#daca9a" stroke="#3a2814" stroke-width="0.3"/>
+    <rect x="38" y="26" width="3" height="22" fill="#daca9a" stroke="#3a2814" stroke-width="0.3"/>
+    <rect x="46" y="26" width="3" height="22" fill="#daca9a" stroke="#3a2814" stroke-width="0.3"/>
+    <!-- column flutes -->
+    <g stroke="#7a5e36" stroke-width="0.3" opacity="0.6">
+      <line x1="15.5" y1="28" x2="15.5" y2="46"/>
+      <line x1="23.5" y1="28" x2="23.5" y2="46"/>
+      <line x1="31.5" y1="28" x2="31.5" y2="46"/>
+      <line x1="39.5" y1="28" x2="39.5" y2="46"/>
+      <line x1="47.5" y1="28" x2="47.5" y2="46"/>
+    </g>
+    <!-- steps -->
+    <rect x="6" y="46" width="52" height="2" fill="#cabe96" stroke="#3a2814" stroke-width="0.3"/>
+    <rect x="8" y="48" width="48" height="2" fill="#a89868" stroke="#3a2814" stroke-width="0.3"/>
+  </g>
+  <!-- stack of coins in front -->
+  <g filter="url(#ds)">
+    <ellipse cx="14" cy="58" rx="6" ry="1.4" fill="url(#lg-coin)" stroke="#3a2010" stroke-width="0.3"/>
+    <ellipse cx="14" cy="56" rx="6" ry="1.4" fill="url(#lg-coin)" stroke="#3a2010" stroke-width="0.3"/>
+    <ellipse cx="14" cy="54" rx="6" ry="1.4" fill="url(#lg-coin)" stroke="#3a2010" stroke-width="0.3"/>
+    <ellipse cx="14" cy="54" rx="6" ry="1.4" fill="none" stroke="#3a2010" stroke-width="0.3"/>
+    <!-- single coin to side -->
+    <ellipse cx="50" cy="58" rx="3" ry="3" fill="url(#lg-coin)" stroke="#3a2010" stroke-width="0.3"/>
+    <text x="50" y="60" text-anchor="middle" font-family="serif" font-size="3" fill="#5a3a18">R</text>
+  </g>
+</svg>
