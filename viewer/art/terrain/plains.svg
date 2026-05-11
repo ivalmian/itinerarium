@@ -34,5 +34,4 @@
     <!-- subtle warm highlight from NW -->
     <ellipse cx="44" cy="40" rx="44" ry="22" fill="#d8c97c" opacity="0.18"/>
   </g>
-  <polygon points="64,0 128,37 128,111 64,148 0,111 0,37" fill="none" stroke="#3a321a" stroke-width="0.6" opacity="0.4"/>
-</svg>
+  </svg>

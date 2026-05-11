@@ -39,5 +39,4 @@
     <path d="M 38 36 L 64 86" fill="none" stroke="#a8a098" stroke-width="0.5" opacity="0.5"/>
     <path d="M 104 56 L 124 110" fill="none" stroke="#a8a098" stroke-width="0.5" opacity="0.5"/>
   </g>
-  <polygon points="64,0 128,37 128,111 64,148 0,111 0,37" fill="none" stroke="#2a2622" stroke-width="0.6" opacity="0.5"/>
-</svg>
+  </svg>

@@ -6,10 +6,12 @@
  * owns the hex. Sub-tile detail (trees on forests, ripples on water, etc.)
  * is baked into the SVGs so we no longer draw it procedurally.
  *
- * Biome edges and lake shores are painted as composited overlay sprites
- * (viewer/art/biome_edges/<dir>.svg and viewer/art/lake_shore/<dir>.svg)
- * for each hex edge where the neighbor differs. Biome-edge sprites are
- * tinted to the source-terrain color via Pixi's `Sprite.tint`.
+ * Adjacent hexes blend at their shared edges naturally — the painterly-vector
+ * SVGs fill their hex shape exactly, with no explicit dark outline or
+ * darkening feather. Lake shores are still painted as composited overlay
+ * sprites (viewer/art/lake_shore/<dir>.svg) for each lake edge where the
+ * neighbor is land, because the sandy shore adds a distinct visual feature
+ * rather than just darkening the boundary.
  *
  * Tints applied externally (heat-map overlays, selection highlight) still
  * use Sprite.tint and play nicely with the terrain texture.
@@ -18,55 +20,16 @@
 import { Container, Sprite } from 'pixi.js';
 import { HEX_DIRECTIONS, hexAdd, hexKey, type Hex } from '../../src/sim/world/hex.js';
 import type { HexGrid } from '../../src/sim/world/grid.js';
-import type { HexTile, Terrain } from '../../src/sim/world/terrain.js';
+import type { Terrain } from '../../src/sim/world/terrain.js';
 import type { Settlement } from '../../src/sim/world/settlement.js';
 import { hexToPixel } from './coords.js';
 import { type ArtRegistry, type EdgeDir, EDGE_DIRS, terrainArtKey } from '../art/index.js';
 
 const SQRT3 = Math.sqrt(3);
 
-/** Tint color used to colorize each biome-edge feather strip (currentColor
- *  in the SVG → Pixi tint). Picked to match the terrain palette so the
- *  feather reads as "this neighbor's biome is bleeding in." */
-const TERRAIN_TINT: Record<Terrain, number> = {
-  plains: 0xb8b067,
-  fertile_valley: 0x8aa848,
-  hills: 0xb59067,
-  mountains: 0x8a847e,
-  forest: 0x5b7d3e,
-  dense_forest: 0x365a2a,
-  marsh: 0x586a3e,
-  desert: 0xe8c98a,
-  steppe: 0xc3b07a,
-  river: 0x4a86a8,
-  lake: 0x4a82a8,
-  urban: 0xa08c63,
-  ruin: 0x7c6e54,
-};
-
-type BiomeCategory =
-  | 'agricultural'
-  | 'forest'
-  | 'water'
-  | 'highland'
-  | 'wasteland'
-  | 'built';
-
-const TERRAIN_CATEGORY: Record<Terrain, BiomeCategory> = {
-  plains: 'agricultural',
-  fertile_valley: 'agricultural',
-  forest: 'forest',
-  dense_forest: 'forest',
-  lake: 'water',
-  river: 'water',
-  hills: 'highland',
-  mountains: 'highland',
-  desert: 'wasteland',
-  steppe: 'wasteland',
-  marsh: 'wasteland',
-  urban: 'built',
-  ruin: 'built',
-};
+/** Categories used only to decide whether a lake hex needs a shore overlay
+ *  on a given edge. */
+const WATER_TERRAINS: ReadonlySet<Terrain> = new Set(['river', 'lake']);
 
 export interface HexMap {
   readonly container: Container;
@@ -91,8 +54,6 @@ const buildUrbanTierLookup = (
   settlements: readonly Settlement[],
 ): Map<string, Settlement['tier']> => {
   const out = new Map<string, Settlement['tier']>();
-  // Sort largest-first so a later (smaller) settlement doesn't overwrite a
-  // bigger one if they happen to share a hex.
   const sorted = settlements.slice().sort((a, b) => b.population.total() - a.population.total());
   for (const s of sorted) {
     for (const h of s.urbanHexes) {
@@ -113,11 +74,11 @@ export const createHexMap = (
   container.label = 'hexMap';
   const fills = new Container();
   fills.label = 'hexFills';
-  const edges = new Container();
-  edges.label = 'biomeEdges';
-  edges.eventMode = 'none';
+  const shores = new Container();
+  shores.label = 'lakeShores';
+  shores.eventMode = 'none';
   container.addChild(fills);
-  container.addChild(edges);
+  container.addChild(shores);
 
   const entries = new Map<string, HexEntry>();
   const bounds = {
@@ -151,42 +112,25 @@ export const createHexMap = (
     if (px.y > bounds.maxY) bounds.maxY = px.y;
   }
 
-  // Biome edges + lake shores. Iterate every (tile, direction) pair once.
-  // - Biome edge: when the neighbor is a different biome category we add a
-  //   feather strip tinted to the source terrain color.
-  // - Lake shore: when this tile is a lake AND the neighbor is land, we
-  //   add a sandy shore band along the shared edge.
+  // Lake shores: for each lake edge where the neighbor is land, overlay
+  // the sandy shore band. (No biome-edge darkening — terrain SVGs already
+  // blend at their shared edges naturally.)
   for (const [h, tile] of grid.tiles()) {
+    if (tile.terrain !== 'lake') continue;
     const px = hexToPixel(h, hexSize);
-    const myCat = TERRAIN_CATEGORY[tile.terrain];
     for (let d = 0; d < 6; d++) {
       const dir = HEX_DIRECTIONS[d] as Hex;
       const nHex = hexAdd(h, dir);
       const nTile = grid.get(nHex);
       if (nTile === undefined) continue;
+      if (WATER_TERRAINS.has(nTile.terrain)) continue;
       const dirName = EDGE_DIRS[d] as EdgeDir;
-
-      // Biome-edge feather (skip same-category boundaries).
-      const nCat = TERRAIN_CATEGORY[nTile.terrain];
-      if (nCat !== myCat) {
-        const feather = new Sprite(art.biomeEdge(dirName));
-        feather.anchor.set(0.5, 0.5);
-        feather.width = spriteW;
-        feather.height = spriteH;
-        feather.position.set(px.x, px.y);
-        feather.tint = TERRAIN_TINT[tile.terrain];
-        edges.addChild(feather);
-      }
-
-      // Lake shore (this tile is lake, neighbor is land).
-      if (tile.terrain === 'lake' && nCat !== 'water') {
-        const shore = new Sprite(art.lakeShore(dirName));
-        shore.anchor.set(0.5, 0.5);
-        shore.width = spriteW;
-        shore.height = spriteH;
-        shore.position.set(px.x, px.y);
-        edges.addChild(shore);
-      }
+      const shore = new Sprite(art.lakeShore(dirName));
+      shore.anchor.set(0.5, 0.5);
+      shore.width = spriteW;
+      shore.height = spriteH;
+      shore.position.set(px.x, px.y);
+      shores.addChild(shore);
     }
   }
 
@@ -202,6 +146,3 @@ export const createHexMap = (
 
   return { container, setTint, clearTints, bounds };
 };
-
-const _suppressUnused = (_t: HexTile): void => undefined;
-void _suppressUnused;
