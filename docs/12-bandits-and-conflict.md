@@ -93,6 +93,15 @@ Patrol effectiveness depends on:
 - Whether the patrol is bribed (corruption is real; some bandits
   effectively have safe-conduct).
 
+Patrol demographics: every `Patrol` carries an optional
+`demographics` map summing to `unit.count`, populated at procgen
+from the `basedAt` settlement's working-age pool with the
+`patrol_soldier` bias (heavily male, fighting-age 15-44). The
+`applyPatrolCasualties(patrol, deaths, rng)` helper in
+`src/sim/conflict/patrol.ts` drains both `count` and demographics
+together. See docs/06 §"Crew demographics" for the parallel
+caravan-side wiring.
+
 ## Escalating banditry response (locked)
 
 A single ambush isn't immediately a governor-level problem. But

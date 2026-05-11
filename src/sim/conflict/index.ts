@@ -31,7 +31,7 @@ export type {
   PatrolTickResult,
   PendingBattleTarget,
 } from './patrol.js';
-export { createPatrol, defaultPatrolRoute, tickPatrol } from './patrol.js';
+export { applyPatrolCasualties, createPatrol, defaultPatrolRoute, tickPatrol } from './patrol.js';
 
 export type { RaidInputs, RaidOutcome, RaidResult, WallLevel } from './raid.js';
 export { resolveRaid } from './raid.js';

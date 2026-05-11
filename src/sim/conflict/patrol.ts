@@ -20,6 +20,7 @@
 
 import type { BanditCamp } from '../bandit/camp.js';
 import { campAsCombatUnit } from '../bandit/camp.js';
+import { drainDemographics, type Demographics } from '../population/demographics.js';
 import type { ReputationTable } from '../reputation/table.js';
 import type { Rng } from '../rng.js';
 import type { ActorId, BanditCampId, CaravanId, Day, Position, SettlementId } from '../types.js';
@@ -41,6 +42,14 @@ export interface Patrol {
   routeIndex: number;
   /** Combat unit fielded by the patrol. Mutated as casualties accumulate. */
   unit: CombatUnit;
+  /**
+   * Per-(sex, age band) split of the patrol's `unit.count` soldiers. Optional
+   * so existing fixtures don't all need updating in one shot. When present,
+   * `sum(demographics) === unit.count` should hold.
+   *
+   * docs/12-bandits-and-conflict.md §"Patrols (Roman-era)"
+   */
+  demographics?: Demographics;
   /** Days since last rest at base. Reset when patrol returns to its base hex. */
   daysOnPatrol: number;
   /** Days since last engagement / inspection event. */
@@ -54,6 +63,7 @@ export interface CreatePatrolInput {
   readonly basedAt: SettlementId;
   readonly route: readonly Hex[];
   readonly unit: CombatUnit;
+  readonly demographics?: Demographics;
 }
 
 export interface KnownCaravanOnRoute {
@@ -157,6 +167,9 @@ export const createPatrol = (input: CreatePatrolInput): Patrol => {
     route: input.route.map(cloneHex),
     routeIndex: 0,
     unit: cloneUnit(input.unit),
+    ...(input.demographics !== undefined
+      ? { demographics: new Map(input.demographics) }
+      : {}),
     daysOnPatrol: 0,
     daysWithoutEngagement: 0,
   };
@@ -244,6 +257,9 @@ export const tickPatrol = (inputs: PatrolTickInputs): PatrolTickResult => {
     ...inputs.patrol,
     position: cloneHex(inputs.patrol.position),
     unit: cloneUnit(inputs.patrol.unit),
+    ...(inputs.patrol.demographics !== undefined
+      ? { demographics: new Map(inputs.patrol.demographics) }
+      : {}),
   };
   const events: PatrolEvent[] = [];
   const pendingBattles: PendingBattleTarget[] = [];
@@ -316,4 +332,42 @@ export const tickPatrol = (inputs: PatrolTickInputs): PatrolTickResult => {
   void rng;
 
   return { patrol, events, pendingBattles };
+};
+
+// --- Casualties ------------------------------------------------------------
+
+/**
+ * Apply patrol casualties: reduce `unit.count` by `deaths` AND drain the
+ * patrol's `demographics` proportionally when present. Returns the
+ * removed-by-bucket map for downstream cohort accounting (the basedAt
+ * settlement losing its sons).
+ *
+ * Returns a new Patrol; does NOT mutate the input.
+ *
+ * docs/12-bandits-and-conflict.md §"Patrols (Roman-era)" — casualty
+ * accounting flows back to the settlement that fielded the patrol.
+ */
+export const applyPatrolCasualties = (
+  patrol: Patrol,
+  deaths: number,
+  rng: Rng,
+): { readonly patrol: Patrol; readonly removed: ReadonlyMap<string, number> } => {
+  if (!Number.isInteger(deaths) || deaths <= 0) {
+    return { patrol, removed: new Map() };
+  }
+  const take = Math.min(patrol.unit.count, deaths);
+  const newUnit: CombatUnit = { ...patrol.unit, count: patrol.unit.count - take };
+  let removed: Map<string, number> = new Map();
+  let newDemo: Demographics | undefined = patrol.demographics;
+  if (patrol.demographics !== undefined) {
+    const mut = new Map(patrol.demographics);
+    removed = drainDemographics(mut, take, rng.derive('patrol-drain'));
+    newDemo = mut;
+  }
+  const updated: Patrol = {
+    ...patrol,
+    unit: newUnit,
+    ...(newDemo !== undefined ? { demographics: newDemo } : {}),
+  };
+  return { patrol: updated, removed };
 };
