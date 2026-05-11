@@ -16,6 +16,16 @@ export {
 export type { CreateFactionInput, Faction } from './faction.js';
 export { addMember, createFaction, hasMember, removeMember } from './faction.js';
 
+export type { CreateGuildInput, Guild, GuildByMember, GuildPriceObs } from './guild.js';
+export {
+  addGuildMember,
+  buildGuildByMember,
+  createGuild,
+  depositObservation,
+  lookupObservation,
+  mergeLedgerInto,
+} from './guild.js';
+
 export type {
   CharacterRole,
   CharacterStatus,

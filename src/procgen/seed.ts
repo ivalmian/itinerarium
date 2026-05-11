@@ -51,6 +51,7 @@ import type { NewsCarrier } from '../sim/reputation/news.js';
 import type { Caravan } from '../sim/caravan/caravan.js';
 import type { Patrol } from '../sim/conflict/patrol.js';
 import type { BanditCamp } from '../sim/bandit/camp.js';
+import { createGuild, addGuildMember, type Guild } from '../sim/politics/guild.js';
 import {
   actorId,
   banditCampId,
@@ -98,6 +99,8 @@ export interface WorldState {
   readonly patrols?: Map<string, Patrol>;
   readonly banditCamps?: Map<BanditCampId, BanditCamp>;
   readonly newsCarriers?: Map<string, NewsCarrier>;
+  /** Merchant guilds (per docs/15 §C17). Keyed by their Actor id. */
+  readonly guilds?: Map<ActorId, Guild>;
   readonly reputation: ReputationTable;
   /**
    * Diagnostic: the procgen sites that were used to seed this world, in the
@@ -920,6 +923,13 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
   const patrols = new Map<string, Patrol>();
   seedInitialPatrols(ctx, opts.grid, opts.settlementSites, siteToSettlement, patrols);
 
+  // Phase 12: merchant guilds (per docs/15 §C17). Each town/city gets a
+  // guild Actor + a price ledger; nearby caravan_owner actors are auto-
+  // enrolled. Without guilds, NPC caravan AI flies blind and crowding-
+  // aware planning isn't possible (docs/08 + Decision 27).
+  const guilds = new Map<ActorId, Guild>();
+  seedMerchantGuilds(ctx, opts.settlementSites, siteToSettlement, guilds);
+
   return {
     day: 0,
     grid: opts.grid,
@@ -931,9 +941,65 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
     patrols,
     banditCamps,
     newsCarriers: new Map<string, NewsCarrier>(),
+    guilds,
     reputation: createReputationTable(),
     bySite: opts.settlementSites,
   };
+};
+
+/**
+ * Phase 12 — seed one merchant guild per town/city. Each guild has a
+ * dedicated Actor entry (kind: 'merchant_guild') so coin movements
+ * (membership dues, etc.) flow through the standard ledger.
+ *
+ * Members: every existing caravan_owner Actor that's homed at the
+ * settlement (today there aren't any — caravans are owned by the
+ * patron who dispatches them — but the structure is in place for
+ * future merchant houses, and the cross-guild rumor exchange in
+ * tick.ts uses this membership graph).
+ *
+ * For v1.5 we also auto-enroll the city corporation + the wealthiest
+ * patrician family at the settlement as honorary members so the
+ * guild ledger exchanges in tick.ts have something to trade.
+ */
+const seedMerchantGuilds = (
+  ctx: BuildContext,
+  sites: readonly SettlementSite[],
+  siteToSettlement: Map<SettlementSite, Settlement>,
+  guilds: Map<ActorId, Guild>,
+): void => {
+  for (const site of sites) {
+    if (site.kind === 'hamlet' || site.kind === 'village') continue;
+    const settlement = siteToSettlement.get(site);
+    if (settlement === undefined) continue;
+
+    const aId = actorId(nextId('actor'));
+    const guildActor = createActor({
+      id: aId,
+      kind: 'merchant_guild',
+      name: `Guild of Merchants of ${settlement.name}`,
+      homeSettlement: settlement.id,
+      treasury: 500,
+    });
+    addActor(ctx, guildActor);
+
+    const guild = createGuild({
+      id: aId,
+      name: guildActor.name,
+      homeSettlement: settlement.id,
+    });
+
+    // Auto-enroll local stockpile-owning patrician families + city corp.
+    for (const oId of settlement.stockpileOwners) {
+      const a = ctx.actors.get(oId);
+      if (a === undefined) continue;
+      if (a.kind === 'patrician_family' || a.kind === 'city_corporation') {
+        addGuildMember(guild, a.id);
+      }
+    }
+
+    guilds.set(aId, guild);
+  }
 };
 
 /**

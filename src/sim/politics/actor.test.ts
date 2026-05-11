@@ -35,6 +35,8 @@ describe('ACTOR_KINDS', () => {
       'player',
       'off_map_house',
       'city_corporation',
+      // docs/15 §C17: merchant guilds for price discovery.
+      'merchant_guild',
     ];
     for (const k of expected) expect(ACTOR_KINDS).toContain(k);
     expect(ACTOR_KINDS).toHaveLength(expected.length);

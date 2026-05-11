@@ -30,7 +30,8 @@ export type ActorKind =
   | 'caravan_owner'
   | 'player'
   | 'off_map_house'
-  | 'city_corporation';
+  | 'city_corporation'
+  | 'merchant_guild';
 
 export const ACTOR_KINDS = [
   'patrician_family',
@@ -43,6 +44,7 @@ export const ACTOR_KINDS = [
   'player',
   'off_map_house',
   'city_corporation',
+  'merchant_guild',
 ] as const satisfies readonly ActorKind[];
 
 export interface Actor {

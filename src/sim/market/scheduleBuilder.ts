@@ -223,6 +223,8 @@ const URGENCY_BY_KIND: Readonly<Record<ActorKind, number>> = Object.freeze({
   hamlet_household: 1.5,
   temple: 0.2,
   bandit_camp: 2.5,
+  // Merchant guilds (docs/15 §C17) hold dues + bond money; not urgent.
+  merchant_guild: 0.1,
 });
 
 const DEFAULT_OWNER_URGENCY = 1;

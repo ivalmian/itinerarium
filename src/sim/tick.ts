@@ -39,6 +39,12 @@ import { createCamp, decideCampAction, recruit, type BanditCamp } from './bandit
 import { createActor } from './politics/actor.js';
 import { createCharacter, generateFullName } from './politics/character.js';
 import { createFaction } from './politics/faction.js';
+import {
+  buildGuildByMember,
+  depositObservation,
+  mergeLedgerInto,
+  type Guild,
+} from './politics/guild.js';
 import { actorId, banditCampId as makeBanditCampId, characterId, factionId } from './types.js';
 import { resolveAmbush, type AmbushResult } from './conflict/ambush.js';
 import { tickEdgeHubs, DEFAULT_GLOBAL_PRICES, DEFAULT_IMPORT_PALETTE } from './caravan/edgeHub.js';
@@ -394,6 +400,10 @@ export const tick = (inputs: TickInputs): TickResult => {
   // Caravan instances spawned at edge hexes. Without this call,
   // off-map trade only fires in standalone tests.
   edgeHubPhase(world, season, today, rng.derive('edge-hub'), events);
+
+  // --- Merchant guild cross-guild rumor (docs/15 §C17) -------------------
+  // Co-located caravans of different guilds exchange ledger slices.
+  crossGuildRumorPhase(world, today);
 
   // --- Civil unrest cascade (docs/15 §C16) -------------------------------
   // Sustained grain-price spikes trigger: riot → governor edict (price
@@ -935,6 +945,109 @@ const addRoadWear = (world: WorldState, h: Hex, amount: number): void => {
   // Roman roads neither accrue wear nor decay (engineered + maintained).
   if (tile.road === 'roman') return;
   tile.roadWear = (tile.roadWear ?? 0) + amount;
+};
+
+// --- Merchant guilds (docs/15 §C17) --------------------------------------
+
+const GUILD_LEDGER_MAX_AGE_DAYS = 60;
+
+/** Cached per-tick: caravan_owner Actor → Guild. */
+let guildByMemberCache: ReadonlyMap<ActorId, Guild> | null = null;
+let guildByMemberCacheDay: Day | null = null;
+
+const getGuildByMember = (world: WorldState, today: Day): ReadonlyMap<ActorId, Guild> => {
+  if (
+    guildByMemberCache !== null &&
+    guildByMemberCacheDay === today &&
+    world.guilds !== undefined
+  ) {
+    return guildByMemberCache;
+  }
+  const guilds = world.guilds?.values() ?? [];
+  guildByMemberCache = buildGuildByMember(guilds);
+  guildByMemberCacheDay = today;
+  return guildByMemberCache;
+};
+
+/**
+ * On caravan arrival at a settlement: deposit the caravan's recent
+ * observations into the local guild's ledger (if the caravan's owner
+ * is a member of any guild). Then read the guild's collective ledger
+ * back into the caravan's priceBook so the next leg uses the freshest
+ * collective intel.
+ */
+const syncCaravanWithLocalGuild = (world: WorldState, c: Caravan, today: Day): void => {
+  if (world.guilds === undefined || world.guilds.size === 0) return;
+  const memberGuilds = getGuildByMember(world, today);
+  const ownerGuild = memberGuilds.get(c.ownerActor);
+  if (ownerGuild === undefined) return;
+
+  // Deposit recent observations.
+  for (const [resource, byHex] of c.priceBook) {
+    for (const [hexK, obs] of byHex) {
+      depositObservation(ownerGuild, resource, hexK, {
+        price: obs.price,
+        observedOnDay: obs.observedOnDay,
+      });
+    }
+  }
+
+  // Pull the ledger back into the caravan's priceBook (only fresher entries).
+  for (const [resource, byHex] of ownerGuild.priceLedger) {
+    let book = c.priceBook.get(resource);
+    if (book === undefined) {
+      book = new Map();
+      c.priceBook.set(resource, book);
+    }
+    for (const [hexK, obs] of byHex) {
+      if (today - obs.observedOnDay > GUILD_LEDGER_MAX_AGE_DAYS) continue;
+      const prev = book.get(hexK);
+      if (prev === undefined || obs.observedOnDay > prev.observedOnDay) {
+        book.set(hexK, { price: obs.price, observedOnDay: obs.observedOnDay });
+      }
+    }
+  }
+};
+
+/**
+ * Cross-guild rumor: when caravans owned by members of DIFFERENT
+ * guilds happen to be on the same hex, exchange a slice of their
+ * ledgers (the long-haul rumor channel). Runs once per tick.
+ */
+const crossGuildRumorPhase = (world: WorldState, today: Day): void => {
+  if (world.guilds === undefined || world.guilds.size < 2) return;
+  const memberGuilds = getGuildByMember(world, today);
+  if (memberGuilds.size === 0) return;
+
+  // Group caravans by hex so we can find co-located members of distinct guilds.
+  const byHex = new Map<string, Caravan[]>();
+  for (const c of world.caravans.values()) {
+    const k = `${c.position.q},${c.position.r}`;
+    let arr = byHex.get(k);
+    if (arr === undefined) {
+      arr = [];
+      byHex.set(k, arr);
+    }
+    arr.push(c);
+  }
+  for (const [, caravans] of byHex) {
+    if (caravans.length < 2) continue;
+    // Pair members of different guilds.
+    for (let i = 0; i < caravans.length; i++) {
+      const cI = caravans[i] as Caravan;
+      const gI = memberGuilds.get(cI.ownerActor);
+      if (gI === undefined) continue;
+      for (let j = i + 1; j < caravans.length; j++) {
+        const cJ = caravans[j] as Caravan;
+        const gJ = memberGuilds.get(cJ.ownerActor);
+        if (gJ === undefined) continue;
+        if (gI === gJ) continue;
+        // Bidirectional exchange.
+        mergeLedgerInto(gI, gJ.priceLedger, today, GUILD_LEDGER_MAX_AGE_DAYS);
+        mergeLedgerInto(gJ, gI.priceLedger, today, GUILD_LEDGER_MAX_AGE_DAYS);
+      }
+    }
+  }
 };
 
 // --- Civil unrest cascade (docs/15 §C16) ---------------------------------
@@ -2316,6 +2429,12 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day): void => {
         book.set(`${c.position.q},${c.position.r}`, { price: avg, observedOnDay: today });
       }
     }
+
+    // Per docs/15 §C17: deposit observations into the local guild's
+    // ledger if the caravan owner is a member of any guild. Read the
+    // freshest collective observations BACK into the priceBook so the
+    // departing caravan inherits other members' recent intel.
+    syncCaravanWithLocalGuild(world, c, today);
 
     // 2. Plan next route.
     const plan = planCaravanRoute({
