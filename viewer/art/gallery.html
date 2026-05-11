@@ -97,6 +97,25 @@
 <h2>Dirt roads — 6 directional</h2>
 <p>Wavy brown line with subtle drop shadow.</p>
 <div class="grid hex" id="g-dirt"></div>
+<div class="stitch-row">
+  <div class="stitch-box">
+    <h3>composite: E+W (straight dirt path)</h3>
+    <div class="stack">
+      <img src="terrain/plains.svg" alt="">
+      <img src="roads/dirt/e.svg" alt="">
+      <img src="roads/dirt/w.svg" alt="">
+    </div>
+  </div>
+  <div class="stitch-box">
+    <h3>composite: NE+SW+E (fork)</h3>
+    <div class="stack">
+      <img src="terrain/plains.svg" alt="">
+      <img src="roads/dirt/ne.svg" alt="">
+      <img src="roads/dirt/sw.svg" alt="">
+      <img src="roads/dirt/e.svg" alt="">
+    </div>
+  </div>
+</div>
 
 <h2>Lake shores — 6 directional</h2>
 <p>Sandy-grass band along ONE hex edge. Composited over <code>terrain/lake.svg</code> when that edge has land on the other side.</p>
@@ -125,16 +144,29 @@ const settlements = ['hamlet','village','town','small_city','large_city'];
 const units = ['caravan','migrant_column','news_carrier','patrol','legion','bandit_raid','bandit_camp'];
 const dirs = ['e','ne','nw','w','sw','se'];
 
-const makeCell = (path, label, shape='sq', bg=null) => {
+const makeCell = (path, label, shape='sq', basePath=null) => {
   const cell = document.createElement('div');
-  cell.className = `cell ${shape}` + (bg ? ` composite ${bg}` : '');
+  cell.className = `cell ${shape}`;
+  // Wrap images in a stack so a base layer (terrain/<base>.svg) can sit
+  // behind a transparent overlay (segment/edge) — shows the composed look
+  // the viewer will actually render.
+  const stack = document.createElement('div');
+  stack.style.position = 'relative';
+  stack.style.width = '100%';
+  stack.style.aspectRatio = shape === 'hex' ? '128/148' : '1/1';
+  if (basePath) {
+    const base = document.createElement('img');
+    base.src = basePath;
+    base.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;';
+    base.alt = '';
+    stack.appendChild(base);
+  }
   const img = document.createElement('img');
   img.src = path;
-  img.style.width = '100%';
-  img.style.height = 'auto';
-  img.style.aspectRatio = shape === 'hex' ? '128/148' : '1/1';
+  img.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;';
   img.alt = label;
-  cell.appendChild(img);
+  stack.appendChild(img);
+  cell.appendChild(stack);
   const lab = document.createElement('div');
   lab.className = 'label';
   lab.innerHTML = label.replace(/^[^\/]*\//, '<small>$&</small>');
@@ -142,20 +174,22 @@ const makeCell = (path, label, shape='sq', bg=null) => {
   return cell;
 };
 
-const fill = (id, names, prefix, ext='.svg', shape='sq', bg=null) => {
+const fill = (id, names, prefix, ext='.svg', shape='sq', basePath=null) => {
   const host = document.getElementById(id);
-  for (const n of names) host.appendChild(makeCell(`${prefix}${n}${ext}`, n, shape, bg));
+  for (const n of names) host.appendChild(makeCell(`${prefix}${n}${ext}`, n, shape, basePath));
 };
 
 fill('g-terrain', terrain, 'terrain/', '.svg', 'hex');
 fill('g-buildings', buildings, 'buildings/', '.svg', 'sq');
 fill('g-settlements', settlements, 'settlements/', '.svg', 'sq');
 fill('g-units', units, 'units/', '.svg', 'sq');
-fill('g-rivers', dirs, 'rivers/', '.svg', 'hex', 'water');
-fill('g-roman', dirs, 'roads/roman/', '.svg', 'hex', '');
-fill('g-dirt', dirs, 'roads/dirt/', '.svg', 'hex', '');
-fill('g-shore', dirs, 'lake_shore/', '.svg', 'hex', 'water');
-fill('g-biome', dirs, 'biome_edges/', '.svg', 'hex', '');
+// Per-direction cells show the segment over its actual base tile so users
+// see the composed look, not the raw transparent overlay.
+fill('g-rivers', dirs, 'rivers/', '.svg', 'hex', 'terrain/river.svg');
+fill('g-roman', dirs, 'roads/roman/', '.svg', 'hex', 'terrain/plains.svg');
+fill('g-dirt', dirs, 'roads/dirt/', '.svg', 'hex', 'terrain/plains.svg');
+fill('g-shore', dirs, 'lake_shore/', '.svg', 'hex', 'terrain/lake.svg');
+fill('g-biome', dirs, 'biome_edges/', '.svg', 'hex', 'terrain/plains.svg');
 </script>
 </body>
 </html>

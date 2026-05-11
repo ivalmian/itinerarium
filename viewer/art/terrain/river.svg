@@ -1,32 +1,48 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
-  <!-- Directionless water-base for a river hex. Directional flow is added
-       by compositing one of viewer/art/rivers/<dir>.svg per connected
-       neighbor. -->
+  <!-- River hex base: sandy/grassy banks only. NO water — all of the visible
+       water comes from compositing rivers/<dir>.svg segments on top per
+       connected neighbor. A river hex with no segments at all therefore
+       looks like wet riverbed land (unusual edge case). -->
   <defs>
     <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
-    <linearGradient id="lg-water" x1="0" y1="0" x2="0.4" y2="1">
-      <stop offset="0" stop-color="#5e92b8"/>
-      <stop offset="1" stop-color="#1f4a6a"/>
-    </linearGradient>
-    <linearGradient id="lg-bank" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#b89b65"/>
-      <stop offset="1" stop-color="#6a542a"/>
+    <linearGradient id="lg-bank" x1="0" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#b69b6a"/>
+      <stop offset="1" stop-color="#6e5430"/>
     </linearGradient>
     <filter id="nz" x="0" y="0" width="1" height="1">
-      <feTurbulence type="fractalNoise" baseFrequency="0.6" numOctaves="2" seed="93"/>
-      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.18 0"/>
+      <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="2" seed="93"/>
+      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.22 0"/>
       <feComposite in2="SourceGraphic" operator="in"/>
     </filter>
   </defs>
   <g clip-path="url(#hex)">
-    <!-- bank ring (visible only where no directional segment overlays it) -->
     <rect x="0" y="0" width="128" height="148" fill="url(#lg-bank)"/>
-    <rect x="0" y="0" width="128" height="148" fill="#3e2e14" filter="url(#nz)" opacity="0.45"/>
-    <!-- central pool of water -->
-    <circle cx="64" cy="74" r="22" fill="url(#lg-water)"/>
-    <g stroke="#a8c8d8" stroke-width="0.5" fill="none" opacity="0.65">
-      <path d="M 50 70 Q 56 68 62 70"/>
-      <path d="M 66 78 Q 72 76 78 78"/>
+    <rect x="0" y="0" width="128" height="148" fill="#3a2c14" filter="url(#nz)" opacity="0.45"/>
+    <!-- damp patches (slightly darker bank where water has soaked in) -->
+    <g fill="#4a3a1c" opacity="0.4">
+      <ellipse cx="36" cy="56" rx="22" ry="10"/>
+      <ellipse cx="84" cy="92" rx="20" ry="9"/>
+      <ellipse cx="64" cy="118" rx="18" ry="6"/>
+    </g>
+    <!-- pebbles -->
+    <g fill="#7a6238" opacity="0.65">
+      <circle cx="22" cy="48" r="0.9"/>
+      <circle cx="38" cy="62" r="0.9"/>
+      <circle cx="92" cy="58" r="0.9"/>
+      <circle cx="46" cy="98" r="0.9"/>
+      <circle cx="86" cy="104" r="0.9"/>
+      <circle cx="64" cy="38" r="0.8"/>
+      <circle cx="60" cy="112" r="0.8"/>
+      <circle cx="106" cy="78" r="0.8"/>
+    </g>
+    <!-- reed tufts -->
+    <g stroke="#5a6a28" stroke-width="0.6" stroke-linecap="round" opacity="0.7">
+      <line x1="20" y1="80" x2="20" y2="74"/>
+      <line x1="22" y1="80" x2="23" y2="75"/>
+      <line x1="100" y1="70" x2="100" y2="64"/>
+      <line x1="102" y1="70" x2="103" y2="65"/>
+      <line x1="46" y1="124" x2="46" y2="118"/>
+      <line x1="78" y1="50" x2="78" y2="44"/>
     </g>
   </g>
   <polygon points="64,0 128,37 128,111 64,148 0,111 0,37" fill="none" stroke="#3a2c14" stroke-width="0.6" opacity="0.5"/>

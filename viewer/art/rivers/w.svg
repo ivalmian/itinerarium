@@ -1,15 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
   <defs>
     <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
-    <linearGradient id="lg-water" x1="0" y1="0" x2="0.4" y2="1">
-      <stop offset="0" stop-color="#5e92b8"/>
-      <stop offset="1" stop-color="#1f4a6a"/>
-    </linearGradient>
   </defs>
   <g clip-path="url(#hex)">
-    <!-- channel from center (64,74) to W midpoint (0,74) -->
-    <path d="M 68 64 Q 42 70 -4 66 L -4 82 Q 42 78 68 84 Z" fill="url(#lg-water)"/>
-    <path d="M 64 70 Q 32 68 0 70" fill="none" stroke="#cae6f6" stroke-width="0.5" opacity="0.7"/>
-    <path d="M 64 78 Q 32 76 0 78" fill="none" stroke="#7eb0c8" stroke-width="0.4" opacity="0.6"/>
+    <polygon points="-4,66 68,66 68,82 -4,82" fill="#4a86a8"/>
   </g>
 </svg>

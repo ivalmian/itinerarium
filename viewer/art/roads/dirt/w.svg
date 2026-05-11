@@ -1,16 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
   <defs>
     <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
-    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
-      <feGaussianBlur in="SourceAlpha" stdDeviation="0.6"/>
-      <feOffset dx="0" dy="1"/>
-      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
-      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
-    </filter>
   </defs>
-  <g clip-path="url(#hex)" filter="url(#ds)">
-    <path d="M 64 74 Q 42 70 22 76 Q 8 80 0 74" fill="none" stroke="#7a5a30" stroke-width="5" stroke-linecap="round"/>
-    <path d="M 64 74 Q 42 70 22 76 Q 8 80 0 74" fill="none" stroke="#a07a3e" stroke-width="3" stroke-linecap="round" opacity="0.7"/>
-    <path d="M 58 73 Q 42 70 22 76 Q 10 79 4 74" fill="none" stroke="#5a4022" stroke-width="0.5" opacity="0.6"/>
+  <g clip-path="url(#hex)">
+    <line x1="68" y1="74" x2="-4" y2="74" stroke="#7a5a30" stroke-width="5" stroke-linecap="round"/>
+    <line x1="68" y1="74" x2="-4" y2="74" stroke="#a07a3e" stroke-width="3" stroke-linecap="round" opacity="0.75"/>
+    <line x1="64" y1="74" x2="0" y2="74" stroke="#5a4022" stroke-width="0.5" opacity="0.55"/>
   </g>
 </svg>
