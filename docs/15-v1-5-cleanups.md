@@ -266,36 +266,30 @@ The eternal Roman road is now contingent on a paying governor.
 `src/sim/tick.ts` (`roadMaintenancePhase`),
 `src/sim/world/terrain.ts` (`romanQuartersUnmaintained` field).
 
-## C12 — Promote raw milk to a tracked resource [TODO]
+## C12 — Promote raw milk to a tracked resource (landed)
 
-**Current state:** the dairy chain has no explicit `food.milk`
-resource. `make_cheese` consumes `livestock.cattle`/sheep herd
-units conceptually, but milk is never in any actor's stockpile.
+**v1.5 — landed.** `food.milk` added to catalog (tier 0,
+perishable 2 days, 1 kg/unit). `milk_dairy` outputs milk: 30
+per recipe-instance (was: cheese: 8 directly). `make_cheese`
+consumes milk: 60 + salt: 0.5 → cheese: 6 (historical ~10 kg
+milk per kg hard cheese). Surrounding villages can now sell
+daily milk to neighboring cheesemaking towns through the local-
+trade phase.
 
 **Decision needed:** promote `food.milk` to a Tier 0/1 resource
-(short shelf life, mostly local consumption) or keep it implicit.
-The argument for promoting it: it's a real Roman-era trade good
-near cities; a cheese-making town buys daily milk from
-surrounding villages.
+**Cross-refs:** `docs/02-resources.md` `food.milk` + `food.cheese`,
+`docs/03-production.md` `milk_dairy` + `make_cheese`.
 
-**Acceptance:** decision recorded; if promoted, the resource
-catalog (docs/02), recipe catalog (docs/03), and consumption
-schedules (docs/04 + market scheduleBuilder) all updated together.
+## C13 — Copper / tin intermediates for bronze (landed)
 
-**Cross-refs:** `docs/02-resources.md` `food.cheese`,
-`docs/03-production.md` `raise_sheep` + `make_cheese`.
-
-## C13 — Copper / tin intermediates for bronze [TODO]
-
-**Current state:** `alloy_bronze` consumes ore directly. There is
-no `metal.copper` or `metal.tin` in the resource catalog.
-
-**Decision needed:** add `metal.copper` + `metal.tin` so smelting
-and alloying are separate steps (matches reality), or keep the
-direct ore-to-bronze recipe (simpler).
-
-**Acceptance:** decision recorded; if intermediates are added,
-recipes and the steady-state analyzer both updated.
+**v1.5 — landed.** `metal.copper` + `metal.tin` added to
+catalog (tier 1, 25 kg/unit). New `smelt_copper` (60 ore + 100
+charcoal → 12 copper) and `smelt_tin` (40 ore + 50 charcoal →
+10 tin) recipes at the bloomery. `alloy_bronze` now consumes
+9 copper + 1 tin + 8 charcoal → 10 bronze (~88%/12% historical
+Roman ratio). Copper and tin are independently tradable —
+matches the historical record where Cornish tin shipped across
+Europe to copper-smelting centers.
 
 **Cross-refs:** `docs/02-resources.md` `metal.bronze`,
 `docs/03-production.md` `alloy_bronze`.
