@@ -55,7 +55,6 @@ const refugeeBaseCost = (terrain: Terrain): number => {
     case 'fertile_valley':
     case 'urban':
     case 'ruin':
-    case 'coast':
     case 'steppe':
       return 1.6;
     case 'hills':

@@ -63,7 +63,6 @@ const ROAD_BUILDER_PROFILE: MovementProfile = {
       case 'fertile_valley':
       case 'urban':
       case 'ruin':
-      case 'coast':
       case 'steppe':
         return 1;
       case 'hills':

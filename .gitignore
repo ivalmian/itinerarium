@@ -44,3 +44,4 @@ Thumbs.db
 !.vscode/settings.json
 !.vscode/extensions.json
 .claude/worktrees/
+*.cpuprofile

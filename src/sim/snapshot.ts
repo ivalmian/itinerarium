@@ -79,7 +79,6 @@ interface SerializedHexTile {
   readonly climate: HexTile['climate'];
   readonly elevation: number;
   readonly hasRiver: boolean;
-  readonly hasCoast: boolean;
   readonly road: HexTile['road'];
   readonly ownerActor: string | null;
   readonly deposit?: SerializedDeposit;
@@ -229,7 +228,6 @@ const serializeTile = (t: HexTile): SerializedHexTile => {
     climate: t.climate,
     elevation: t.elevation,
     hasRiver: t.hasRiver,
-    hasCoast: t.hasCoast,
     road: t.road,
     ownerActor: t.ownerActor === null ? null : String(t.ownerActor),
     ...(t.deposit !== undefined
@@ -253,7 +251,6 @@ const deserializeTile = (t: SerializedHexTile): HexTile => {
     climate: t.climate,
     elevation: t.elevation,
     hasRiver: t.hasRiver,
-    hasCoast: t.hasCoast,
     road: t.road,
     ownerActor: t.ownerActor === null ? null : actorId(t.ownerActor),
     ...(deposit !== undefined ? { deposit } : {}),

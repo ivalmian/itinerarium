@@ -166,6 +166,8 @@ loop: production → consumption → trade → demographics & disease
 | 27 | Communicated price discovery | **Merchant guilds** mediate price gossip — caravans deposit observations to home guild, members read on arrival, guilds exchange across cities. Each NPC plans crowding-aware (no stampedes). See [08 — Money & Trade](08-money-and-trade.md) |
 | 28 | Escalating banditry response | Local watch → family guard → governor patrol → cohort sweep → cross-province reinforcement. Patterns of incidents (not single events) drive escalation. See [12 — Bandits & Conflict](12-bandits-and-conflict.md) |
 | 29 | Docs-first discipline | **Locked rule** in CLAUDE.md: design changes update docs FIRST, then code. Docs hold the conceptual data (recipes, vital rates, formulas). Code implements from docs |
+| 30 | River vs. lake terrain semantics | **Rivers are sub-1 km wide** — a river hex still has riverbank land, so settlements + buildings CAN sit on river hexes; fording without a bridge is slow but possible. **Lakes fully occupy their hex** — impassable + unbuildable. **No `coast` terrain** — sub-sea-level hexes are `lake` directly; sea-trade content is deferred. See [07 — Geography](07-geography.md) |
+| 31 | River/lake adjacency caps | A river hex may touch ≤3 water neighbors total (rivers + lakes) of which ≤1 may be a lake; a lake hex may touch ≤1 river. Violators collapse to lake. Prevents "river-lakes" and multi-outlet lakes. See [07 — Geography](07-geography.md) "River adjacency caps" |
 
 ## Open design risks
 

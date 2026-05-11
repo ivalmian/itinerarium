@@ -280,13 +280,6 @@ const DEFS: readonly RecipeInput[] = [
     outputs: { 'food.fish': 8 },
   },
   {
-    id: 'fish_coast',
-    inputs: { 'goods.tools': 0.02 },
-    labor: { fisher: 1 },
-    building: 'fishery',
-    outputs: { 'food.fish': 10 },
-  },
-  {
     id: 'hunt_game',
     inputs: { 'goods.tools': 0.02 },
     labor: { hunter: 1 },

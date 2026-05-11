@@ -51,8 +51,8 @@ Implications of a daily turn:
   the settled clusters. This is exploration territory and the home
   of bandits, hidden ruins, abandoned mines, and lost shrines (see
   [07 — Geography](07-geography.md)).
-- Each hex has: terrain type, climate band, elevation, river/coast
-  flags, road grade (none/dirt/Roman road), resource deposits, owning
+- Each hex has: terrain type, climate band, elevation, river flag,
+  road grade (none/dirt/Roman road), resource deposits, owning
   settlement (if any), current foragers/herders working it, hidden
   feature flag (if any).
 

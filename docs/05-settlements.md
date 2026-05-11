@@ -314,7 +314,7 @@ Concrete heuristics for stage 1:
 | `granary` | town+ (real storage building) |
 | `weaver_workshop` | wool/linen reachable + ≥village |
 | `cart_wright` | smithy + sawmill present (city) |
-| `fishery` | coast/river/lake hex in catchment |
+| `fishery` | river/lake hex in catchment |
 | `olive_grove` / `vineyard` | Mediterranean climate + hills hex in catchment |
 | `mint` | silver/gold reachable + city tier |
 

@@ -1367,14 +1367,14 @@ const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void =
   const catchment = settlement.catchmentHexes;
   if (catchment.length === 0) return;
 
-  // Filter both hex pools for passable terrain — no lakes, no high mountains,
-  // no impassable rivers. Workshops belong in the urban core; land-use
-  // buildings (farm, pasture, mine, forester, vineyard, etc.) need
-  // catchment land. Per the user's note + docs/05.
+  // Filter both hex pools for buildable terrain. Per the user's model
+  // (rivers <1 km wide, lakes fully occupy a hex), only lakes + high
+  // mountains + dense_forest block. Rivers are fine — riverbank land
+  // hosts plenty of cities.
   const passable = (h: Hex): boolean => {
     const t = ctx.grid.get(h);
     if (t === undefined) return false;
-    return t.terrain !== 'lake' && t.terrain !== 'mountains' && t.terrain !== 'river';
+    return t.terrain !== 'lake' && t.terrain !== 'mountains' && t.terrain !== 'dense_forest';
   };
   const passableCatchment = catchment.filter(passable);
   const passableUrban = settlement.urbanHexes.filter(passable);

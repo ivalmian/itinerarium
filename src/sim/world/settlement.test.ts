@@ -398,7 +398,6 @@ describe('recomputeCatchment', () => {
             climate: 'temperate',
             elevation: 100,
             hasRiver: false,
-            hasCoast: false,
             road: 'none',
             ownerActor: null,
           },

@@ -13,7 +13,7 @@
  *      percentages are honoured: sort sampled elevations, pick the percentile
  *      cuts. This avoids "the noise happened to be flat this seed" surprises.
  *   3. Assign terrain by elevation band + moisture: low elevation under sea
- *      level → coast/lake; low-and-wet flat ground → marsh; mid elevation +
+ *      level → lake; low-and-wet flat ground → marsh; mid elevation +
  *      high moisture → forest (dense_forest at the wettest); mid + low
  *      moisture → desert (warm climates) or steppe (cool); etc.
  *   4. Trace rivers from a handful of mountain springs flowing downhill to
@@ -36,7 +36,7 @@ export interface TerrainGenOpts {
   readonly seed: string;
   readonly widthHexes: number;
   readonly heightHexes: number;
-  /** % of hexes that should be water (lake/coast). Default ~10. */
+  /** % of hexes that should be water (lake). Default ~10. */
   readonly oceanCoveragePct?: number;
   /** % of hexes that should be forest or dense_forest. Default ~25. */
   readonly forestCoveragePct?: number;
@@ -192,7 +192,7 @@ const climateAtLatitude = (
   northClimate: Climate,
 ): Climate => (rNorm < 0.5 ? southClimate : northClimate);
 
-/** Pick terrain for a single tile, ignoring rivers/coast adjacency (handled later). */
+/** Pick terrain for a single tile, ignoring river adjacency (handled later). */
 const baseTerrain = (
   elev: number,
   moist: number,
@@ -200,13 +200,10 @@ const baseTerrain = (
   climate: Climate,
 ): Terrain => {
   if (elev <= thresholds.oceanMax) {
-    // Below sea level. Differentiate coastline vs. inland depression: we treat
-    // the very lowest band as 'coast' (where the ocean meets land) — but
-    // because we don't render an actual ocean tile type in v1, we mark these
-    // as coast tiles so caravans treat them as the shore. Lakes are placed
-    // on isolated low-elevation pockets in a later pass; for now everything
-    // below sea level is coast.
-    return 'coast';
+    // Below sea level / inland depression → lake. All sub-sea-level
+    // tiles are inland water bodies (sea trade is deferred per
+    // docs/10).
+    return 'lake';
   }
   if (elev >= thresholds.mountainMin) return 'mountains';
   // Marsh: low-lying just above sea level, with high moisture.
@@ -250,7 +247,6 @@ interface PreTile {
   elevation: number;
   moisture: number;
   hasRiver: boolean;
-  hasCoast: boolean;
   deposit: HexDeposit | undefined;
 }
 
@@ -261,7 +257,7 @@ const traceRivers = (
   fields: SampledFields,
   rng: Rng,
 ): void => {
-  // Find the highest few mountain hexes; from each, walk downhill to a coast/
+  // Find the highest few mountain hexes; from each, walk downhill to a
   // lake (or until stuck), marking each step as a river hex.
   const candidates: { idx: number; q: number; r: number; e: number }[] = [];
   for (let r = 0; r < H; r++) {
@@ -291,7 +287,7 @@ const traceRivers = (
       if (visited.has(i)) break;
       visited.add(i);
       const tile = pre[i] as PreTile;
-      if (tile.terrain === 'coast' || tile.terrain === 'lake') break;
+      if (tile.terrain === 'lake') break;
       // Mark as river (skip if it's the spring mountain itself; we want river
       // to start one step downhill so mountains stay mountains).
       if (tile.terrain !== 'mountains') {
@@ -321,6 +317,97 @@ const traceRivers = (
 };
 
 /**
+ * Iterative cleanup that prevents river-cluster pathologies. Two
+ * symmetric rules per the user's spec:
+ *
+ *   1. River hex: at most `maxWaterNeighbors` water neighbors total
+ *      (rivers + lakes), AND at most `maxLakeNeighbors` of those may
+ *      be lakes. So a river can touch up to 3 other rivers, OR up
+ *      to 2 rivers + 1 lake (entering/exiting a single lake), but
+ *      never two separate lakes.
+ *   2. Lake hex: at most `maxRiverPerLake` river neighbors. Multiple
+ *      rivers entering one lake from different sides collapse the
+ *      excess river hexes into more lake (the lake's surface
+ *      effectively grew to swallow them).
+ *
+ * Without rule 1, two converging spring-traced channels produce
+ * visually-jarring "river lakes". Without rule 2, lakes sprout
+ * implausibly many tributary outlets.
+ *
+ * Iterative: each pass fixes one violation level and re-runs until
+ * stable (typically one or two iterations). Converted-to-lake hexes
+ * count against subsequent neighbors' budgets and can cascade.
+ */
+const enforceWaterAdjacencyRules = (
+  pre: PreTile[],
+  W: number,
+  H: number,
+  maxWaterNeighbors: number,
+  maxLakeNeighbors: number,
+  maxRiverPerLake: number,
+): void => {
+  for (let pass = 0; pass < 6; pass++) {
+    let changed = false;
+    for (let r = 0; r < H; r++) {
+      for (let q = 0; q < W; q++) {
+        const i = r * W + q;
+        const tile = pre[i] as PreTile;
+        if (tile.terrain !== 'river' && tile.terrain !== 'lake') continue;
+        let riverN = 0;
+        let lakeN = 0;
+        for (const n of hexNeighbors(hex(q, r))) {
+          if (n.q < 0 || n.q >= W || n.r < 0 || n.r >= H) continue;
+          const ni = n.r * W + n.q;
+          const nt = (pre[ni] as PreTile).terrain;
+          if (nt === 'river') riverN++;
+          else if (nt === 'lake') lakeN++;
+        }
+        if (tile.terrain === 'river') {
+          if (riverN + lakeN > maxWaterNeighbors || lakeN > maxLakeNeighbors) {
+            // The basin IS a lake; spring tracing was too aggressive.
+            tile.terrain = 'lake';
+            tile.hasRiver = false;
+            changed = true;
+          }
+        } else if (tile.terrain === 'lake') {
+          if (riverN > maxRiverPerLake) {
+            // Too many rivers feed/leave this lake. Demote one of the
+            // excess river neighbors into more lake so the shoreline
+            // keeps a single canonical outlet. Pick the river neighbor
+            // with the most lake neighbors of its own (the one most
+            // already part of the basin) to keep the demotion local.
+            let bestNi = -1;
+            let bestScore = -1;
+            for (const n of hexNeighbors(hex(q, r))) {
+              if (n.q < 0 || n.q >= W || n.r < 0 || n.r >= H) continue;
+              const ni = n.r * W + n.q;
+              if ((pre[ni] as PreTile).terrain !== 'river') continue;
+              let nLakeN = 0;
+              for (const nn of hexNeighbors(n)) {
+                if (nn.q < 0 || nn.q >= W || nn.r < 0 || nn.r >= H) continue;
+                const nni = nn.r * W + nn.q;
+                if ((pre[nni] as PreTile).terrain === 'lake') nLakeN++;
+              }
+              if (nLakeN > bestScore) {
+                bestScore = nLakeN;
+                bestNi = ni;
+              }
+            }
+            if (bestNi >= 0) {
+              const victim = pre[bestNi] as PreTile;
+              victim.terrain = 'lake';
+              victim.hasRiver = false;
+              changed = true;
+            }
+          }
+        }
+      }
+    }
+    if (!changed) break;
+  }
+};
+
+/**
  * Forest cohesion smoothing (one majority-vote pass): a hex flips INTO
  * forest if ≥4 of its 6 neighbours are forest, and OUT of forest if ≤1
  * are. Removes single-hex forest specks in deserts and single-hex
@@ -336,7 +423,6 @@ const smoothForest = (pre: PreTile[], W: number, H: number): void => {
       const cur = snapshot[i] as Terrain;
       // Don't mess with water, mountains, marsh — only flat-land flips.
       if (
-        cur === 'coast' ||
         cur === 'lake' ||
         cur === 'river' ||
         cur === 'mountains' ||
@@ -352,7 +438,7 @@ const smoothForest = (pre: PreTile[], W: number, H: number): void => {
         if (n.q < 0 || n.q >= W || n.r < 0 || n.r >= H) continue;
         const ni = n.r * W + n.q;
         const nt = snapshot[ni] as Terrain;
-        if (nt === 'coast' || nt === 'lake' || nt === 'river') continue;
+        if (nt === 'lake' || nt === 'river') continue;
         totalLandNeighbours++;
         if (isForest(nt)) forestNeighbours++;
       }
@@ -372,36 +458,31 @@ const smoothForest = (pre: PreTile[], W: number, H: number): void => {
 };
 
 /**
- * Coastline smoothing (one pass):
- *   - water hex (coast/lake) with ≥5 land neighbours → flips to plains
- *     (no isolated puddles)
- *   - land hex with ≥5 water neighbours → flips to coast
- *     (no thin peninsulas surrounded by sea)
+ * Lake puddle cleanup (one pass): a `lake` hex with ≥5 land
+ * neighbours and ≤1 lake neighbour flips to `plains` (no isolated
+ * single-hex puddles in the middle of land). We don't run a
+ * "thin peninsula → water" rule any more — peninsulas just stay
+ * as whatever land they were (plains / hills / etc.). Sea trade is
+ * deferred and there is no `coast` terrain.
  */
-const smoothCoastline = (pre: PreTile[], W: number, H: number): void => {
-  const isWater = (t: Terrain): boolean => t === 'coast' || t === 'lake';
+const smoothLakePuddles = (pre: PreTile[], W: number, H: number): void => {
   const snapshot: Terrain[] = pre.map((p) => p.terrain);
   for (let r = 0; r < H; r++) {
     for (let q = 0; q < W; q++) {
       const i = r * W + q;
       const cur = snapshot[i] as Terrain;
-      if (cur === 'river' || cur === 'mountains') continue;
-      let waterNeighbours = 0;
+      if (cur !== 'lake') continue;
+      let lakeNeighbours = 0;
       let totalNeighbours = 0;
       for (const n of hexNeighbors(hex(q, r))) {
         if (n.q < 0 || n.q >= W || n.r < 0 || n.r >= H) continue;
         const ni = n.r * W + n.q;
-        const nt = snapshot[ni] as Terrain;
+        if ((snapshot[ni] as Terrain) === 'lake') lakeNeighbours++;
         totalNeighbours++;
-        if (isWater(nt)) waterNeighbours++;
       }
       if (totalNeighbours < 5) continue;
-      if (isWater(cur) && waterNeighbours <= 1) {
-        // Tiny puddle → land.
+      if (lakeNeighbours <= 1) {
         (pre[i] as PreTile).terrain = 'plains';
-      } else if (!isWater(cur) && waterNeighbours >= 5) {
-        // Thin peninsula sticking into sea → coast.
-        (pre[i] as PreTile).terrain = 'coast';
       }
     }
   }
@@ -458,74 +539,6 @@ const placeDeposits = (pre: PreTile[], W: number, H: number, fields: SampledFiel
   }
 };
 
-const markCoastAdjacency = (pre: PreTile[], W: number, H: number): void => {
-  for (let r = 0; r < H; r++) {
-    for (let q = 0; q < W; q++) {
-      const i = r * W + q;
-      const t = pre[i] as PreTile;
-      if (t.terrain === 'coast') {
-        t.hasCoast = true;
-        continue;
-      }
-      // A non-coast tile sets hasCoast=true if any neighbour is coast.
-      const cur = hex(q, r);
-      for (const n of hexNeighbors(cur)) {
-        if (n.q < 0 || n.q >= W || n.r < 0 || n.r >= H) continue;
-        const ni = n.r * W + n.q;
-        if ((pre[ni] as PreTile).terrain === 'coast') {
-          t.hasCoast = true;
-          break;
-        }
-      }
-    }
-  }
-};
-
-/**
- * After the threshold pass, some "coast" tiles will be inland depressions
- * surrounded by land. Reclassify those as `lake`. We do a flood-fill from any
- * tile on the grid border that is coast: all reachable coast tiles are true
- * sea-coast; the rest are landlocked → lakes.
- */
-const reclassifyInlandWater = (pre: PreTile[], W: number, H: number): void => {
-  const visited = new Uint8Array(W * H);
-  const queue: number[] = [];
-  // Seed with border coast tiles.
-  const seedIfCoast = (q: number, r: number): void => {
-    const i = r * W + q;
-    if ((pre[i] as PreTile).terrain === 'coast' && visited[i] === 0) {
-      visited[i] = 1;
-      queue.push(i);
-    }
-  };
-  for (let q = 0; q < W; q++) {
-    seedIfCoast(q, 0);
-    seedIfCoast(q, H - 1);
-  }
-  for (let r = 0; r < H; r++) {
-    seedIfCoast(0, r);
-    seedIfCoast(W - 1, r);
-  }
-  while (queue.length > 0) {
-    const i = queue.shift() as number;
-    const r = Math.floor(i / W);
-    const q = i - r * W;
-    for (const n of hexNeighbors(hex(q, r))) {
-      if (n.q < 0 || n.q >= W || n.r < 0 || n.r >= H) continue;
-      const ni = n.r * W + n.q;
-      if (visited[ni] !== 0) continue;
-      if ((pre[ni] as PreTile).terrain !== 'coast') continue;
-      visited[ni] = 1;
-      queue.push(ni);
-    }
-  }
-  for (let i = 0; i < W * H; i++) {
-    if ((pre[i] as PreTile).terrain === 'coast' && visited[i] === 0) {
-      (pre[i] as PreTile).terrain = 'lake';
-    }
-  }
-};
-
 export const generateTerrain = (opts: TerrainGenOpts): HexGrid => {
   const W = Math.max(1, Math.floor(opts.widthHexes));
   const H = Math.max(1, Math.floor(opts.heightHexes));
@@ -553,11 +566,10 @@ export const generateTerrain = (opts: TerrainGenOpts): HexGrid => {
       pre[i] = {
         terrain,
         climate,
-        // Map [0,1) noise → [-50, 3000] m. Below sea level → coast/lake later.
+        // Map [0,1) noise → [-50, 3000] m. Below sea level → lake later.
         elevation: Math.floor(-50 + e * 3050),
         moisture: m,
         hasRiver: false,
-        hasCoast: false,
         deposit: undefined,
       };
     }
@@ -566,18 +578,17 @@ export const generateTerrain = (opts: TerrainGenOpts): HexGrid => {
   // Realism passes (per docs/07 §"Realism rules"):
   //   1. Forest cohesion smoothing — kills isolated forest specks and fills
   //      tiny clearings inside large forests.
-  //   2. Coastline smoothing — eats thin peninsulas, fills tiny puddles.
-  //   3. Reclassify inland depressions as lakes (depends on smoothed coast).
-  //   4. River tracing from multiple springs (tributaries).
+  //   2. Lake puddle cleanup — fills tiny single-hex puddles in land.
+  //   3. River tracing from multiple springs (tributaries).
+  //   4. Water adjacency enforcement — collapses river-lakes + caps
+  //      lake outflows.
   //   5. Fertile valleys along rivers.
-  //   6. Coast adjacency flags.
-  //   7. Ore deposits.
+  //   6. Ore deposits.
   smoothForest(pre, W, H);
-  smoothCoastline(pre, W, H);
-  reclassifyInlandWater(pre, W, H);
+  smoothLakePuddles(pre, W, H);
   traceRivers(pre, W, H, fields, rng.derive('rivers'));
+  enforceWaterAdjacencyRules(pre, W, H, 3, 1, 1);
   fertileValleyAlongRivers(pre, W, H);
-  markCoastAdjacency(pre, W, H);
   placeDeposits(pre, W, H, fields);
 
   // Materialize into a HexGrid.
@@ -591,7 +602,6 @@ export const generateTerrain = (opts: TerrainGenOpts): HexGrid => {
         climate: p.climate,
         elevation: p.elevation,
         hasRiver: p.hasRiver,
-        hasCoast: p.hasCoast,
         road: 'none',
         ownerActor: null,
         ...(p.deposit !== undefined ? { deposit: p.deposit } : {}),

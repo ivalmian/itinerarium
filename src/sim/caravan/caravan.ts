@@ -347,7 +347,6 @@ const terrainMultiplier = (t: Terrain): number => {
     case 'plains':
     case 'fertile_valley':
     case 'steppe':
-    case 'coast':
       return 1;
     case 'forest':
       return 0.85;
@@ -361,8 +360,10 @@ const terrainMultiplier = (t: Terrain): number => {
       return 0.5;
     case 'mountains':
       return 0.4;
+    // Crossing a river hex without a bridge means fording — slow but
+    // possible. Future bridge construction will restore normal speed.
     case 'river':
-      return 0.7;
+      return 0.35;
     case 'ruin':
       return 0.8;
     case 'lake':

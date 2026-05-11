@@ -77,7 +77,6 @@ const migrantBaseCost = (terrain: Terrain): number => {
     case 'fertile_valley':
     case 'urban':
     case 'ruin':
-    case 'coast':
     case 'steppe':
       return 1;
     case 'hills':

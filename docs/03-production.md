@@ -119,7 +119,7 @@ caravan_transport:                               # see also [06 — Caravans]
 
 **Extraction:** `fell_timber`, `quarry_stone`, `dig_clay`, `mine_iron`,
 `mine_copper`, `mine_tin`, `mine_lead`, `mine_silver`, `mine_gold`,
-`evaporate_salt`, `mine_salt`, `fish_river`, `fish_lake`, `fish_coast`,
+`evaporate_salt`, `mine_salt`, `fish_river`, `fish_lake`,
 `hunt_game`, `gather_oak_bark` (tanning input).
 
 **Refining:** `mill_grain`, `bake_bread`, `press_olives`, `make_wine`,

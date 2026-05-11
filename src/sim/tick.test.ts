@@ -38,7 +38,6 @@ const makeTile = (terrain: HexTile['terrain'] = 'plains'): HexTile => ({
   climate: 'mediterranean',
   elevation: 100,
   hasRiver: false,
-  hasCoast: false,
   road: 'roman',
   ownerActor: null,
 });

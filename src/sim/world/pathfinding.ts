@@ -54,7 +54,6 @@ const muleBaseCost = (t: Terrain): number => {
   switch (t) {
     case 'plains':
     case 'fertile_valley':
-    case 'coast':
     case 'urban':
     case 'steppe':
       return 2.5;

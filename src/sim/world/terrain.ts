@@ -30,7 +30,6 @@ export const TERRAIN_TYPES = [
   'marsh',
   'desert',
   'steppe',
-  'coast',
   'river',
   'lake',
   'urban',
@@ -71,7 +70,6 @@ export interface HexTile {
   /** Metres above sea level. */
   elevation: number;
   hasRiver: boolean;
-  hasCoast: boolean;
   road: RoadGrade;
   /**
    * Footfall counter that drives emergent road formation. Per docs/06
@@ -180,8 +178,6 @@ const terrainPastureBase = (t: Terrain): number => {
       return 0.5;
     case 'dense_forest':
       return 0.3;
-    case 'coast':
-      return 1;
     case 'river':
       return 1;
     case 'ruin':

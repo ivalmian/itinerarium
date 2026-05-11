@@ -15,7 +15,7 @@
  * Biome categories (for edge-detection purposes):
  *   agricultural: plains, fertile_valley
  *   forest:       forest, dense_forest
- *   water:        coast, lake, river
+ *   water:        lake, river
  *   highland:     hills, mountains
  *   wasteland:    desert, steppe, marsh
  *   built:        urban, ruin
@@ -45,7 +45,6 @@ const TERRAIN_COLOR: Record<Terrain, number> = {
   marsh: 0x4f5a3a,
   desert: 0xc9b079,
   steppe: 0xa39768,
-  coast: 0x6e8aa0,
   river: 0x3b6a8c,
   lake: 0x2c5670,
   urban: 0x6a5b3d,
@@ -65,7 +64,6 @@ const TERRAIN_CATEGORY: Record<Terrain, BiomeCategory> = {
   fertile_valley: 'agricultural',
   forest: 'forest',
   dense_forest: 'forest',
-  coast: 'water',
   lake: 'water',
   river: 'water',
   hills: 'highland',
@@ -235,10 +233,10 @@ const drawTerrainDetail = (container: Container, h: Hex, tile: HexTile, hexSize:
       .lineTo(cx + w * 0.7, cy + w * 0.3);
     peak.stroke({ color: 0x4d4844, width: 1.0, alpha: 0.9 });
     container.addChild(peak);
-  } else if (t === 'lake' || t === 'river' || t === 'coast') {
+  } else if (t === 'lake' || t === 'river') {
     // Ripple lines.
     const ripple = new Graphics();
-    const lineColor = t === 'coast' ? 0xa9c4d6 : 0x6b9bbb;
+    const lineColor = 0x6b9bbb;
     for (let i = 0; i < 2; i++) {
       const y = cy - hexSize * 0.15 + i * hexSize * 0.25;
       ripple

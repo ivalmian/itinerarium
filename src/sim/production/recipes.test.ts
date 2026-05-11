@@ -46,7 +46,6 @@ const EXTRACTION = [
   'mine_salt',
   'fish_river',
   'fish_lake',
-  'fish_coast',
   'hunt_game',
   'gather_oak_bark',
 ] as const;

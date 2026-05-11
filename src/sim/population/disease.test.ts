@@ -462,7 +462,6 @@ describe('terrain types are accepted', () => {
       'marsh',
       'desert',
       'steppe',
-      'coast',
       'river',
       'lake',
       'urban',

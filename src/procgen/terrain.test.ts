@@ -31,7 +31,6 @@ describe('generateTerrain — determinism', () => {
       expect(aTile.climate).toBe(bTile.climate);
       expect(aTile.elevation).toBe(bTile.elevation);
       expect(aTile.hasRiver).toBe(bTile.hasRiver);
-      expect(aTile.hasCoast).toBe(bTile.hasCoast);
       expect(aTile.deposit?.resource).toBe(bTile.deposit?.resource);
       expect(aTile.deposit?.remaining).toBe(bTile.deposit?.remaining);
     }
@@ -239,20 +238,6 @@ describe('generateTerrain — climate gradient', () => {
 });
 
 describe('generateTerrain — water features', () => {
-  it('coast hexes set hasCoast=true', () => {
-    const g = generateTerrain({
-      seed: 'water',
-      widthHexes: 60,
-      heightHexes: 60,
-      oceanCoveragePct: 15,
-    });
-    for (const [, t] of g.tiles()) {
-      if (t.terrain === 'coast') {
-        expect(t.hasCoast).toBe(true);
-      }
-    }
-  });
-
   it('river hexes set hasRiver=true', () => {
     const g = generateTerrain({ seed: 'rivers', widthHexes: 60, heightHexes: 60 });
     let riverHexes = 0;

@@ -212,8 +212,6 @@ const terrainEndemicMultiplier = (t: Terrain): number => {
       return 2.5;
     case 'urban':
       return 1.6;
-    case 'coast':
-      return 1.2;
     case 'river':
       return 1.15;
     case 'fertile_valley':

@@ -29,7 +29,6 @@ const tile = (overrides: Partial<HexTile> = {}): HexTile => ({
   climate: 'temperate',
   elevation: 0,
   hasRiver: false,
-  hasCoast: false,
   road: 'none',
   ownerActor: null,
   ...overrides,
@@ -190,7 +189,6 @@ describe('deserializeWorld → round-trip', () => {
       expect(got?.climate).toBe(t.climate);
       expect(got?.elevation).toBe(t.elevation);
       expect(got?.hasRiver).toBe(t.hasRiver);
-      expect(got?.hasCoast).toBe(t.hasCoast);
       expect(got?.road).toBe(t.road);
       expect(got?.ownerActor).toBe(t.ownerActor);
     }

@@ -166,7 +166,6 @@ const ROUTE_PROFILE: MovementProfile = {
       case 'fertile_valley':
       case 'urban':
       case 'ruin':
-      case 'coast':
       case 'steppe':
         return 2;
       case 'hills':

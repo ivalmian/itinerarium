@@ -93,7 +93,6 @@ const TERRAIN_AMBUSH_BONUS: Record<Terrain, number> = {
   plains: 0.05,
   fertile_valley: 0.05,
   steppe: 0.05,
-  coast: 0.1,
   hills: 0.25,
   desert: 0.1,
   forest: 0.35,

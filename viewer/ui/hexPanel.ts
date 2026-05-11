@@ -109,7 +109,6 @@ export const createHexPanel = (opts: HexPanelOpts): HexPanel => {
       `climate: <span style="color:var(--text)">${escapeHtml(tile.climate)}</span><br>` +
       `elevation: <span style="color:var(--text)">${Math.round(tile.elevation)} m</span>`;
     if (tile.hasRiver) meta.innerHTML += ` · river`;
-    if (tile.hasCoast) meta.innerHTML += ` · coast`;
     root.appendChild(meta);
 
     // Road / wear (key for the trail-wear feature).

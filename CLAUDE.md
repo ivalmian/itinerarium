@@ -89,6 +89,15 @@ reflects current intent.
 
 ## Working norms in this repo
 
+- **No backwards compatibility — ever.** This is a single-author,
+  pre-release, design-phase project. There are no external
+  consumers, no saved games to migrate, no API surface that anyone
+  depends on. When you remove a feature, an enum value, or a
+  function, **delete it everywhere**: no deprecated enum members,
+  no inert switch arms left "for type-system exhaustiveness," no
+  re-exports, no shim functions, no `// removed` or `// kept for
+  compat` comments. Refactor every call site instead. The git log
+  is the audit trail; the codebase is for active code only.
 - **Docs-first, always.** Before implementing or modifying code,
   update the relevant design doc(s) FIRST. Code follows docs;
   docs are the source of truth. If the user makes a design call

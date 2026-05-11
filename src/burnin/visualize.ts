@@ -64,7 +64,6 @@ const TERRAIN_GLYPH: Record<Terrain, string> = {
   marsh: '"',
   desert: '*',
   steppe: 's',
-  coast: '_',
   river: '~',
   lake: '≈',
   urban: '#',

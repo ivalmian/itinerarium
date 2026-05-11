@@ -17,7 +17,6 @@ const tile = (overrides: Partial<HexTile> = {}): HexTile => ({
   climate: 'temperate',
   elevation: 0,
   hasRiver: false,
-  hasCoast: false,
   road: 'none',
   ownerActor: null,
   ...overrides,

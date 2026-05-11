@@ -4222,11 +4222,13 @@ const isPassableForBuilding = (
 ): boolean => {
   const t = world.grid.get(hex);
   if (t === undefined) return false;
-  // Lakes are never passable; mountains close in winter; marshes can hold
-  // some buildings but we skip them for safety. Rivers can host fisheries.
+  // Per the user's model: only lakes (huge water bodies that fully
+  // occupy a hex) block building; rivers are smaller than 1 km so a
+  // river hex still has plenty of riverbank for a structure.
+  // Mountains + dense_forest are too rugged for normal workshop builds.
   if (t.terrain === 'lake') return false;
   if (t.terrain === 'mountains') return false;
-  if (t.terrain === 'river') return false;
+  if (t.terrain === 'dense_forest') return false;
   return true;
 };
 

@@ -28,9 +28,8 @@ forest isn't a token; it's a region.
 | Pasture (good) | 10–50 contiguous | Carries herds at high density. |
 | Pasture (marginal) | 50–200+ contiguous | Sparse forage; suits hardy goats, camels. |
 | Marsh / wetland | 5–30 contiguous | Productive for fish + reeds; raises disease risk. |
-| Lake | 1–20 hexes | Fishing + water access. |
-| River | linear chain of river hexes | Transport corridor + water + fishing. |
-| Coastline | linear chain | Fishing + salt; sea trade deferred. |
+| Lake | 1–20 hexes | Fishing + water access. **Fully occupies its hex** — impassable, unbuildable. |
+| River | linear chain of river hexes | Transport corridor + water + fishing. **Sub-1 km wide**; occupies only a sliver of its hex, so the rest is buildable land — settlements and buildings CAN sit on river hexes. Fording without a bridge is slow but possible (~0.35× plains MP); future bridges restore normal speed. |
 | Mountains | 50–500+ contiguous | Where ore deposits live; some hexes impassable. |
 | Plains (fertile) | 50–1000+ | Where most fields are sited. |
 | Steppe / semi-arid | 100–500+ | Pasture for nomadic-feel herds. |
@@ -51,11 +50,31 @@ can grow. Procgen has to honour this.
 ## Terrain types
 
 `plains`, `fertile_valley`, `hills`, `mountains`, `forest`,
-`dense_forest`, `marsh`, `desert`, `steppe`, `coast`, `river`,
-`lake`, `urban`, `ruin` (see hidden features below).
+`dense_forest`, `marsh`, `desert`, `steppe`, `river`, `lake`,
+`urban`, `ruin` (see hidden features below).
+
+There is no `coast` terrain. Per the user's ruling — "what even
+is coast? we have lakes and rivers, I don't think there should
+be separate coast" — sub-sea-level hexes are `lake` directly
+and sea-trade content is deferred along with any need for coast.
 
 Each terrain type has yields per hex per day for resources it can
 produce, modified by climate and season.
+
+### Buildability + passability summary
+
+| Terrain | Buildable? | Passable? | Movement multiplier |
+|---|---|---|---|
+| `plains`, `fertile_valley`, `steppe`, `urban` | yes | yes | 1.0 |
+| `forest` | yes | yes | 0.85 |
+| `hills` | yes | yes | 0.75 |
+| `desert` | yes | yes | 0.7 |
+| `dense_forest` | **no** (too rugged) | yes | 0.5 |
+| `marsh` | no (waterlogged + disease) | yes (closed in spring) | 0.5 |
+| `mountains` | no | yes (closed in winter) | 0.4 |
+| `river` | **yes** (riverbank) | yes (slow ford without bridge) | 0.35 |
+| `lake` | **no** (water occupies whole hex) | **no** | 0 |
+| `ruin` | no (re-settleable as a settlement, not a building) | yes | 0.8 |
 
 ## Climate bands
 
@@ -163,13 +182,28 @@ the current approach.
      of its 6 neighbours are forest, and flips out of forest if ≤1
      are. Removes single-hex forest specks in the desert and
      single-hex desert specks in the forest.
-   - **Coastline smoothing.** A water hex with ≥5 land neighbours
-     becomes land (no isolated puddles). A land hex with ≥5 water
-     neighbours becomes coast (no thin peninsulas).
+   - **Lake/water cleanup.** A water hex with ≥5 land neighbours
+     becomes land (no isolated puddles). Below-sea-level hexes
+     become `lake` directly; there is no separate `coast` terrain.
    - **Tributary rivers.** Trace from MULTIPLE springs at high
      elevation; rivers MERGE when paths cross (downstream river
      becomes "wider" — flagged in tile metadata). Bigger rivers
      are slower to ford and better fishery hexes.
+   - **River adjacency caps (locked).** Run an iterative cleanup
+     after river tracing that enforces two symmetric rules:
+     - A `river` hex may have at most **3 water neighbors total**
+       (rivers + lakes), of which at most **1 may be a lake**. So
+       up to 3 rivers, OR up to 2 rivers + 1 lake (entering or
+       exiting a single lake), but never two separate lakes.
+     - A `lake` hex may have at most **1 river neighbor** (a
+       single canonical inflow/outflow). Surplus river neighbors
+       collapse into more lake (the lake's surface effectively
+       grew to swallow them).
+     - Violators in either direction collapse to `lake`. Iterate
+       until stable. Without this we get visually-jarring "river
+       lakes" — large clusters of river-terrain hexes that look
+       nothing like an actual river — and lakes with implausibly
+       many tributary outlets.
    - **Plains–fertile_valley distinction.** Hexes adjacent to
      rivers and at low-to-mid elevation become `fertile_valley`
      (higher base yield); pure plains are the rest. Fertile
@@ -180,9 +214,11 @@ the current approach.
    - One ore TYPE per cluster (a tin region doesn't also produce
      iron). Picked once per cluster from the ore palette weighted
      by rarity (iron common, tin/silver/gold rare).
-   - Salt is bottlenecked geographically — only on coast hexes
-     (evaporation pans) or in specific salt-mine deposits in
-     mountain hexes. Inland regions without salt depend on trade.
+   - Salt is bottlenecked geographically — only in specific
+     salt-mine deposits in mountain hexes (rock salt) or in
+     marsh/lake-margin evaporation deposits. Inland regions
+     without salt depend on trade. (Sea-coast salt pans are
+     deferred along with the rest of the sea-trade content.)
    - Iron ore is the most common; provincial worlds should always
      have at least 2 iron deposits (smithies need iron).
 5. **Place 4–5 city sites + 10–25 town sites**, each at a good

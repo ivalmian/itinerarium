@@ -70,11 +70,17 @@ const HAMLET_DISAGG_FACTOR = 5;
  */
 const MAX_SAMEHEX_HAMLETS = 5;
 
-const isWaterTile = (t: Terrain): boolean => t === 'lake' || t === 'river' || t === 'coast';
+const isWaterTile = (t: Terrain): boolean => t === 'lake' || t === 'river';
 
 /**
  * Tiles a settlement absolutely cannot anchor on. Mountains/dense_forest are
- * too rugged; marsh is unhealthy and waterlogged; lakes are not land at all.
+ * too rugged; marsh is unhealthy and waterlogged; lakes occupy the whole
+ * hex (no land to build on).
+ *
+ * Per the user's model: rivers are SMALLER than the 1 km hex, so a
+ * river hex still has plenty of riverbank land — settlements CAN
+ * anchor on river hexes (cities on rivers are the norm). Passage
+ * across is slow but possible.
  */
 const isUninhabitable = (t: Terrain): boolean => {
   switch (t) {
@@ -91,7 +97,7 @@ const isUninhabitable = (t: Terrain): boolean => {
 /**
  * Score a single hex for "how good a city site is this?" The scoring is
  * additive over: base terrain quality, fertile catchment in radius 3,
- * water access (river/lake/coast neighbour), and defensibility (hill or
+ * water access (river/lake neighbour), and defensibility (hill or
  * river fork). Returns 0 for uninhabitable tiles so the caller can skip
  * them via a single threshold check.
  */
@@ -106,7 +112,6 @@ const scoreCitySite = (h: Hex, grid: HexGrid): number => {
     hills: 3,
     forest: 2,
     steppe: 2,
-    coast: 3,
     river: 4,
     desert: 1,
     urban: 0,
@@ -126,11 +131,9 @@ const scoreCitySite = (h: Hex, grid: HexGrid): number => {
   }
   score += fertile * 0.2;
 
-  // Water access: any river/coast/lake neighbour, or hasRiver/hasCoast on this tile.
+  // Water access: any river/lake neighbour, or hasRiver on this tile.
   const hasWaterAdjacent =
-    tile.hasRiver ||
-    tile.hasCoast ||
-    grid.neighborsOf(h).some(([, t]) => isWaterTile(t.terrain) || t.hasRiver || t.hasCoast);
+    tile.hasRiver || grid.neighborsOf(h).some(([, t]) => isWaterTile(t.terrain) || t.hasRiver);
   if (hasWaterAdjacent) score += 3;
 
   // Defensibility: a hill anchor or surrounded by river/mountain on at least
@@ -161,7 +164,6 @@ const scoreSecondarySite = (h: Hex, grid: HexGrid): number => {
     hills: 2,
     forest: 1.5,
     steppe: 1,
-    coast: 2,
     river: 3,
     desert: 0.5,
     urban: 0,
@@ -173,7 +175,7 @@ const scoreSecondarySite = (h: Hex, grid: HexGrid): number => {
   };
   let score = baseByTerrain[tile.terrain];
   const hasWater =
-    tile.hasRiver || tile.hasCoast || grid.neighborsOf(h).some(([, t]) => isWaterTile(t.terrain));
+    tile.hasRiver || grid.neighborsOf(h).some(([, t]) => isWaterTile(t.terrain));
   if (hasWater) score += 1;
   return score;
 };
