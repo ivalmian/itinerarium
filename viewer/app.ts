@@ -78,9 +78,16 @@ export interface BootOpts {
   readonly hamletCount?: number;
   readonly mapHostId?: string;
   readonly sidebarHostId?: string;
+  /**
+   * Optional pre-built world. When provided, `bootViewer` skips its initial
+   * world build and wires the UI directly against this world. The Reset
+   * button still re-seeds a fresh world using the rest of the opts. Use this
+   * to hand over a world that has already been burned in off-screen.
+   */
+  readonly preBuiltWorld?: WorldState;
 }
 
-const DEFAULTS: Required<Omit<BootOpts, 'seed' | 'mapHostId' | 'sidebarHostId'>> & {
+export const VIEWER_DEFAULTS: Required<Omit<BootOpts, 'seed' | 'mapHostId' | 'sidebarHostId' | 'preBuiltWorld'>> & {
   seed: string;
   mapHostId: string;
   sidebarHostId: string;
@@ -110,7 +117,22 @@ interface BuildResult {
   worldRoot: Container;
 }
 
-const buildWorld = (opts: Required<BootOpts>, state: ViewerState): { world: WorldState } => {
+export interface BuildWorldOpts {
+  readonly seed: string;
+  readonly mapWidth: number;
+  readonly mapHeight: number;
+  readonly cityCount: number;
+  readonly townCount: number;
+  readonly villageCount: number;
+  readonly hamletCount: number;
+}
+
+/**
+ * Build a fresh `WorldState` from the given session opts. Exported so the
+ * splash screen can build the world up front and run pre-burn-in ticks
+ * before handing the world to `bootViewer({ preBuiltWorld })`.
+ */
+export const buildViewerWorld = (opts: BuildWorldOpts): WorldState => {
   const grid = generateTerrain({
     seed: `${opts.seed}|terrain`,
     widthHexes: opts.mapWidth,
@@ -130,6 +152,14 @@ const buildWorld = (opts: Required<BootOpts>, state: ViewerState): { world: Worl
     settlementSites: sites,
   });
   seedCaravans({ seed: `${opts.seed}|caravans`, world });
+  return world;
+};
+
+const buildWorldFromOpts = (
+  opts: Required<Omit<BootOpts, 'preBuiltWorld'>>,
+  state: ViewerState,
+): { world: WorldState } => {
+  const world = buildViewerWorld(opts);
   state.ticksThisRun = 0;
   return { world };
 };
@@ -284,16 +314,16 @@ const wirePanZoom = (
 };
 
 export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
-  const merged: Required<BootOpts> = {
-    seed: opts.seed ?? DEFAULTS.seed,
-    mapWidth: opts.mapWidth ?? DEFAULTS.mapWidth,
-    mapHeight: opts.mapHeight ?? DEFAULTS.mapHeight,
-    cityCount: opts.cityCount ?? DEFAULTS.cityCount,
-    townCount: opts.townCount ?? DEFAULTS.townCount,
-    villageCount: opts.villageCount ?? DEFAULTS.villageCount,
-    hamletCount: opts.hamletCount ?? DEFAULTS.hamletCount,
-    mapHostId: opts.mapHostId ?? DEFAULTS.mapHostId,
-    sidebarHostId: opts.sidebarHostId ?? DEFAULTS.sidebarHostId,
+  const merged: Required<Omit<BootOpts, 'preBuiltWorld'>> = {
+    seed: opts.seed ?? VIEWER_DEFAULTS.seed,
+    mapWidth: opts.mapWidth ?? VIEWER_DEFAULTS.mapWidth,
+    mapHeight: opts.mapHeight ?? VIEWER_DEFAULTS.mapHeight,
+    cityCount: opts.cityCount ?? VIEWER_DEFAULTS.cityCount,
+    townCount: opts.townCount ?? VIEWER_DEFAULTS.townCount,
+    villageCount: opts.villageCount ?? VIEWER_DEFAULTS.villageCount,
+    hamletCount: opts.hamletCount ?? VIEWER_DEFAULTS.hamletCount,
+    mapHostId: opts.mapHostId ?? VIEWER_DEFAULTS.mapHostId,
+    sidebarHostId: opts.sidebarHostId ?? VIEWER_DEFAULTS.sidebarHostId,
   };
 
   const mapHost = document.getElementById(merged.mapHostId);
@@ -304,7 +334,13 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
 
   const state = createViewerState();
   const history: ViewerHistory = createViewerHistory();
-  let { world } = buildWorld(merged, state);
+  let world: WorldState;
+  if (opts.preBuiltWorld !== undefined) {
+    world = opts.preBuiltWorld;
+    state.ticksThisRun = 0;
+  } else {
+    world = buildWorldFromOpts(merged, state).world;
+  }
 
   const app = new Application();
   await app.init({
@@ -347,7 +383,7 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     // Tear down old layers.
     app.stage.removeChild(layers.worldRoot);
     layers.worldRoot.destroy({ children: true });
-    const fresh = buildWorld(merged, state);
+    const fresh = buildWorldFromOpts(merged, state);
     world = fresh.world;
     layers = buildLayers(app, world, hexSize, state, art);
     sidebar.eventLog.clear();
