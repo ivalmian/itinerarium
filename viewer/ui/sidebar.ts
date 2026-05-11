@@ -14,6 +14,7 @@ import { createTimeControls, type TimeControls } from './timeControls.js';
 import { createSettlementPanel, type SettlementPanel } from './settlementPanel.js';
 import { createCaravanPanel, type CaravanPanel } from './caravanPanel.js';
 import { createBanditCampPanel, type BanditCampPanel } from './banditCampPanel.js';
+import { createHexPanel, type HexPanel } from './hexPanel.js';
 import { createResourcePanel, type ResourcePanel } from './resourcePanel.js';
 import { createEventLog, type EventLog } from './eventLog.js';
 
@@ -36,6 +37,7 @@ export interface Sidebar {
   readonly settlementPanel: SettlementPanel;
   readonly caravanPanel: CaravanPanel;
   readonly banditCampPanel: BanditCampPanel;
+  readonly hexPanel: HexPanel;
   readonly resourcePanel: ResourcePanel;
   readonly eventLog: EventLog;
 }
@@ -109,6 +111,11 @@ export const createSidebar = (opts: SidebarOpts): Sidebar => {
     onClear: () => setSelection(state, { kind: 'none' }),
   });
   const banditCampPanel = createBanditCampPanel({
+    host: selectedHost,
+    state,
+    onClear: () => setSelection(state, { kind: 'none' }),
+  });
+  const hexPanel = createHexPanel({
     host: selectedHost,
     state,
     onClear: () => setSelection(state, { kind: 'none' }),
@@ -208,6 +215,7 @@ export const createSidebar = (opts: SidebarOpts): Sidebar => {
     settlementPanel.update(world);
     caravanPanel.update(world);
     banditCampPanel.update(world);
+    hexPanel.update(world);
     eventLog.append(world, events);
   };
 
@@ -222,6 +230,7 @@ export const createSidebar = (opts: SidebarOpts): Sidebar => {
     settlementPanel,
     caravanPanel,
     banditCampPanel,
+    hexPanel,
     resourcePanel,
     eventLog,
   };
