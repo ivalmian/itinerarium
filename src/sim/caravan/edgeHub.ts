@@ -8,14 +8,24 @@
  * arrived on a specific caravan with a specific crew, and every
  * exported amphora of fine wine left the same way.
  *
- * The critical emergent property is that bulk goods (grain,
- * ordinary cloth, oil) MUST NOT pencil out as exports. The
- * filter is just the per-unit margin formula:
+ * The critical emergent property is that bulk staples (grain,
+ * ordinary cloth) don't pencil out as exports. The filter is just
+ * the per-unit margin formula:
  *
  *   margin = (globalPrice - localPrice) - transportCostPerKg * roundTripHexes * weightKgPerUnit
  *
  * High-value-per-kg goods (silver, luxury_textiles, slaves,
- * spices) survive that subtraction; bulk goods do not.
+ * spices) survive that subtraction; raw grain/cloth do not.
+ *
+ * Amphora-packed olive oil and wine sit in the middle: per docs/06
+ * §"Exports" + docs/08 §"Why imports and exports are dominated by
+ * luxuries (emergent)", they CAN export "in good years when quality
+ * or scarcity makes the spread high enough". They are not hard-coded
+ * out of the export filter; the same margin formula gates them, and
+ * a depressed local price + sufficient global spread is what flips
+ * them into exportable territory. Their global prices are calibrated
+ * so that the formula yields a positive margin only when the local
+ * surplus is real.
  */
 
 import type { Rng } from '../rng.js';
@@ -55,13 +65,22 @@ export const TRANSPORT_COST_COIN_PER_KG_PER_HEX = 0.05;
 /**
  * Slowly-drifting global market prices. Numbers are first-pass;
  * tunable. The ordering is what matters: silver >> luxury_textiles
- * >> spices ≈ silk ≈ incense >> wine ≈ oil >> grain ≈ cloth.
+ * >> spices ≈ silk ≈ incense >> amphora wine/oil >> grain ≈ cloth.
+ *
+ * Amphora-packed oil/wine prices reflect long-distance Roman trade
+ * values (an amphora of decent wine in a distant province fetched
+ * roughly 10–20× the local grain price per amphora). At 26 kg/unit
+ * the per-kg cost is still well above grain so these only export
+ * when local surplus depresses prices enough — the same margin
+ * filter as everything else.
  */
 export const DEFAULT_GLOBAL_PRICES: ReadonlyMap<ResourceId, number> = new Map<ResourceId, number>([
   // Bulk — ordinary trade
   [resourceId('food.grain'), 1.5],
-  [resourceId('food.olive_oil'), 4],
-  [resourceId('food.wine'), 6],
+  // Amphora-packed: heavy per unit but command long-haul prices
+  // when surplus depresses the local market (docs/08 §"luxuries").
+  [resourceId('food.olive_oil'), 150],
+  [resourceId('food.wine'), 200],
   [resourceId('food.cheese'), 5],
   // Manufactured ordinary
   [resourceId('goods.cloth'), 12],

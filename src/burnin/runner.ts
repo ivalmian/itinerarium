@@ -310,7 +310,7 @@ export const runBurnIn = async (opts: BurnInOpts): Promise<BurnInReport> => {
     totalSettlementsAtEnd: world.settlements.size,
     populationAtEnd: totalPopulation(world),
     caravansActiveAtEnd: world.caravans.size,
-    banditCampsAtEnd: 0, // WorldState doesn't yet track a top-level bandit map
+    banditCampsAtEnd: world.banditCamps?.size ?? 0,
     epidemicsTriggered,
     famineDeaths,
     diseaseDeaths,
