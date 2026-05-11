@@ -13,7 +13,6 @@
   </defs>
   <g clip-path="url(#hex)">
     <rect x="0" y="0" width="128" height="148" fill="#43522d"/>
-    <rect x="0" y="0" width="128" height="148" fill="#1c2410" filter="url(#nz)" opacity="0.5"/>
     <!-- standing water pools -->
     <ellipse cx="40" cy="60" rx="22" ry="9" fill="url(#lg-pool)" opacity="0.85"/>
     <ellipse cx="86" cy="92" rx="26" ry="10" fill="url(#lg-pool)" opacity="0.85"/>

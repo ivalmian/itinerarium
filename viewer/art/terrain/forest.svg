@@ -19,7 +19,6 @@
   </defs>
   <g clip-path="url(#hex)">
     <rect x="0" y="0" width="128" height="148" fill="#46672e"/>
-    <rect x="0" y="0" width="128" height="148" fill="#1d2a10" filter="url(#nz)" opacity="0.6"/>
     <!-- shadow ovals -->
     <g fill="#1a2510" opacity="0.5">
       <ellipse cx="36" cy="68" rx="14" ry="4"/>

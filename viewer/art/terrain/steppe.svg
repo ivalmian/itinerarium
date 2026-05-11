@@ -9,7 +9,6 @@
   </defs>
   <g clip-path="url(#hex)">
     <rect x="0" y="0" width="128" height="148" fill="#a18e5a"/>
-    <rect x="0" y="0" width="128" height="148" fill="#3e3218" filter="url(#nz)" opacity="0.55"/>
     <!-- horizontal wind streaks -->
     <g stroke="#7a6230" stroke-width="0.4" fill="none" opacity="0.5">
       <path d="M 6 38 Q 32 36 60 38 Q 96 40 124 36"/>

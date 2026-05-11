@@ -14,7 +14,6 @@
   </defs>
   <g clip-path="url(#hex)">
     <rect x="0" y="0" width="128" height="148" fill="#c4a46a"/>
-    <rect x="0" y="0" width="128" height="148" fill="#5a4220" filter="url(#nz)" opacity="0.5"/>
     <!-- back dune -->
     <path d="M 0 80 Q 32 60 64 76 Q 96 88 128 64 L 128 148 L 0 148 Z" fill="url(#lg-dune)" opacity="0.85"/>
     <!-- front dune -->

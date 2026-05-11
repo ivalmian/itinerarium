@@ -13,8 +13,6 @@
   </defs>
   <g clip-path="url(#hex)">
     <rect x="0" y="0" width="128" height="148" fill="#6f8b39"/>
-    <rect x="0" y="0" width="128" height="148" fill="url(#lg-rows)"/>
-    <rect x="0" y="0" width="128" height="148" fill="#1f2c0e" filter="url(#nz)" opacity="0.55"/>
     <!-- furrow rows, slightly curved -->
     <g stroke="#3b541a" stroke-width="1.4" fill="none" opacity="0.85">
       <path d="M 8 56 Q 64 50 120 58"/>
