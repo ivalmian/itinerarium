@@ -7,7 +7,8 @@
  *      bandit camps layers under a single world Container that owns the
  *      pan/zoom transform.
  *   3. Hook up the sidebar: time controls, resource panel, event log.
- *   4. Start the tick scheduler. `state.speed` ticks per simulated second
+ *   4. Start the tick scheduler. `state.speed` is the multiplier label
+ *      (1×, 4×, 16×, 64×, 256×); ticks per real second = speed × 0.25.
  *      (capped at one tick per requestAnimationFrame so we never block the
  *      renderer).
  *
@@ -43,6 +44,7 @@ import {
   onSelectionChange,
   setSelection,
   SPEED_LADDER,
+  speedToTicksPerSecond,
   type ViewerState,
 } from './state/viewerState.js';
 import {
@@ -539,7 +541,7 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
   // PIXI ticker drives both interpolation and tick scheduling.
   app.ticker.add(() => {
     if (!state.paused && state.speed > 0) {
-      const tickIntervalMs = 1000 / state.speed;
+      const tickIntervalMs = 1000 / speedToTicksPerSecond(state.speed);
       const now = performance.now();
       if (now - lastTickWallMs >= tickIntervalMs) {
         advanceOneTick();
@@ -547,7 +549,7 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     }
     // Caravan interpolation: t=0 right after a tick, t=1 right before next.
     if (!state.paused && state.speed > 0) {
-      const tickIntervalMs = 1000 / state.speed;
+      const tickIntervalMs = 1000 / speedToTicksPerSecond(state.speed);
       const elapsed = performance.now() - lastTickWallMs;
       const t = Math.max(0, Math.min(1, elapsed / tickIntervalMs));
       layers.caravansLayer.setInterpolationT(world, t, hexSize);

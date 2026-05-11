@@ -10,8 +10,16 @@
 import type { BanditCampId, CaravanId, SettlementId } from '../../src/sim/types.js';
 import type { Hex } from '../../src/sim/world/hex.js';
 
-export type Speed = 0 | 1 | 4 | 16 | 64;
-export const SPEED_LADDER: readonly Speed[] = [1, 4, 16, 64] as const;
+/**
+ * Speed is the multiplier shown in the UI (1×, 4×, 16×, 64×, 256×). The
+ * actual ticks-per-second is `speed × TICKS_PER_SECOND_AT_1X`, so 1× now
+ * runs at 0.25 ticks/sec (a slow observation pace) and 256× recovers the
+ * 64 ticks/sec top speed the old 64× used to hit.
+ */
+export type Speed = 0 | 1 | 4 | 16 | 64 | 256;
+export const SPEED_LADDER: readonly Speed[] = [1, 4, 16, 64, 256] as const;
+export const TICKS_PER_SECOND_AT_1X = 0.25;
+export const speedToTicksPerSecond = (s: Speed): number => s * TICKS_PER_SECOND_AT_1X;
 
 export type OverlayKind =
   | 'none'
