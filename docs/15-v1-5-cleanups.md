@@ -294,20 +294,17 @@ Europe to copper-smelting centers.
 **Cross-refs:** `docs/02-resources.md` `metal.bronze`,
 `docs/03-production.md` `alloy_bronze`.
 
-## C14 — Construction labor specialization [TODO]
+## C14 — Construction labor specialization (landed)
 
-**Current state:** `constructionPhase` consumes generic worker-days
-from the settlement's labor pool, not specifically mason or
-carpenter days.
+**v1.5 — landed.** `PendingBuilding` carries optional
+`masonDaysRemaining` + `carpenterDaysRemaining`. New
+`computeMasonShare(building)` derives the split from construction
+cost materials (stone/brick → masons, lumber → carpenters; default
+50/50). `constructionPhase` drains the two pools independently.
 
-**Realistic:** different building types want different specialist
-mixes — a granary needs lots of mason days plus some carpenter
-days; a smithy is the opposite. Specialization should drive who
-actually contributes.
-
-**Acceptance:** building completion rate visibly varies based on
-the settlement's mason/carpenter allocation; under-staffed
-settlements take longer to complete heavy stoneworks.
+A granary (heavy stone+brick) bottlenecks on mason allocation;
+a smithy (heavy lumber) on carpenters. Settlements not allocating
+workers to a role take much longer to complete that role's projects.
 
 **Cross-refs:** `docs/08-money-and-trade.md` §"Construction is
 heavy", `src/sim/tick.ts` `constructionPhase`.
