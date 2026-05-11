@@ -18,7 +18,7 @@
  * highlight) stay procedural in their existing layer files.
  */
 
-import { Assets, Texture } from 'pixi.js';
+import { Texture } from 'pixi.js';
 import type { Terrain } from '../../src/sim/world/terrain.js';
 import type { SettlementTier } from '../../src/sim/world/settlement.js';
 import type { BuildingId } from '../../src/sim/types.js';
@@ -97,12 +97,26 @@ const svgToBlobUrl = (svg: string): string => {
   return URL.createObjectURL(blob);
 };
 
+/**
+ * Rasterize one SVG string into a Pixi Texture.
+ *
+ * Pixi v8's Assets.load can't reliably auto-detect SVG when handed a blob
+ * URL (no file extension, MIME hint not always honored), so we load the
+ * SVG through an HTMLImageElement and let the browser's native SVG
+ * rasterizer handle it. The resulting raster image is then wrapped in a
+ * Texture. Resolution = the SVG's natural viewBox size, which is plenty
+ * for the small on-screen hexes (~14×16 px) and zooms in cleanly to a
+ * factor of ~10 before pixelation becomes visible.
+ */
 const loadTexture = async (svg: string, alias: string): Promise<Texture> => {
   const url = svgToBlobUrl(svg);
-  // Assets.load handles SVG rasterization. Aliasing lets us re-use cached
-  // textures if the same alias loads twice (it shouldn't, but cheap insurance).
-  const tex = await Assets.load<Texture>({ alias, src: url });
-  return tex;
+  const img = new Image();
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error(`Art: failed to load SVG ${alias}`));
+    img.src = url;
+  });
+  return Texture.from(img);
 };
 
 const lookupRaw = (relPath: string): string => {
