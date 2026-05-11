@@ -400,6 +400,19 @@ export type TickEvent =
       readonly resource: ResourceId;
       readonly quantity: number;
       readonly coinPaid: number;
+    }
+  | {
+      readonly type: 'fiscal_redistribution';
+      /**
+       * Channel of the transfer per docs/15 §C20:
+       *   civic_dividend     — city corporation → patrician families
+       *   tenant_rent        — free village / hamlet → patrician family
+       *   merchant_residual  — off-map house → patrician family
+       */
+      readonly channel: 'civic_dividend' | 'tenant_rent' | 'merchant_residual';
+      readonly payer: ActorId;
+      readonly recipient: ActorId;
+      readonly coinPaid: number;
     };
 
 export interface TickResult {
@@ -3975,11 +3988,14 @@ const politicsPhase = (world: WorldState, rng: Rng, today: Day, events: TickEven
     workerReallocationPhase(world, today, events);
   }
   // Quarterly hook (every 90 days): each settlement's stockpile-owning
-  // actors evaluate observed prices and invest in profitable buildings.
-  // Per docs/15 §C4 — Stage 2 specialization. Without this, the
-  // procgen seed is the FINAL building layout for the world's lifetime.
+  // actors evaluate observed prices and invest in profitable buildings,
+  // and the fiscal-redistribution pass moves cash from cash-generating
+  // actor kinds (city corps, off-map houses, tenant villages) to
+  // cash-consuming actor kinds (patrician families). Per docs/15 §C4
+  // (investment) and §C20 (fiscal redistribution).
   if ((today + 1) % 90 === 0) {
     investmentPhase(world, today, events);
+    fiscalRedistributionPhase(world, today, events);
   }
   // Tax shipments: per docs/11 §"Taxes" + the codex review #2.
   // Governor assesses on harvest-tribute day (autumn) + monthly coin
@@ -6726,6 +6742,249 @@ const investmentPhase = (world: WorldState, _today: Day, events: TickEvent[]): v
       costCoin: best.coinCost,
     });
   }
+};
+
+// --- Phase: fiscal redistribution (docs/15 §C20) --------------------------
+
+/**
+ * Per docs/15 §C20: a quarterly fiscal-redistribution pass that keeps cash
+ * circulating across owner kinds. Without it, a single watchdog burn-in
+ * drains patrician treasuries to ~0 within months while city corporations
+ * accumulate the cash — every comfort / status / capital market freezes
+ * even though physical stockpiles are huge. See docs/08 §"Cash circulation
+ * discipline" for the mechanism.
+ *
+ * Three flows fire on the same quarterly cadence as investmentPhase:
+ *
+ *   1. civic_dividend     — every city_corporation pays a fixed fraction
+ *                           of its treasury, split evenly, to patrician
+ *                           families whose homeSettlement matches the
+ *                           city's settlement. Models cura annonae /
+ *                           magistrate stipends / civic contract pay.
+ *   2. tenant_rent        — every patrician_family collects rent from
+ *                           nearby free_village / hamlet_household actors
+ *                           proportional to a fraction of their treasury,
+ *                           weighted by hex proximity. Capped so a single
+ *                           rent collection never overdrafts the tenant.
+ *   3. merchant_residual  — every off_map_house pays a fraction of its
+ *                           accumulated treasury to a patrician family in
+ *                           the nearest city. Models the regional
+ *                           merchant elite collecting their cut.
+ *
+ * Each transfer emits a fiscal_redistribution TickEvent so the viewer and
+ * burn-in instrumentation can audit the flows.
+ */
+// docs/15 §C20. Tuned by 3-year watchdog burn-in iterations.
+//
+// Patrician estates burn coin steadily on production wages (each recipe
+// run pays free workers their subsistence basket in coin). Without
+// sustained income, the families equilibrate to ~0 coin — they can keep
+// farms running via in-kind grain wages, but they cannot bid on status /
+// comfort / capital goods.
+//
+// The fiscal redistribution fires QUARTERLY (every 91 days) alongside
+// investmentPhase. Rates below are per-quarter:
+//   civic dividend  8% → ≈32% APR
+//   tenant rent     5% → ≈22% APR (capped at 15% of tenant treasury)
+//   off-map residual 6% → ≈25% APR (split across patron-city's families)
+// These are deliberately on the higher side of "sustainable": city corps
+// and off-map houses generate cash through sales and imports faster
+// than patrician estates do, so the redistribution pump can (and should)
+// bleed them toward patrician working capital.
+const CITY_CORP_DIVIDEND_FRACTION = 0.08;
+const TENANT_RENT_FRACTION_PER_QUARTER = 0.05;
+const TENANT_RENT_TREASURY_CAP_FRACTION = 0.15;
+const TENANT_RENT_MAX_HEX_DISTANCE = 30;
+const OFF_MAP_HOUSE_RESIDUAL_FRACTION = 0.06;
+const FISCAL_TRANSFER_MIN_COIN = 0.5;
+
+const fiscalRedistributionPhase = (world: WorldState, _today: Day, events: TickEvent[]): void => {
+  // Index patrician families by homeSettlement for civic-dividend split.
+  const patriciansBySettlement = new Map<SettlementId, Actor[]>();
+  // Also keep a flat list for tenant-rent + merchant-residual proximity
+  // lookups, paired with the family's home anchor hex.
+  const patricianAnchors: { actor: Actor; anchor: Hex }[] = [];
+  for (const a of world.actors.values()) {
+    if (a.kind !== 'patrician_family') continue;
+    if (a.homeSettlement === undefined) continue;
+    const home = world.settlements.get(a.homeSettlement);
+    if (home === undefined) continue;
+    let bucket = patriciansBySettlement.get(a.homeSettlement);
+    if (bucket === undefined) {
+      bucket = [];
+      patriciansBySettlement.set(a.homeSettlement, bucket);
+    }
+    bucket.push(a);
+    patricianAnchors.push({ actor: a, anchor: home.anchor });
+  }
+
+  // --- Channel 1: civic_dividend ------------------------------------------
+  for (const corp of world.actors.values()) {
+    if (corp.kind !== 'city_corporation') continue;
+    if (corp.homeSettlement === undefined) continue;
+    const families = patriciansBySettlement.get(corp.homeSettlement);
+    if (families === undefined || families.length === 0) continue;
+    const pool = corp.treasury * CITY_CORP_DIVIDEND_FRACTION;
+    if (pool < FISCAL_TRANSFER_MIN_COIN) continue;
+    const perFamily = pool / families.length;
+    for (const family of families) {
+      const transfer = Math.min(perFamily, corp.treasury);
+      if (transfer < FISCAL_TRANSFER_MIN_COIN) continue;
+      corp.treasury -= transfer;
+      family.treasury += transfer;
+      events.push({
+        type: 'fiscal_redistribution',
+        channel: 'civic_dividend',
+        payer: corp.id,
+        recipient: family.id,
+        coinPaid: transfer,
+      });
+    }
+  }
+
+  // --- Channel 2: tenant_rent ---------------------------------------------
+  // For each free_village / hamlet_household, find the nearest patron city
+  // (the home settlement of a patrician family) within
+  // TENANT_RENT_MAX_HEX_DISTANCE, then split the rent EVENLY across all
+  // patrician families based in that city. Without this split a single
+  // family was collecting all the regional rent, producing a tiny number
+  // of obscenely rich patricians and a long tail of broke ones.
+  if (patricianAnchors.length > 0) {
+    // Group patricians by their home settlement to allow the per-city split.
+    const familiesByHome = new Map<SettlementId, Actor[]>();
+    for (const entry of patricianAnchors) {
+      const home = entry.actor.homeSettlement;
+      if (home === undefined) continue;
+      let bucket = familiesByHome.get(home);
+      if (bucket === undefined) {
+        bucket = [];
+        familiesByHome.set(home, bucket);
+      }
+      bucket.push(entry.actor);
+    }
+    for (const tenant of world.actors.values()) {
+      if (tenant.kind !== 'free_village' && tenant.kind !== 'hamlet_household') continue;
+      if (tenant.homeSettlement === undefined) continue;
+      const tenantHome = world.settlements.get(tenant.homeSettlement);
+      if (tenantHome === undefined) continue;
+      const patron = nearestPatricianWithin(
+        patricianAnchors,
+        tenantHome.anchor,
+        TENANT_RENT_MAX_HEX_DISTANCE,
+      );
+      if (patron === null) continue;
+      // Split rent across ALL patrician families in the patron's city.
+      const patronHome = patron.homeSettlement;
+      if (patronHome === undefined) continue;
+      const families = familiesByHome.get(patronHome);
+      if (families === undefined || families.length === 0) continue;
+      const wanted = tenant.treasury * TENANT_RENT_FRACTION_PER_QUARTER;
+      const cap = tenant.treasury * TENANT_RENT_TREASURY_CAP_FRACTION;
+      const totalTransfer = Math.min(wanted, cap, tenant.treasury);
+      if (totalTransfer < FISCAL_TRANSFER_MIN_COIN) continue;
+      const perFamily = totalTransfer / families.length;
+      for (const family of families) {
+        if (perFamily < FISCAL_TRANSFER_MIN_COIN) continue;
+        const actual = Math.min(perFamily, tenant.treasury);
+        if (actual < FISCAL_TRANSFER_MIN_COIN) continue;
+        tenant.treasury -= actual;
+        family.treasury += actual;
+        events.push({
+          type: 'fiscal_redistribution',
+          channel: 'tenant_rent',
+          payer: tenant.id,
+          recipient: family.id,
+          coinPaid: actual,
+        });
+      }
+    }
+  }
+
+  // --- Channel 3: merchant_residual ---------------------------------------
+  // Off-map houses accumulate treasury from sold imports. We bleed a fraction
+  // back to nearby patrician families each quarter — economically these
+  // represent factor commissions, agent retainers, and partnerships. The
+  // payment is split EVENLY across all patrician families in the nearest
+  // city; without that split a single nearest family was collecting the full
+  // 15-house residual flow and ending up the only solvent patrician in the
+  // province.
+  const familiesByHomeForResidual = new Map<SettlementId, Actor[]>();
+  for (const entry of patricianAnchors) {
+    const home = entry.actor.homeSettlement;
+    if (home === undefined) continue;
+    let bucket = familiesByHomeForResidual.get(home);
+    if (bucket === undefined) {
+      bucket = [];
+      familiesByHomeForResidual.set(home, bucket);
+    }
+    bucket.push(entry.actor);
+  }
+  if (patricianAnchors.length > 0) {
+    for (const house of world.actors.values()) {
+      if (house.kind !== 'off_map_house') continue;
+      if (house.treasury <= 0) continue;
+      // Off-map houses don't always have a homeSettlement on-map. Try
+      // homeSettlement first; fall back to a deterministic patrician pick.
+      let anchor: Hex | undefined;
+      if (house.homeSettlement !== undefined) {
+        const home = world.settlements.get(house.homeSettlement);
+        if (home !== undefined) anchor = home.anchor;
+      }
+      let anchorActor: Actor | undefined;
+      if (anchor !== undefined) {
+        anchorActor =
+          nearestPatricianWithin(patricianAnchors, anchor, Number.POSITIVE_INFINITY) ?? undefined;
+      } else {
+        anchorActor = [...patricianAnchors].sort((a, b) =>
+          a.actor.id < b.actor.id ? -1 : a.actor.id > b.actor.id ? 1 : 0,
+        )[0]?.actor;
+      }
+      if (anchorActor === undefined) continue;
+      const anchorCity = anchorActor.homeSettlement;
+      if (anchorCity === undefined) continue;
+      const families = familiesByHomeForResidual.get(anchorCity);
+      if (families === undefined || families.length === 0) continue;
+      const totalTransfer = Math.min(
+        house.treasury * OFF_MAP_HOUSE_RESIDUAL_FRACTION,
+        house.treasury,
+      );
+      if (totalTransfer < FISCAL_TRANSFER_MIN_COIN) continue;
+      const perFamily = totalTransfer / families.length;
+      for (const family of families) {
+        const actual = Math.min(perFamily, house.treasury);
+        if (actual < FISCAL_TRANSFER_MIN_COIN) continue;
+        house.treasury -= actual;
+        family.treasury += actual;
+        events.push({
+          type: 'fiscal_redistribution',
+          channel: 'merchant_residual',
+          payer: house.id,
+          recipient: family.id,
+          coinPaid: actual,
+        });
+      }
+    }
+  }
+};
+
+const nearestPatricianWithin = (
+  anchors: readonly { actor: Actor; anchor: Hex }[],
+  target: Hex,
+  maxDistance: number,
+): Actor | null => {
+  let best: Actor | null = null;
+  let bestDist = Number.POSITIVE_INFINITY;
+  let bestId: string | undefined;
+  for (const entry of anchors) {
+    const d = hexDistance(target, entry.anchor);
+    if (d > maxDistance) continue;
+    if (d < bestDist || (d === bestDist && (bestId === undefined || entry.actor.id < bestId))) {
+      best = entry.actor;
+      bestDist = d;
+      bestId = String(entry.actor.id);
+    }
+  }
+  return best;
 };
 
 interface ScoredInvestment {

@@ -428,6 +428,13 @@ interface StockRow {
   readonly resource: string;
   readonly quantity: number;
   readonly lastPrice: number | null;
+  /**
+   * Days since the most recent CLEARED trade. `null` if the resource has
+   * never had a real clearing (the `lastPrice` is then a shadow/scarcity
+   * quote, not a transaction). `undefined` if the snapshot pre-dates
+   * lastClearedDay (older saves).
+   */
+  readonly daysSinceCleared: number | null;
   readonly bestBid: number | null;
   readonly bestAsk: number | null;
   readonly bidDepth: number;
@@ -490,6 +497,7 @@ const renderStockpileSection = (
     }
   }
 
+  const today = world.day;
   const rows: StockRow[] = [];
   for (const r of seenResources) {
     const qty = totals.get(r) ?? 0;
@@ -504,10 +512,13 @@ const renderStockpileSection = (
     const bidDepth = s.market.bidDepth.get(resId) ?? 0;
     const askDepth = s.market.askDepth.get(resId) ?? 0;
     const spreadVal = s.market.spread.get(resId);
+    const clearedDay = s.market.lastClearedDay.get(resId);
+    const daysSinceCleared = clearedDay !== undefined ? today - clearedDay : null;
     rows.push({
       resource: r,
       quantity: qty,
       lastPrice: lp ?? null,
+      daysSinceCleared,
       bestBid: bidVal ?? null,
       bestAsk: askVal ?? null,
       bidDepth,
@@ -536,14 +547,14 @@ const renderStockpileSection = (
   thead.innerHTML = `<tr>
     <th>Resource</th>
     <th class="num">Stock</th>
-    <th class="num" title="Last clearing price">Last</th>
-    <th class="num" title="Highest standing bid (residual buyer WTP)">Bid</th>
-    <th class="num" title="Lowest standing ask (residual seller reservation)">Ask</th>
-    <th class="num" title="Bid-ask spread">Spread</th>
-    <th class="num" title="Goods made here by recipes (~30d)">Produced</th>
-    <th class="num" title="Goods used up here by recipes/population (~30d)">Consumed</th>
-    <th class="num" title="Goods arriving from elsewhere (~30d)">Imported</th>
-    <th class="num" title="Goods sent elsewhere (~30d)">Exported</th>
+    <th class="num" title="Last cleared transaction price. Greyed out if the most recent recorded price is a shadow/scarcity quote rather than a real trade.">Last trade</th>
+    <th class="num" title="Highest standing bid (residual buyer willingness-to-pay after today's clearing)">Bid</th>
+    <th class="num" title="Lowest standing ask (residual seller reservation after today's clearing)">Ask</th>
+    <th class="num" title="Bid-ask spread = Ask − Bid">Spread</th>
+    <th class="num" title="Goods made here by recipes (~30d rolling)">Produced</th>
+    <th class="num" title="Goods used up here by recipes/population (~30d rolling)">Consumed</th>
+    <th class="num" title="Goods arriving from elsewhere (~30d rolling)">Imported</th>
+    <th class="num" title="Goods sent elsewhere (~30d rolling)">Exported</th>
     <th>Price (60d)</th>
   </tr>`;
   table.appendChild(thead);
@@ -558,7 +569,25 @@ const renderStockpileSection = (
     c2.textContent = r.quantity === 0 ? '—' : Math.round(r.quantity).toLocaleString();
     const c3 = document.createElement('td');
     c3.className = 'num';
-    c3.textContent = r.lastPrice === null ? '—' : r.lastPrice.toFixed(2);
+    if (r.lastPrice === null) {
+      c3.textContent = '—';
+      c3.style.color = 'var(--muted)';
+    } else if (r.daysSinceCleared === null) {
+      // We have a shadow/scarcity quote but no recorded clearing day —
+      // this is the "demand-only" or "seller-only" fallback signal.
+      c3.textContent = r.lastPrice.toFixed(2);
+      c3.style.color = 'var(--muted)';
+      c3.style.fontStyle = 'italic';
+      c3.title = 'Shadow / scarcity quote — no actual trade recorded yet.';
+    } else if (r.daysSinceCleared > 30) {
+      // Stale clearing — we have a recorded trade, but it was a while ago.
+      c3.textContent = r.lastPrice.toFixed(2);
+      c3.style.color = 'var(--muted)';
+      c3.title = `Last actual trade was ${r.daysSinceCleared} days ago.`;
+    } else {
+      c3.textContent = r.lastPrice.toFixed(2);
+      c3.title = `Cleared ${r.daysSinceCleared === 0 ? 'today' : `${r.daysSinceCleared} day(s) ago`}.`;
+    }
 
     const cBid = document.createElement('td');
     cBid.className = 'num';
@@ -588,7 +617,8 @@ const renderStockpileSection = (
     } else {
       cSpread.textContent = r.spread.toFixed(2);
       // Highlight wide relative spreads.
-      const ref = r.lastPrice ?? (r.bestBid !== null && r.bestAsk !== null ? (r.bestBid + r.bestAsk) / 2 : 0);
+      const ref =
+        r.lastPrice ?? (r.bestBid !== null && r.bestAsk !== null ? (r.bestBid + r.bestAsk) / 2 : 0);
       if (ref > 0 && r.spread / ref > 0.3) cSpread.style.color = '#d8a86a';
     }
 

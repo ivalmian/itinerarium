@@ -492,7 +492,12 @@ const seedPatricianFamily = (
     kind: 'patrician_family',
     name: `Family ${nomen} of ${cityNameHint}`,
     homeSettlement: city.id,
-    treasury: familyRng.int(2000, 8000),
+    // docs/15 §C20: patricians get working-capital reserve so they
+    // survive the first quarter before fiscal redistribution kicks in.
+    // Earlier 2000-8000 led to treasury collapsing to ~0 within months
+    // (wage payouts > grain-sale income) which froze status/comfort
+    // markets across the province.
+    treasury: familyRng.int(8000, 24000),
   });
   const patriarch = createCharacter({
     id: cId,

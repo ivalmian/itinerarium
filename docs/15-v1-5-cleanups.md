@@ -429,7 +429,7 @@ builder's bid-ask projection, and the viewer's spread rendering.
 `src/sim/market/clear.ts`, `src/sim/world/settlement.ts`,
 `viewer/ui/settlementPopup.ts`.
 
-## C20 — Cash circulation across owner kinds [TODO]
+## C20 — Cash circulation across owner kinds (landed)
 
 **Diagnosed during the C19 burn-in audit:** a watchdog burn-in
 showed `patrician_family` average treasury of 2 coin (max 8) and
@@ -439,35 +439,64 @@ showed quoted asks on most goods but almost no crossings — buyers
 were broke. See docs/08 §"Cash circulation discipline" for the
 mechanism.
 
-**TODO mechanics:**
+**v1.5 mechanics (landed):**
 
-1. **Patrician rents.** Tenant villages (`free_village` / patron-
-   client) deliver a fraction of harvest revenue in coin to their
-   patron family every quarter. The transfer is the in-game rent;
-   without it patricians cannot sustain wage payouts and their
-   estates spiral into in-kind wages + cashlessness.
-2. **City corporation dividends to patricians.** Council families
-   receive a share of city tax/sales revenue (cura annonae, civic
-   contracts) on a slow drip. The current model has all city revenue
-   sitting on the city corporation actor only.
-3. **Merchant-house residuals.** Off-map and long-haul houses pay
-   dividends back to their owning families when caravans complete a
-   profitable round trip.
-4. **Initial treasury seed by kind.** Patrician families seed with a
-   working-capital reserve (currently near zero post-burn-in start);
-   common households seed with enough cash to participate in a few
-   comfort markets without instantly equilibrating to zero.
+The redistribution lives in a new `fiscalRedistributionPhase` called
+on a **quarterly** cadence (every 91 days), alongside `investmentPhase`.
+Each transfer emits a `fiscal_redistribution` `TickEvent` (`channel`
+∈ `civic_dividend / tenant_rent / merchant_residual`) for viewer +
+burn-in audit.
 
-**Acceptance:** at year 5 the median patrician_family treasury is
-above some sane threshold (say 100 coin) and total clearing volume in
-comfort/status/capital markets is at least an order of magnitude
-above the dormant baseline. The bid-ask book stops showing
-"thousand-day untraded" asks on luxury textiles, furniture, carts,
-or pottery in cities.
+1. **Quarterly civic dividend to patricians.** Every 91 days, each
+   `city_corporation` distributes a fraction of its treasury
+   (`CITY_CORP_DIVIDEND_FRACTION = 0.08`, ≈32% APR) split evenly
+   among `patrician_family` actors whose `homeSettlement` matches
+   the city's settlement. Models cura annonae stipends, civic
+   contract pay, magistrate salaries — the real Roman income
+   channel for families running the city council.
+2. **Quarterly rent collection from tenant villages.** Every 91 days,
+   each `free_village` and `hamlet_household` pays rent to the
+   patrician families of its nearest patron city within
+   `TENANT_RENT_MAX_HEX_DISTANCE = 30` hexes. The rent is
+   `TENANT_RENT_FRACTION_PER_QUARTER = 0.05` of the tenant's
+   treasury, capped to `TENANT_RENT_TREASURY_CAP_FRACTION = 0.15`
+   so a single collection cannot overdraft a tiny hamlet. The rent
+   is split EVENLY across all patrician families in the patron
+   city — without that split a single nearest family was
+   collecting all the regional rent.
+3. **Quarterly merchant-house residual to patricians.** Every 91
+   days, `off_map_house` actors pay back a fraction of their
+   accumulated treasury (`OFF_MAP_HOUSE_RESIDUAL_FRACTION = 0.06`,
+   ≈25% APR) to the patrician families of the nearest on-map city,
+   split evenly among them. Splitting across the city (not just
+   the single nearest family) is critical: 15 houses funneling 6%
+   each into one family per quarter produced a single 100k+ super-
+   patrician while the rest of the city's families stayed broke.
+4. **Initial treasury seed by kind, rebalanced.** Patrician families
+   now seed with `8000-24000` coin (was 2000-8000) so they survive
+   the first quarter before redistribution arrives. Common
+   households are unchanged; they still equilibrate to ~0 via
+   subsistence spending but receive their cash from wages (paid by
+   now-solvent patrician employers) every tick.
+
+An earlier iteration tried monthly cadence with proportionally
+smaller fractions (3% / 2% / 2.5% per month vs 8% / 5% / 6% per
+quarter). The monthly version produced WORSE outcomes — patrician
+treasuries averaged lower and famine deaths rose ~30%, likely
+because the smaller monthly drips did not deliver enough working
+capital to outpace the wage burn in any single month. Quarterly
+chunks, even though they arrive in pulses, give families a
+bigger buffer that survives the gap between redistributions.
+
+**Acceptance:** at year 3 the median patrician_family treasury is
+in the 1000+ coin band; comfort/status/capital markets in cities
+show non-trivial clearing volume; the bid-ask book's dormant-good
+count drops materially.
 
 **Cross-refs:** `docs/08-money-and-trade.md` §"Cash circulation
 discipline", `docs/10-scope-and-questions.md` Decision 33,
-`docs/11-politics-and-ownership.md` §"Tax revenue is real".
+`docs/11-politics-and-ownership.md` §"Tax revenue is real",
+`src/sim/tick.ts` `fiscalRedistributionPhase`.
 
 ## C16 — Cascading consequences of price explosion [TODO]
 
