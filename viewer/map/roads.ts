@@ -44,12 +44,19 @@ export const createRoadLayer = (
     for (const [h, tile] of g.tiles()) {
       if (tile.road === 'none') continue;
       const grade = tile.road;
+      // Bitmask counts ANY road neighbor (dirt OR roman) so this tile's
+      // own grade still reaches the shared edge midpoint when the neighbor
+      // has a different grade. At a dirt↔roman boundary, each side draws
+      // its own atlas-shape connecting to that edge; the dirt's narrow
+      // brown path visually merges into the roman side's wider stone
+      // pavement — a "footpath joining a paved road" look rather than
+      // each tile dead-ending at the boundary.
       let bitmask = 0;
       for (let d = 0; d < 6; d++) {
         const dir = HEX_DIRECTIONS[d] as Hex;
         const n = g.get(hexAdd(h, dir));
         if (n === undefined) continue;
-        if (n.road === grade) bitmask |= 1 << d;
+        if (n.road !== 'none') bitmask |= 1 << d;
       }
       if (bitmask === 0) continue;
       const px = hexToPixel(h, hexSize);

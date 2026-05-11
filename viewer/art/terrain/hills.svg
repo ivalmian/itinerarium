@@ -1,7 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
   <defs>
     <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
-    <linearGradient id="lg-mound" x1="0" y1="0" x2="0.6" y2="1">
+    <!-- Purely vertical gradient (x2 = x1 = 0). With any horizontal
+         component the left and right edges of the mound have different
+         colors, breaking the left-right hex-boundary color match. -->
+    <linearGradient id="lg-mound" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#c4a07a"/>
       <stop offset="1" stop-color="#5e4524"/>
     </linearGradient>
@@ -19,7 +22,6 @@
   </defs>
   <g clip-path="url(#hex)">
     <rect x="0" y="0" width="128" height="148" fill="#91714e"/>
-    <rect x="0" y="0" width="128" height="148" fill="#3e2a14" filter="url(#nz)" opacity="0.5"/>
     <g filter="url(#ds)">
       <!-- back ridge -->
       <path d="M 8 96 Q 38 64 70 82 Q 96 96 122 78 L 128 148 L 0 148 Z" fill="url(#lg-mound)" opacity="0.85"/>
