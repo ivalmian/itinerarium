@@ -88,6 +88,14 @@ export interface HexTile {
    * tiles inline don't all break; when absent treat as 0.
    */
   roadWear?: number;
+  /**
+   * Number of consecutive quarters the governor's office failed to fund
+   * maintenance for this Roman-road hex. Per docs/15 §C11. After 4
+   * consecutive missed quarters (~1 year) the hex downgrades to
+   * `road = 'dirt'` and joins the normal trail-wear lifecycle.
+   * Optional/absent means "fully maintained / not Roman".
+   */
+  romanQuartersUnmaintained?: number;
   /** Settlement-level ownership; null = unowned wilderness. */
   ownerActor: ActorId | null;
   /** Mineable / extractable deposit on this hex, if any. */

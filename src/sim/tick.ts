@@ -263,6 +263,10 @@ export type TickEvent =
       readonly toGrade: 'dirt';
     }
   | {
+      readonly type: 'road_unmaintained';
+      readonly hex: Hex;
+    }
+  | {
       readonly type: 'road_downgraded';
       readonly hex: Hex;
       readonly fromGrade: 'dirt';
@@ -379,6 +383,15 @@ export const tick = (inputs: TickInputs): TickResult => {
   // sustained low wear demotes 'dirt' → 'none'. Roman roads exempt.
   // Per docs/06 §"Trail wear → emergent dirt roads".
   trailWearTickPhase(world, events);
+
+  // --- Roman road maintenance (docs/15 §C11) -----------------------------
+  // Quarterly: governor pays per-Roman-hex maintenance from treasury.
+  // If they can't pay, the hex's romanQuartersUnmaintained counter
+  // increments; after 4 missed quarters the hex downgrades to 'dirt'
+  // and starts accruing/decaying wear like any other dirt road.
+  if ((today + 1) % 91 === 0) {
+    roadMaintenancePhase(world, events);
+  }
 
   // --- Day-1825 road reset (one-time) ------------------------------------
   // Per docs/07 §"Phase 2 — Stabilization" + docs/14 §"Year-5 road reset":
@@ -871,6 +884,49 @@ const addRoadWear = (world: WorldState, h: Hex, amount: number): void => {
   // Roman roads neither accrue wear nor decay (engineered + maintained).
   if (tile.road === 'roman') return;
   tile.roadWear = (tile.roadWear ?? 0) + amount;
+};
+
+// --- Roman road maintenance (docs/15 §C11) -------------------------------
+
+/** Per-Roman-hex coin cost per quarter (docs/15 §C11). 0.1 coin/hex/qtr =
+ *  ~0.4/yr. With ~50-200 Roman hexes per province, that's 20-80 coin/yr,
+ *  trivial against the seeded 20-50k governor treasury. */
+const ROMAN_HEX_COIN_PER_QUARTER = 0.1;
+/** Quarters of missed maintenance before a Roman hex demotes to dirt. */
+const MISSED_QUARTERS_TO_DOWNGRADE = 4;
+
+const roadMaintenancePhase = (world: WorldState, events: TickEvent[]): void => {
+  // Find the governor's office.
+  let governor: Actor | undefined;
+  for (const a of world.actors.values()) {
+    if (a.kind === 'governor_office') {
+      governor = a;
+      break;
+    }
+  }
+  if (governor === undefined) return;
+
+  for (const [h, tile] of world.grid.tiles()) {
+    if (tile.road !== 'roman') continue;
+    // Try to drain the per-hex cost from the governor.
+    if (governor.treasury >= ROMAN_HEX_COIN_PER_QUARTER) {
+      governor.treasury -= ROMAN_HEX_COIN_PER_QUARTER;
+      // Reset missed-quarters counter (paid).
+      if (tile.romanQuartersUnmaintained !== undefined) {
+        tile.romanQuartersUnmaintained = 0;
+      }
+    } else {
+      const missed = (tile.romanQuartersUnmaintained ?? 0) + 1;
+      tile.romanQuartersUnmaintained = missed;
+      if (missed >= MISSED_QUARTERS_TO_DOWNGRADE) {
+        // Demote this hex to dirt; trail wear takes over from here.
+        tile.road = 'dirt';
+        tile.roadWear = 100; // start at the upgrade threshold so daily decay doesn't reclaim it instantly
+        tile.romanQuartersUnmaintained = 0;
+        events.push({ type: 'road_unmaintained', hex: { q: h.q, r: h.r } });
+      }
+    }
+  }
 };
 
 // --- Storage spoilage (docs/15 §C10) -------------------------------------
