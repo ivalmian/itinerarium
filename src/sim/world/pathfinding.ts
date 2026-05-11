@@ -14,7 +14,7 @@
  * lower than 1, drop MIN_STEP_COST accordingly.
  */
 
-import { hexDistance, hexKey, hexNeighbors } from './hex.js';
+import { HEX_DIRECTIONS, hexDistance } from './hex.js';
 import type { Hex } from './hex.js';
 import type { HexGrid } from './grid.js';
 import type { RoadGrade, Season, Terrain } from './terrain.js';
@@ -149,12 +149,19 @@ export const COURIER_PROFILE: MovementProfile = {
 // heuristic admissible; raising it would risk returning sub-optimal paths.
 const MIN_STEP_COST = 1 / 6;
 
+const COORD_KEY_OFFSET = 32768;
+const COORD_KEY_STRIDE = 65536;
+
+const coordKey = (q: number, r: number): number =>
+  (q + COORD_KEY_OFFSET) * COORD_KEY_STRIDE + (r + COORD_KEY_OFFSET);
+
 // ---------------------------------------------------------------------------
 // Min-heap (binary heap) for A* open set
 // ---------------------------------------------------------------------------
 
 interface HeapEntry {
-  readonly key: string;
+  readonly key: number;
+  readonly hex: Hex;
   readonly priority: number;
   // Tie-breaker: insertion order. Keeps results deterministic when multiple
   // entries share an f-score (otherwise heap-internal ordering varies).
@@ -246,30 +253,28 @@ export const findPath = (
   season: Season,
   loadFraction: number,
 ): PathResult => {
-  if (!grid.has(start) || !grid.has(goal)) {
+  if (!grid.hasAt(start.q, start.r) || !grid.hasAt(goal.q, goal.r)) {
     return { path: [], totalCost: Infinity };
   }
-  const startKey = hexKey(start);
-  const goalKey = hexKey(goal);
-  if (startKey === goalKey) {
+  const startKey = coordKey(start.q, start.r);
+  const goalKey = coordKey(goal.q, goal.r);
+  if (start.q === goal.q && start.r === goal.r) {
     return { path: [start], totalCost: 0 };
   }
 
-  const gScore = new Map<string, number>();
-  const cameFrom = new Map<string, Hex>();
-  const closed = new Set<string>();
+  const gScore = new Map<number, number>();
+  const cameFrom = new Map<number, Hex>();
+  const closed = new Set<number>();
   const open = new MinHeap();
   let seq = 0;
 
   gScore.set(startKey, 0);
   open.push({
     key: startKey,
+    hex: start,
     priority: hexDistance(start, goal) * MIN_STEP_COST,
     seq: seq++,
   });
-  // Track which hex each open entry refers to so we don't have to re-parse keys.
-  const openHex = new Map<string, Hex>();
-  openHex.set(startKey, start);
 
   while (open.size() > 0) {
     const current = open.pop() as HeapEntry;
@@ -280,25 +285,26 @@ export const findPath = (
       return reconstruct(cameFrom, goal, gScore.get(goalKey) ?? Infinity);
     }
 
-    const currentHex = openHex.get(current.key);
-    if (currentHex === undefined) continue;
+    const currentHex = current.hex;
     const currentG = gScore.get(current.key) ?? Infinity;
 
-    for (const neighbor of hexNeighbors(currentHex)) {
-      const nKey = hexKey(neighbor);
+    for (const dir of HEX_DIRECTIONS) {
+      const nq = currentHex.q + dir.q;
+      const nr = currentHex.r + dir.r;
+      const nKey = coordKey(nq, nr);
       if (closed.has(nKey)) continue;
-      const tile = grid.get(neighbor);
+      const tile = grid.getAt(nq, nr);
       if (tile === undefined) continue;
       const stepCost = profile.costFor(tile.terrain, tile.road, season, loadFraction);
       if (!Number.isFinite(stepCost)) continue;
       const tentative = currentG + stepCost;
       const existing = gScore.get(nKey);
       if (existing !== undefined && tentative >= existing) continue;
+      const neighbor = { q: nq, r: nr };
       gScore.set(nKey, tentative);
       cameFrom.set(nKey, currentHex);
-      openHex.set(nKey, neighbor);
       const f = tentative + hexDistance(neighbor, goal) * MIN_STEP_COST;
-      open.push({ key: nKey, priority: f, seq: seq++ });
+      open.push({ key: nKey, hex: neighbor, priority: f, seq: seq++ });
     }
   }
 
@@ -306,14 +312,14 @@ export const findPath = (
 };
 
 const reconstruct = (
-  cameFrom: ReadonlyMap<string, Hex>,
+  cameFrom: ReadonlyMap<number, Hex>,
   goal: Hex,
   totalCost: number,
 ): PathResult => {
   const path: Hex[] = [goal];
   let current: Hex | undefined = goal;
   for (;;) {
-    const key = hexKey(current);
+    const key = coordKey(current.q, current.r);
     const prev = cameFrom.get(key);
     if (prev === undefined) break;
     path.push(prev);

@@ -23,7 +23,7 @@
  * are passable.
  */
 
-import { findPath, type MovementProfile, type PathResult } from '../world/pathfinding.js';
+import { findPath, type MovementProfile } from '../world/pathfinding.js';
 import type { HexGrid } from '../world/grid.js';
 import { hexEquals, type Hex } from '../world/hex.js';
 import { isPassable, type RoadGrade, type Season, type Terrain } from '../world/terrain.js';
@@ -32,7 +32,9 @@ import type { Day, ResourceId } from '../types.js';
 import {
   dailyAnimalFodderKg,
   dailyCrewRationKg,
-  dailyMpAllowance,
+  dailyMpAllowanceWithStats,
+  caravanMovementStats,
+  type CaravanMovementStats,
   type Caravan,
 } from './caravan.js';
 
@@ -71,10 +73,10 @@ const RATION_SOURCES: readonly ResourceId[] = [
 const RATION_DAILY_BASE_WEAR = 0.001; // 0.1% per day baseline (docs/06)
 
 /** A MovementProfile that turns the caravan's daily MP allowance into per-hex cost. */
-const profileForCaravan = (c: Caravan): MovementProfile => ({
+const profileForCaravan = (stats: CaravanMovementStats): MovementProfile => ({
   costFor(terrain: Terrain, road: RoadGrade, season: Season, _loadFraction: number): number {
     if (!isPassable(terrain, season)) return Infinity;
-    const allowance = dailyMpAllowance(c, terrain, road, season);
+    const allowance = dailyMpAllowanceWithStats(stats, terrain, road, season);
     if (allowance <= 0) return Infinity;
     // Crossing one hex consumes 1/allowance of a day's progress budget.
     return 1 / allowance;
@@ -118,6 +120,7 @@ const advanceAlongPath = (
   grid: HexGrid,
   path: readonly Hex[],
   season: Season,
+  stats: CaravanMovementStats,
 ): { hexesMoved: Hex[]; blockedAt: Hex | null; arrived: boolean } => {
   const out: { hexesMoved: Hex[]; blockedAt: Hex | null; arrived: boolean } = {
     hexesMoved: [],
@@ -144,7 +147,7 @@ const advanceAlongPath = (
       out.blockedAt = next;
       break;
     }
-    const allowance = dailyMpAllowance(c, tile.terrain, tile.road, season);
+    const allowance = dailyMpAllowanceWithStats(stats, tile.terrain, tile.road, season);
     if (allowance <= 0) {
       out.blockedAt = next;
       break;
@@ -179,6 +182,8 @@ const wearForToday = (terrain: Terrain, road: RoadGrade, season: Season): number
 export const tickCaravanMovement = (inputs: CaravanTickInputs): CaravanTickResult => {
   const { caravan: c, grid, season } = inputs;
   const events: CaravanTickEvent[] = [];
+  const movementStats = caravanMovementStats(c);
+  const movementProfile = profileForCaravan(movementStats);
 
   // ---------- Plan -----------------------------------------------------
   let hexesMoved: readonly Hex[] = [];
@@ -196,18 +201,18 @@ export const tickCaravanMovement = (inputs: CaravanTickInputs): CaravanTickResul
       // within the hex" leg.
       arrived = true;
     } else if (grid.has(c.position) && grid.has(dest)) {
-      const result: PathResult = findPath(
+      const path = findPath(
         grid,
         c.position,
         dest,
-        profileForCaravan(c),
+        movementProfile,
         season,
-        // loadFraction is read inside dailyMpAllowance via the caravan ref,
-        // not via the profile arg, so the value here is documentation only.
+        // The profile already holds this caravan-day's load state, so the
+        // value here is documentation only.
         0,
-      );
-      if (result.path.length > 1) {
-        const advance = advanceAlongPath(c, grid, result.path, season);
+      ).path;
+      if (path.length > 1) {
+        const advance = advanceAlongPath(c, grid, path, season, movementStats);
         hexesMoved = advance.hexesMoved;
         blockedAt = advance.blockedAt;
         arrived = advance.arrived;
@@ -215,7 +220,7 @@ export const tickCaravanMovement = (inputs: CaravanTickInputs): CaravanTickResul
         // No path under current season. If a path exists in summer, the cause
         // is a seasonal closure: find the first impassable hex on the summer
         // path so the caller knows where the caravan is stuck.
-        const summerResult = findPath(grid, c.position, dest, profileForCaravan(c), 'summer', 0);
+        const summerResult = findPath(grid, c.position, dest, movementProfile, 'summer', 0);
         for (const h of summerResult.path) {
           const t = grid.get(h);
           if (t !== undefined && !isPassable(t.terrain, season)) {

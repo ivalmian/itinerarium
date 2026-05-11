@@ -15,9 +15,9 @@
  */
 
 import type { Rng } from '../rng.js';
-import { AGE_BANDS, agedKey, isFertileAgeBand } from './cohort.js';
+import { AGE_BANDS, agedKey } from './cohort.js';
 import type { AgeBand, CohortKey, PopulationPool } from './cohort.js';
-import { SEXES } from './types.js';
+import { CHARACTER_CLASSES, SEXES } from './types.js';
 import type { CharacterClass, Sex } from './types.js';
 
 export interface VitalRates {
@@ -67,6 +67,27 @@ const classMortalityMultiplier = (c: CharacterClass): number => {
   return c === 'slave' ? SLAVE_MORTALITY_MULTIPLIER : 1;
 };
 
+const ROMAN_DAILY_MORTALITY: Readonly<Record<AgeBand, Readonly<Record<CharacterClass, number>>>> =
+  (() => {
+    const out = {} as Record<AgeBand, Record<CharacterClass, number>>;
+    for (const age of AGE_BANDS) {
+      const byClass = {} as Record<CharacterClass, number>;
+      for (const cls of CHARACTER_CLASSES) {
+        const annualP =
+          annualMortalityForBand(age, ROMAN_VITAL_RATES) * classMortalityMultiplier(cls);
+        byClass[cls] = annualToDaily(annualP);
+      }
+      out[age] = byClass;
+    }
+    return out;
+  })();
+
+const dailyMortalityFor = (key: CohortKey, rates: VitalRates): number => {
+  if (rates === ROMAN_VITAL_RATES) return ROMAN_DAILY_MORTALITY[key.age][key.class];
+  const annualP = annualMortalityForBand(key.age, rates) * classMortalityMultiplier(key.class);
+  return annualToDaily(annualP);
+};
+
 /**
  * Sample a binomial(n, p) outcome by counting Bernoulli trials.
  * Cheap and deterministic at our cohort sizes (a settlement
@@ -76,21 +97,7 @@ const classMortalityMultiplier = (c: CharacterClass): number => {
  * approximation, but at v1 cohort sizes the loop is fine.
  */
 const sampleBinomial = (n: number, p: number, rng: Rng): number => {
-  if (n <= 0 || p <= 0) return 0;
-  if (p >= 1) return n;
-  let k = 0;
-  for (let i = 0; i < n; i++) {
-    if (rng.next() < p) k++;
-  }
-  return k;
-};
-
-const fertileFemaleCount = (pool: PopulationPool): number => {
-  let total = 0;
-  for (const [key, n] of pool.cohorts()) {
-    if (key.sex === 'female' && isFertileAgeBand(key.age)) total += n;
-  }
-  return total;
+  return rng.countBelow(n, p);
 };
 
 const totalPopulation = (pool: PopulationPool): number => pool.total();
@@ -109,23 +116,16 @@ const allocateNewbornsByClass = (
   const out = new Map<CharacterClass, number>();
   if (totalNewborns <= 0) return out;
 
-  const fertileByClass = new Map<CharacterClass, number>();
-  for (const [key, n] of pool.cohorts()) {
-    if (key.sex !== 'female') continue;
-    if (!isFertileAgeBand(key.age)) continue;
-    fertileByClass.set(key.class, (fertileByClass.get(key.class) ?? 0) + n);
-  }
-  let remainingFertile = 0;
-  for (const n of fertileByClass.values()) remainingFertile += n;
+  let remainingFertile = pool.totalFertileFemales();
   if (remainingFertile === 0) return out;
 
   let remainingNewborns = totalNewborns;
-  const classes = Array.from(fertileByClass.keys());
-  for (let i = 0; i < classes.length; i++) {
-    const cls = classes[i] as CharacterClass;
-    const share = fertileByClass.get(cls) ?? 0;
+  for (let i = 0; i < CHARACTER_CLASSES.length; i++) {
+    const cls = CHARACTER_CLASSES[i] as CharacterClass | undefined;
+    if (cls === undefined) break;
+    const share = pool.fertileFemalesByClass(cls);
     if (share <= 0) continue;
-    const isLast = i === classes.length - 1;
+    const isLast = share === remainingFertile;
     const allotted = isLast
       ? remainingNewborns
       : sampleBinomial(remainingNewborns, share / remainingFertile, rng);
@@ -139,24 +139,21 @@ const allocateNewbornsByClass = (
 
 /** Daily population tick: deaths first, then births. */
 export const tickDaily = (pool: PopulationPool, rates: VitalRates, rng: Rng): void => {
-  // 1) Deaths. Snapshot keys first so we can mutate during the loop safely.
-  const snapshot: Array<readonly [CohortKey, number]> = [];
-  for (const entry of pool.cohorts()) snapshot.push(entry);
-
-  for (const [key, count] of snapshot) {
-    if (count <= 0) continue;
-    const annualP = annualMortalityForBand(key.age, rates) * classMortalityMultiplier(key.class);
-    const dailyP = annualToDaily(annualP);
-    if (dailyP <= 0) continue;
+  // 1) Deaths. Updating/deleting the current Map entry is safe during
+  // iteration; births happen later, after this loop finishes.
+  pool.forEachCohort((key, count) => {
+    if (count <= 0) return;
+    const dailyP = dailyMortalityFor(key, rates);
+    if (dailyP <= 0) return;
     const deaths = sampleBinomial(count, dailyP, rng);
     if (deaths > 0) {
       pool.set(key, count - deaths);
     }
-  }
+  });
 
   // 2) Births. CBR applies to total population; allocated to mothers' class.
   const totalAfterDeaths = totalPopulation(pool);
-  if (totalAfterDeaths === 0 || fertileFemaleCount(pool) === 0) return;
+  if (totalAfterDeaths === 0 || pool.totalFertileFemales() === 0) return;
 
   const dailyBirthP = annualPer1000ToDaily(rates.crudeBirthRatePer1000PerYear);
   const newborns = sampleBinomial(totalAfterDeaths, dailyBirthP, rng);
@@ -166,10 +163,7 @@ export const tickDaily = (pool: PopulationPool, rates: VitalRates, rng: Rng): vo
   for (const [cls, n] of newbornsByClass) {
     if (n <= 0) continue;
     // Sex assigned per-newborn ~50/50.
-    let females = 0;
-    for (let i = 0; i < n; i++) {
-      if (rng.next() < 0.5) females++;
-    }
+    const females = rng.countBelow(n, 0.5);
     const males = n - females;
     if (females > 0) {
       const key: CohortKey = { age: '0-4', sex: 'female', class: cls };

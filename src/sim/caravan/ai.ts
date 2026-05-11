@@ -113,6 +113,33 @@ const observationsForRoute = (
   return out;
 };
 
+const observationsByDestination = (
+  origin: Hex,
+  knownPrices: Caravan['priceBook'],
+): Map<string, OriginDestObservation[]> => {
+  const out = new Map<string, OriginDestObservation[]>();
+  const originKey = hexKey(origin);
+  for (const [resource, perHex] of knownPrices) {
+    const originPrice = perHex.get(originKey)?.price;
+    if (originPrice === undefined) continue;
+    for (const [destKey, destObs] of perHex) {
+      if (destKey === originKey) continue;
+      const spread = destObs.price - originPrice;
+      if (spread <= 0) continue;
+      const obs = {
+        resource,
+        originPrice,
+        destPrice: destObs.price,
+        spread,
+      };
+      const existing = out.get(destKey);
+      if (existing === undefined) out.set(destKey, [obs]);
+      else existing.push(obs);
+    }
+  }
+  return out;
+};
+
 /**
  * Greedy capacity packer: sort observations by spread-per-kg
  * (effectively the per-kg margin), then load each in turn until
@@ -216,6 +243,7 @@ export interface PlanCaravanRouteInputs {
     preferOwnFamilyFlows?: boolean;
     familyHomeSettlement?: SettlementId;
   };
+  readonly includeReason?: boolean;
 }
 
 /**
@@ -266,17 +294,19 @@ const evaluateCandidate = (
   origin: Hex,
   candidate: CandidateSettlement,
   inputs: PlanCaravanRouteInputs,
+  observations: readonly OriginDestObservation[],
 ): Evaluation | null => {
   if (hexEquals(candidate.hex, origin)) return null;
-  const obs = observationsForRoute(origin, candidate.hex, inputs.knownPrices);
-  if (obs.length === 0) return null;
-  const { cargo, grossSpread } = planCargo(caravan, obs);
+  if (observations.length === 0) return null;
+  const { cargo, grossSpread } = planCargo(caravan, observations);
   if (grossSpread <= 0 || cargo.size === 0) return null;
 
   const distance = hexDistance(origin, candidate.hex);
   const travelCostCoin = travelCost(caravan, distance);
-  const path = approximatePath(origin, candidate.hex);
-  const riskMultiplier = expectedRisk(inputs.knownBanditDensity, path);
+  const riskMultiplier =
+    inputs.knownBanditDensity.size === 0
+      ? 0
+      : expectedRisk(inputs.knownBanditDensity, approximatePath(origin, candidate.hex));
   const riskLossCoin = grossSpread * riskMultiplier;
   const tollCoin = inputs.knownToll(origin, candidate.hex);
 
@@ -316,9 +346,14 @@ export const planCaravanRoute = (inputs: PlanCaravanRouteInputs): RoutePlan | nu
   const origin = inputs.caravan.position;
   if (inputs.knownPrices.size === 0) return null;
 
+  const observationsByDest = observationsByDestination(origin, inputs.knownPrices);
+  if (observationsByDest.size === 0) return null;
+
   const evaluations: Evaluation[] = [];
   for (const candidate of inputs.candidateSettlements) {
-    const ev = evaluateCandidate(inputs.caravan, origin, candidate, inputs);
+    const obs = observationsByDest.get(hexKey(candidate.hex));
+    if (obs === undefined) continue;
+    const ev = evaluateCandidate(inputs.caravan, origin, candidate, inputs, obs);
     if (ev !== null && ev.netProfit > 0) {
       evaluations.push(ev);
     }
@@ -352,6 +387,6 @@ export const planCaravanRoute = (inputs: PlanCaravanRouteInputs): RoutePlan | nu
     expectedProfit: best.netProfit,
     expectedRiskLossMultiplier: best.riskMultiplier,
     estimatedDays: estimateDays(best.distance),
-    reason: formatReason(best),
+    reason: inputs.includeReason === false ? '' : formatReason(best),
   };
 };

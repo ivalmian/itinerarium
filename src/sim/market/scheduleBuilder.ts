@@ -33,9 +33,8 @@
 
 import { allRecipes, type RecipeDef } from '../production/recipes.js';
 import { getResource } from '../resources/catalog.js';
-import { ACTOR_KINDS, type ActorKind } from '../politics/actor.js';
-import type { CharacterClass } from '../population/types.js';
-import type { AgeBand } from '../population/cohort.js';
+import type { ActorKind } from '../politics/actor.js';
+import { CHARACTER_CLASSES, type CharacterClass } from '../population/types.js';
 import type { Settlement } from '../world/settlement.js';
 import type { Season } from '../world/terrain.js';
 import type { ActorId, Day, Quantity, ResourceId } from '../types.js';
@@ -89,12 +88,13 @@ export const buildSettlementSchedules = (inputs: BuildScheduleInputs): Settlemen
     ResourceId,
     { readonly demand: DemandSchedule; readonly supply: SupplySchedule }
   >();
+  const context = buildSettlementScheduleContext(inputs.settlement);
   for (const resource of inputs.resources) {
     const demandSources: DemandSource[] = [
-      ...subsistenceSources(resource, inputs),
-      ...comfortSources(resource, inputs),
-      ...statusSources(resource, inputs),
-      ...derivedInputSources(resource, inputs),
+      ...subsistenceSources(resource, inputs, context),
+      ...comfortSources(resource, inputs, context),
+      ...statusSources(resource, inputs, context),
+      ...derivedInputSources(resource, inputs, context),
     ];
     const supplySources = supplyForResource(resource, inputs);
     out.set(resource, {
@@ -124,6 +124,8 @@ const DEFAULT_WEALTH_PER_CAPITA: Readonly<Record<CharacterClass, number>> = Obje
   foreigner: 50,
 });
 
+const DEFAULT_WEALTH_PER_CAPITA_MAP = toMap(DEFAULT_WEALTH_PER_CAPITA);
+
 const DEFAULT_DISCRETIONARY_PER_DAY: Readonly<Record<CharacterClass, number>> = Object.freeze({
   // Daily comfort budget in coin units. Patricians have plenty; plebeians a
   // little; slaves zero. Foreigners (resident merchants etc.) are between.
@@ -133,6 +135,8 @@ const DEFAULT_DISCRETIONARY_PER_DAY: Readonly<Record<CharacterClass, number>> = 
   slave: 0,
   foreigner: 2,
 });
+
+const DEFAULT_DISCRETIONARY_PER_DAY_MAP = toMap(DEFAULT_DISCRETIONARY_PER_DAY);
 
 /**
  * Subsistence calorie/salt/fuel needs in resource-units per adult per day.
@@ -229,51 +233,53 @@ const DEFAULT_PRODUCTION_COST_RATIO = 0.8;
 
 // --- Age multiplier ---------------------------------------------------------
 
-const AGE_MULTIPLIER: Readonly<Record<AgeBand, number>> = Object.freeze({
-  '0-4': 0.5,
-  '5-9': 0.5,
-  '10-14': 0.5,
-  '15-19': 1,
-  '20-24': 1,
-  '25-29': 1,
-  '30-34': 1,
-  '35-39': 1,
-  '40-44': 1,
-  '45-49': 1,
-  '50-54': 1,
-  '55-59': 1,
-  '60-64': 1,
-  '65-69': 0.8,
-  '70-74': 0.8,
-  '75-79': 0.8,
-  '80+': 0.8,
-});
+interface SettlementScheduleContext {
+  readonly adultEquivalentByClass: ReadonlyMap<CharacterClass, number>;
+  readonly headsByClass: ReadonlyMap<CharacterClass, number>;
+  readonly buildingsByKind: ReadonlyMap<string, number>;
+}
+
+const buildSettlementScheduleContext = (settlement: Settlement): SettlementScheduleContext => {
+  const adultEquivalentByClass = new Map<CharacterClass, number>();
+  const headsByClass = new Map<CharacterClass, number>();
+  for (const cls of CHARACTER_CLASSES) {
+    const adultEq = settlement.population.adultEquivalentByClass(cls);
+    if (adultEq > 0) adultEquivalentByClass.set(cls, adultEq);
+    const heads = settlement.population.totalByClass(cls);
+    if (heads > 0) headsByClass.set(cls, heads);
+  }
+  return {
+    adultEquivalentByClass,
+    headsByClass,
+    buildingsByKind: countBuildingsByKind(settlement),
+  };
+};
 
 // --- Demand: subsistence ----------------------------------------------------
 
 const subsistenceSources = (
   resource: ResourceId,
   inputs: BuildScheduleInputs,
+  context: SettlementScheduleContext,
 ): readonly DemandSource[] => {
   const out: DemandSource[] = [];
-  // Aggregate effective adult-equivalent counts per class.
-  const adultEquivalentByClass = adultEquivalents(inputs.settlement);
-  const wealthMap = inputs.wealthPerCapita ?? toMap(DEFAULT_WEALTH_PER_CAPITA);
-  for (const [klass, adultEqCount] of adultEquivalentByClass) {
+  const resourceKey = String(resource);
+  const wealthMap = inputs.wealthPerCapita ?? DEFAULT_WEALTH_PER_CAPITA_MAP;
+  for (const [klass, adultEqCount] of context.adultEquivalentByClass) {
     if (adultEqCount <= 0) continue;
     const needsTable = klass === 'slave' ? SUBSISTENCE_NEEDS_SLAVE : SUBSISTENCE_NEEDS_FREE;
-    const perAdult = needsTable[String(resource)];
+    const perAdult = needsTable[resourceKey];
     if (perAdult === undefined) continue;
     const totalNeed = perAdult * adultEqCount;
     if (totalNeed <= 0) continue;
     const wealthPerHead = wealthMap.get(klass) ?? 0;
     // Total segment wealth = per-capita × headcount (use raw cohort heads,
     // not adult-equivalents — wealth is held per person).
-    const headCount = headsOfClass(inputs.settlement, klass);
+    const headCount = context.headsByClass.get(klass) ?? 0;
     const segmentWealth = wealthPerHead * headCount;
     out.push(
       subsistenceDemand({
-        id: `subsistence:${String(inputs.settlement.id)}:${klass}:${String(resource)}`,
+        id: `subsistence:${String(inputs.settlement.id)}:${klass}:${resourceKey}`,
         needPerDay: totalNeed,
         segmentWealth,
       }),
@@ -287,24 +293,25 @@ const subsistenceSources = (
 const comfortSources = (
   resource: ResourceId,
   inputs: BuildScheduleInputs,
+  context: SettlementScheduleContext,
 ): readonly DemandSource[] => {
-  if (!COMFORT_WANTS.has(String(resource))) return [];
-  const wantPerAdult = COMFORT_WANT_QTY[String(resource)] ?? 0;
+  const resourceKey = String(resource);
+  if (!COMFORT_WANTS.has(resourceKey)) return [];
+  const wantPerAdult = COMFORT_WANT_QTY[resourceKey] ?? 0;
   if (wantPerAdult <= 0) return [];
   const out: DemandSource[] = [];
-  const adultEqByClass = adultEquivalents(inputs.settlement);
-  const budgetMap = inputs.discretionaryIncomePerDay ?? toMap(DEFAULT_DISCRETIONARY_PER_DAY);
-  for (const [klass, adultEqCount] of adultEqByClass) {
+  const budgetMap = inputs.discretionaryIncomePerDay ?? DEFAULT_DISCRETIONARY_PER_DAY_MAP;
+  for (const [klass, adultEqCount] of context.adultEquivalentByClass) {
     if (klass === 'slave') continue; // docs/04: no comfort demand
     if (adultEqCount <= 0) continue;
-    const headCount = headsOfClass(inputs.settlement, klass);
+    const headCount = context.headsByClass.get(klass) ?? 0;
     const totalWant = wantPerAdult * adultEqCount;
     const budgetPerHead = budgetMap.get(klass) ?? 0;
     const totalBudget = budgetPerHead * headCount;
     if (totalBudget <= 0) continue;
     out.push(
       comfortDemand({
-        id: `comfort:${String(inputs.settlement.id)}:${klass}:${String(resource)}`,
+        id: `comfort:${String(inputs.settlement.id)}:${klass}:${resourceKey}`,
         wantQuantity: totalWant,
         budget: totalBudget,
       }),
@@ -318,19 +325,20 @@ const comfortSources = (
 const statusSources = (
   resource: ResourceId,
   inputs: BuildScheduleInputs,
+  context: SettlementScheduleContext,
 ): readonly DemandSource[] => {
-  if (!STATUS_WANTS.has(String(resource))) return [];
-  const wantPerAdult = STATUS_WANT_QTY[String(resource)] ?? 0;
+  const resourceKey = String(resource);
+  if (!STATUS_WANTS.has(resourceKey)) return [];
+  const wantPerAdult = STATUS_WANT_QTY[resourceKey] ?? 0;
   if (wantPerAdult <= 0) return [];
   const out: DemandSource[] = [];
-  const adultEqByClass = adultEquivalents(inputs.settlement);
-  const wealthMap = inputs.wealthPerCapita ?? toMap(DEFAULT_WEALTH_PER_CAPITA);
+  const wealthMap = inputs.wealthPerCapita ?? DEFAULT_WEALTH_PER_CAPITA_MAP;
   // Status is patrician-only in v1. Governor's office demand is captured
   // separately by the patrician class for now (the governor is a patrician
   // of a specific family in docs/11).
-  const adults = adultEqByClass.get('patrician') ?? 0;
+  const adults = context.adultEquivalentByClass.get('patrician') ?? 0;
   if (adults <= 0) return out;
-  const heads = headsOfClass(inputs.settlement, 'patrician');
+  const heads = context.headsByClass.get('patrician') ?? 0;
   const totalWant = wantPerAdult * adults;
   const wealthPerHead = wealthMap.get('patrician') ?? 0;
   const totalWealth = wealthPerHead * heads;
@@ -341,7 +349,7 @@ const statusSources = (
   if (threshold <= 0) return out;
   out.push(
     statusDemand({
-      id: `status:${String(inputs.settlement.id)}:patrician:${String(resource)}`,
+      id: `status:${String(inputs.settlement.id)}:patrician:${resourceKey}`,
       wantQuantity: totalWant,
       segmentWealth: totalWealth,
       veryHighThreshold: threshold,
@@ -355,12 +363,12 @@ const statusSources = (
 const derivedInputSources = (
   resource: ResourceId,
   inputs: BuildScheduleInputs,
+  context: SettlementScheduleContext,
 ): readonly DemandSource[] => {
   const out: DemandSource[] = [];
-  const buildingsHere = countBuildingsByKind(inputs.settlement);
-  for (const recipe of allRecipes()) {
-    if (!recipeUsesInput(recipe, resource)) continue;
-    const buildingCap = buildingsHere.get(String(recipe.building)) ?? 0;
+  const recipes = RECIPES_BY_INPUT.get(String(resource)) ?? [];
+  for (const recipe of recipes) {
+    const buildingCap = context.buildingsByKind.get(String(recipe.building)) ?? 0;
     if (buildingCap <= 0) continue;
     const seasonMul = recipe.seasonalMultiplier?.[inputs.season];
     if (seasonMul !== undefined && seasonMul <= 0) continue;
@@ -391,12 +399,21 @@ const derivedInputSources = (
   return out;
 };
 
-const recipeUsesInput = (recipe: RecipeDef, resource: ResourceId): boolean => {
-  for (const k of recipe.inputs.keys()) {
-    if (String(k) === String(resource)) return true;
+const RECIPES_BY_INPUT: ReadonlyMap<string, readonly RecipeDef[]> = (() => {
+  const out = new Map<string, RecipeDef[]>();
+  for (const recipe of allRecipes()) {
+    for (const input of recipe.inputs.keys()) {
+      const k = String(input);
+      let bucket = out.get(k);
+      if (bucket === undefined) {
+        bucket = [];
+        out.set(k, bucket);
+      }
+      bucket.push(recipe);
+    }
   }
-  return false;
-};
+  return out;
+})();
 
 const pickRepresentativeOutput = (
   recipe: RecipeDef,
@@ -446,18 +463,15 @@ const supplyForResource = (
 ): readonly SupplySource[] => {
   const out: SupplySource[] = [];
   const recentPrice = inputs.recentLocalPrices.get(resource) ?? 0;
+  const def = getResource(resource);
+  const storageHoldingDays = def.perishableDays ?? 365;
   for (const [ownerActor, byResource] of inputs.stockpilesByOwner) {
     const qty = byResource.get(resource);
     if (qty === undefined || qty <= 0) continue;
     const kind = inputs.ownerKindByActor?.get(ownerActor);
-    const urgency =
-      kind !== undefined && (ACTOR_KINDS as readonly ActorKind[]).includes(kind)
-        ? URGENCY_BY_KIND[kind]
-        : DEFAULT_OWNER_URGENCY;
+    const urgency = kind !== undefined ? URGENCY_BY_KIND[kind] : DEFAULT_OWNER_URGENCY;
     const productionCost = recentPrice > 0 ? recentPrice * DEFAULT_PRODUCTION_COST_RATIO : 0;
     const expectedFuturePrice = recentPrice;
-    const def = getResource(resource);
-    const storageHoldingDays = def.perishableDays ?? 365;
     out.push(
       ownerSupply({
         id: `supply:${String(inputs.settlement.id)}:${String(ownerActor)}:${String(resource)}`,
@@ -479,24 +493,6 @@ const supplyForResource = (
 
 // --- Helpers ---------------------------------------------------------------
 
-const adultEquivalents = (settlement: Settlement): Map<CharacterClass, number> => {
-  const out = new Map<CharacterClass, number>();
-  for (const [key, count] of settlement.population.cohorts()) {
-    const mul = AGE_MULTIPLIER[key.age] ?? 1;
-    const adultEq = count * mul;
-    out.set(key.class, (out.get(key.class) ?? 0) + adultEq);
-  }
-  return out;
-};
-
-const headsOfClass = (settlement: Settlement, klass: CharacterClass): number => {
-  let total = 0;
-  for (const [key, count] of settlement.population.cohorts()) {
-    if (key.class === klass) total += count;
-  }
-  return total;
-};
-
 const countBuildingsByKind = (settlement: Settlement): Map<string, number> => {
   // Sum capacity across all instances of each building type.
   const out = new Map<string, number>();
@@ -508,10 +504,10 @@ const countBuildingsByKind = (settlement: Settlement): Map<string, number> => {
   return out;
 };
 
-const toMap = <K extends string, V>(rec: Readonly<Record<K, V>>): ReadonlyMap<K, V> => {
+function toMap<K extends string, V>(rec: Readonly<Record<K, V>>): ReadonlyMap<K, V> {
   const m = new Map<K, V>();
   for (const k of Object.keys(rec) as K[]) {
     m.set(k, rec[k]);
   }
   return m;
-};
+}
