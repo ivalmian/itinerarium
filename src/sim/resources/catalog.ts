@@ -267,6 +267,15 @@ const DEFS: readonly ResourceInput[] = [
     notes: 'Amphora ≈ 26 L. Improves over years; major trade good.',
   },
   {
+    id: 'food.milk',
+    tier: 0,
+    category: 'food',
+    name: 'Raw milk',
+    weightKgPerUnit: 1,
+    perishableDays: 2,
+    notes: 'Daily output of dairy herds. Short shelf life — typically processed into cheese same day or sold to a neighboring town. Per docs/15 §C12.',
+  },
+  {
     id: 'food.cheese',
     tier: 1,
     category: 'food',
@@ -372,6 +381,22 @@ const DEFS: readonly ResourceInput[] = [
     name: 'Iron bar',
     weightKgPerUnit: 25,
     notes: 'Bar stock. Smith input.',
+  },
+  {
+    id: 'metal.copper',
+    tier: 1,
+    category: 'metal',
+    name: 'Copper ingot',
+    weightKgPerUnit: 25,
+    notes: 'Smelted from copper ore. Bronze precursor + plumbing/wire. Per docs/15 §C13.',
+  },
+  {
+    id: 'metal.tin',
+    tier: 1,
+    category: 'metal',
+    name: 'Tin ingot',
+    weightKgPerUnit: 25,
+    notes: 'Smelted from tin ore. Scarce — bronze precursor. Per docs/15 §C13.',
   },
   {
     id: 'metal.bronze',

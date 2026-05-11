@@ -68,6 +68,8 @@ const REFINING = [
   'throw_pottery',
   'throw_amphorae',
   'smelt_iron',
+  'smelt_copper',
+  'smelt_tin',
   'alloy_bronze',
   'smelt_lead',
   'cupel_silver',

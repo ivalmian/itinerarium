@@ -161,12 +161,14 @@ const DEFS: readonly RecipeInput[] = [
   {
     id: 'milk_dairy',
     // Cattle are PRESENT in the dairy and provide a milk flow; milking
-    // does not consume the herd. See shear_wool above.
+    // does not consume the herd. See shear_wool above. Per docs/15 §C12
+    // raw milk is now a tracked resource — this recipe outputs it
+    // directly for downstream cheesemaking + nearby-town trade.
     requires: { 'livestock.cattle': 0.005 },
     labor: { dairy_worker: 1 },
     building: 'dairy',
-    outputs: { 'food.cheese': 8 },
-    notes: 'Milk → cheese in one step (raw milk not separately tracked in v1).',
+    outputs: { 'food.milk': 30 },
+    notes: 'Daily dairy yield (~30 kg per cattle herd unit). Sold or processed into cheese same day.',
   },
   {
     id: 'slaughter_for_meat_and_hides',
@@ -340,11 +342,14 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'make_cheese',
-    inputs: { 'mineral.salt': 0.5 },
+    // Per docs/15 §C12: cheese now consumes the explicit food.milk resource.
+    // ~10 kg milk → 1 kg hard cheese is the historical conversion ratio;
+    // 60 kg milk → 6 kg cheese here. Salt for preservation.
+    inputs: { 'food.milk': 60, 'mineral.salt': 0.5 },
     labor: { dairy_worker: 1 },
     building: 'dairy',
     outputs: { 'food.cheese': 6 },
-    notes: 'Implicit milk supply through dairy + livestock; salt explicit.',
+    notes: '~10 kg milk per kg hard cheese (historical Roman ratio).',
   },
   {
     id: 'salt_fish',
@@ -439,11 +444,36 @@ const DEFS: readonly RecipeInput[] = [
       'Roman bloomery: ~60 kg ore + ~100 kg charcoal → ~15 kg bloom iron per smelter-day (docs/03 worked example).',
   },
   {
-    id: 'alloy_bronze',
-    inputs: { 'mineral.copper_ore': 40, 'mineral.tin_ore': 5, 'material.charcoal': 60 },
+    id: 'smelt_copper',
+    // Per docs/15 §C13: copper smelted to ingot stage so trade can ship
+    // refined copper between regions independently of the bronze alloy.
+    // Roman copper smelting: ~5 kg ore + ~10 kg charcoal yields ~1 kg
+    // copper, scaled to per-recipe-instance.
+    inputs: { 'mineral.copper_ore': 60, 'material.charcoal': 100 },
     labor: { smelter: 1 },
     building: 'bloomery',
-    outputs: { 'metal.bronze': 12 },
+    outputs: { 'metal.copper': 12 },
+    notes: 'Copper smelting (precursor to bronze).',
+  },
+  {
+    id: 'smelt_tin',
+    // Tin smelts at lower temperature than iron; smaller charcoal need.
+    inputs: { 'mineral.tin_ore': 40, 'material.charcoal': 50 },
+    labor: { smelter: 1 },
+    building: 'bloomery',
+    outputs: { 'metal.tin': 10 },
+    notes: 'Tin smelting (scarce, precursor to bronze).',
+  },
+  {
+    id: 'alloy_bronze',
+    // Per docs/15 §C13: bronze now alloys from refined ingots, not raw ore.
+    // Historical bronze ratio ~88% copper + 12% tin; here 9 copper + 1 tin
+    // → 10 bronze (small charcoal for re-melt).
+    inputs: { 'metal.copper': 9, 'metal.tin': 1, 'material.charcoal': 8 },
+    labor: { smelter: 1 },
+    building: 'bloomery',
+    outputs: { 'metal.bronze': 10 },
+    notes: 'Bronze alloying: ~88% copper + ~12% tin (historical ratio).',
   },
   {
     id: 'smelt_lead',
