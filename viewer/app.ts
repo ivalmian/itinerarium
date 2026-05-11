@@ -56,6 +56,10 @@ import {
 } from './state/history.js';
 import { createSidebar, type Sidebar } from './ui/sidebar.js';
 import { createFactionScreen, type FactionScreen } from './ui/factionScreen.js';
+import { createPopup, type Popup } from './ui/popup.js';
+import { renderSettlementPopup } from './ui/settlementPopup.js';
+import { renderCaravanPopup } from './ui/caravanPopup.js';
+import { renderBanditCampPopup } from './ui/banditCampPopup.js';
 
 export interface ViewerApp {
   destroy(): void;
@@ -420,6 +424,71 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     },
   });
 
+  // Detail-popup: a single reusable modal that hosts the settlement /
+  // caravan / bandit-camp rich inspectors. The popup overlay sits above the
+  // map + sidebar (z-index in popup.ts). Closing the popup clears the
+  // current selection so the sidebar reverts to "nothing selected".
+  //
+  // The popup is kept distinct from the faction screen because their open
+  // states are orthogonal: clicking a faction chip inside a settlement
+  // popup should leave the settlement popup intact and overlay the faction
+  // screen on top.
+  let detailPopup: Popup;
+  // Forward declaration so the onClose closure below can re-read it.
+  const closeDetailPopupIfStale = (): void => {
+    const kind = state.selection.kind;
+    if (kind !== 'settlement' && kind !== 'caravan' && kind !== 'bandit_camp') {
+      if (detailPopup !== undefined && detailPopup.isOpen) detailPopup.close();
+    }
+  };
+  detailPopup = createPopup({
+    onClose: () => {
+      // Dismissed by Escape / backdrop / X. If the selection still points
+      // at a popup-eligible entity, clear it so the sidebar and selection
+      // visuals also reset.
+      const k = state.selection.kind;
+      if (k === 'settlement' || k === 'caravan' || k === 'bandit_camp') {
+        setSelection(state, { kind: 'none' });
+      }
+    },
+  });
+
+  const refreshDetailPopup = (): void => {
+    const sel = state.selection;
+    if (sel.kind === 'settlement') {
+      const c = renderSettlementPopup({ world, id: sel.id, state, history });
+      if (c === null) {
+        if (detailPopup.isOpen) detailPopup.close();
+        return;
+      }
+      if (detailPopup.isOpen) detailPopup.setContent(c.element, c.title);
+      else detailPopup.open(c.element, c.title);
+      return;
+    }
+    if (sel.kind === 'caravan') {
+      const c = renderCaravanPopup({ world, id: sel.id, state, history });
+      if (c === null) {
+        if (detailPopup.isOpen) detailPopup.close();
+        return;
+      }
+      if (detailPopup.isOpen) detailPopup.setContent(c.element, c.title);
+      else detailPopup.open(c.element, c.title);
+      return;
+    }
+    if (sel.kind === 'bandit_camp') {
+      const c = renderBanditCampPopup({ world, id: sel.id, state, history });
+      if (c === null) {
+        if (detailPopup.isOpen) detailPopup.close();
+        return;
+      }
+      if (detailPopup.isOpen) detailPopup.setContent(c.element, c.title);
+      else detailPopup.open(c.element, c.title);
+      return;
+    }
+    // Any other selection kind: close the popup if it's open.
+    closeDetailPopupIfStale();
+  };
+
   // Wire pan / zoom. Background clicks pick a hex from the click position
   // (so wilderness hexes become inspectable) instead of deselecting; clicks
   // off the grid (no tile under the cursor) clear the selection.
@@ -573,6 +642,11 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     }
     refreshHighlights();
     factionScreen.refresh(world);
+    // Refresh-on-tick is gated to "popup open AND selection matches" — the
+    // popup's own renderer no-ops when the selection no longer points at a
+    // popup-eligible entity, so cost is bounded to one rebuild per tick for
+    // the single selected entity (cheap at viewer scale).
+    if (detailPopup.isOpen) refreshDetailPopup();
 
     lastTickWallMs = performance.now();
     lastCaravanVisualSyncMs = lastTickWallMs;
@@ -599,6 +673,7 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     } else if (factionScreen.isOpen()) {
       factionScreen.close();
     }
+    refreshDetailPopup();
   });
 
   // PIXI ticker drives both interpolation and tick scheduling.
@@ -657,6 +732,7 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
   return {
     destroy: () => {
       window.removeEventListener('resize', resize);
+      detailPopup.destroy();
       app.destroy(true);
     },
     step: () => ({ events: advanceOneTick() }),

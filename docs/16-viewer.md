@@ -12,7 +12,7 @@ and not what this viewer is.
 ## Goals
 
 - **Run the sim live in the browser.** Tick the world automatically
-  at a chosen speed (1×, 4×, 16×, 64×). Pause / play / step.
+  at a chosen speed (1×, 4×, 16×, 64×, 256×). Pause / play / step.
 - **Pannable + zoomable hex map.** WebGL/PixiJS for performance —
   ~250k hexes total, ~hundreds visible per viewport.
 - **Settlements scale with population.** Glyph radius proportional
@@ -106,6 +106,7 @@ Population of 100 → r=4+12=16; pop 1k → r=4+18=22; pop 10k → r=28;
 pop 100k → r=34. The log keeps mega-cities from dominating the map.
 
 Color by tier:
+
 - hamlet: light brown
 - village: brown
 - town: dark brown
@@ -114,11 +115,17 @@ Color by tier:
 
 ## Caravan rendering
 
-Each caravan is one PIXI.Sprite (a 6-px circle, color = owner
-faction). On each sim tick, the caravan's `position` may change.
-The viewer interpolates the sprite's position between old and
-new over the tick interval (so at 16× speed the dots smoothly
-slide between hexes rather than teleporting).
+Each caravan is a PIXI sprite using `viewer/art/units/caravan.svg`,
+with a small owner-colored badge. On each sim tick, the caravan's
+`position` may change by a full day of travel. The viewer interpolates
+the sprite along the emitted `caravan_moved` path, and at high sim
+speeds it gives caravan movement a short minimum visual duration. If
+the next sim day arrives before the current animation is finished, the
+viewer keeps the unfinished route tail and appends the next emitted
+path instead of replacing it with a straight catch-up segment. The sim
+state remains authoritative; the visual layer may trail it slightly
+rather than snapping units across the map or making existing caravans
+look like random new spawns.
 
 Caravans carrying bandit-stolen cargo have a red outline.
 
@@ -132,12 +139,14 @@ A small black X glyph (5 px) on the camp's hex. Tooltip on hover:
 
 - ▶ Play (current speed)
 - ⏸ Pause
-- ▶▶ Speed up (toggle through 1×, 4×, 16×, 64×)
+- ▶▶ Speed up (toggle through 1×, 4×, 16×, 64×, 256×)
 - ⏹ Reset (re-seed and re-run from day 0 with same seed)
 
-Internally, `setInterval` ticks the sim at `1000 / speed` ms per
-tick at 1×; faster speeds reduce the interval. We don't tick more
-than once per requestAnimationFrame to avoid blocking the renderer.
+Internally, the Pixi ticker advances the sim according to the selected
+speed. We don't tick more than once per requestAnimationFrame to avoid
+blocking the renderer. Caravan rendering uses a separate interpolation
+clock so a slow frame at high speed does not make every caravan appear
+to teleport or respawn.
 
 ## Stats sidebar
 
@@ -155,21 +164,66 @@ Below: Resources expandable section. Below that: Selected entity
 panel (whatever the user last clicked). Below: scrolling event log
 (last 50 high-magnitude events).
 
+## Detail popup
+
+Clicking a settlement, caravan, or bandit camp opens a modal popup
+above the map with the rich inspector view — much larger than the
+sidebar's compact panel. The popup is dismissed by Escape, by
+clicking the dark backdrop, or by the close button; any of those
+also clears the selection so the sidebar reverts to "nothing
+selected". The sidebar's compact selected-entity panel keeps
+showing the same data; the popup is additive.
+
+The popup layers on top of the faction screen ordering: clicking a
+faction chip inside a settlement / caravan / camp popup opens the
+faction screen on top. Closing the faction screen reverts the
+selection to none (closes the popup beneath as well).
+
+Content per kind:
+
+- **Settlement.** Header (name, tier, anchor, factions). Population:
+  class totals (patrician / plebeian / freedman / slave / foreigner)
+  plus an age × sex pyramid (17 bands × 2 sexes, oldest at top).
+  Treasury per owning actor. Buildings grouped by kind with hex list.
+  Stockpile / market table: per-resource quantity, last clearing
+  price, bid-ask spread placeholder (— until the market layer
+  surfaces max-bid / min-ask), recent in/outflow units, and a
+  60-day price sparkline from the per-entity history buffer. Recent
+  per-entity events.
+- **Caravan.** Owner actor + faction. Position / destination /
+  hex-distance / estimated days (range from baseMp × loadMult).
+  "Why?" line: top of the goal stack rendered as a human sentence,
+  or inferred from cargo + destination when the stack is empty.
+  Cargo manifest with last buy / sell prices at home / destination
+  and implied margin. Crew table + animals + vehicles. P/L surrogate:
+  treasury Δ over the last 60 days plus a treasury / cargo / crew /
+  health sparkline trio (per-trip ledger TODO). Condensed route
+  trace from the per-entity history.
+- **Bandit camp.** Header. Combat profile (bandits, hangers-on,
+  weapons %, armor %, health). Loot stockpile table. Bandit
+  demographics pyramid (when seeded). 60-day sparkline trio
+  (bandits / hangers-on / treasury / health). Recent action events.
+
+The popup refreshes on every sim tick while open AND the selection
+still matches — the renderer is gated so non-popup-eligible
+selections (hex, faction, none) do not cost a rebuild per tick.
+
 ## Resources panel
 
 When expanded, shows a table:
 
-| Resource | Global stock | Production rate (units/day, 30d avg) | Last price |
-|---|---|---|---|
-| food.grain | 1.2M modii | 12,400/day | 1.05 coin |
-| metal.iron | 2,400 kg | 8/day | 12.40 coin |
-| ... | ... | ... | ... |
+| Resource   | Global stock | Production rate (units/day, 30d avg) | Last price |
+| ---------- | ------------ | ------------------------------------ | ---------- |
+| food.grain | 1.2M modii   | 12,400/day                           | 1.05 coin  |
+| metal.iron | 2,400 kg     | 8/day                                | 12.40 coin |
+| ...        | ...          | ...                                  | ...        |
 
 Sorted by total value (stock × price), top 20.
 
 ## Heat-map overlay
 
 A dropdown above the map: "Color hexes by:"
+
 - (none — terrain only)
 - Population density (catchment hexes around populous settlements)
 - Grain price (last clearing price)
@@ -219,6 +273,12 @@ viewer/
     banditCampPanel.ts
     resourcePanel.ts
     eventLog.ts
+    popup.ts          # reusable modal-popup chrome (backdrop, Esc, X)
+    settlementPopup.ts  # rich inspector content for a selected settlement
+    caravanPopup.ts     # rich inspector content for a selected caravan
+    banditCampPopup.ts  # rich inspector content for a selected bandit camp
+    factionScreen.ts  # modal faction inspector (separate stack)
+    factionLink.ts    # clickable faction chips used by all panels
   state/
     viewerState.ts    # selected entity, current speed, etc.
 ```
