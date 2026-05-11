@@ -15,7 +15,9 @@
  * marshes in spring, lakes always).
  */
 
+import { drainDemographics, type Demographics } from '../population/demographics.js';
 import { getResource } from '../resources/index.js';
+import type { Rng } from '../rng.js';
 import type { Day } from '../types.js';
 import type { ActorId, CaravanId, Coin, Position, Quantity, ResourceId } from '../types.js';
 import { isPassable, type RoadGrade, type Season, type Terrain } from '../world/terrain.js';
@@ -121,6 +123,15 @@ export interface CrewMember {
   weapons: number;
   /** 0..1 armor equipment level. */
   armor: number;
+  /**
+   * Per-(sex, age band) split of these `count` people. Optional so existing
+   * fixtures (~60 tests) don't all need updating in one shot. When present,
+   * `sum(demographics) === count` should hold; the seeder enforces this and
+   * the casualty path drains demographics in proportion to crew deaths.
+   *
+   * docs/06-caravans.md §"Crew demographics"
+   */
+  demographics?: Demographics;
 }
 
 const RATION_KG_PER_CREW_PER_DAY = 0.4;
@@ -204,7 +215,12 @@ export const createCaravan = (input: CreateCaravanInput): Caravan => {
       input.destination !== undefined && input.destination !== null
         ? { q: input.destination.q, r: input.destination.r }
         : null,
-    crew: input.crew.map((m) => ({ ...m })),
+    crew: input.crew.map((m) => ({
+      ...m,
+      // Defensive copy of the demographics map so callers can't mutate
+      // the caravan's split via their original reference.
+      ...(m.demographics !== undefined ? { demographics: new Map(m.demographics) } : {}),
+    })),
     animals: { ...input.animals },
     vehicles: { ...input.vehicles },
     cargo: new Map(),
@@ -392,4 +408,46 @@ export const dailyMpAllowance = (
     terrainMultiplier(terrain) *
     seasonMultiplier(terrain, season);
   return Math.max(0, mp);
+};
+
+// --- Casualties ------------------------------------------------------------
+
+/**
+ * Apply `totalDeaths` crew casualties to a caravan, in walk order across
+ * its `crew[]` (matching the existing tick-layer convention). When a
+ * crew entry has demographics, the same proportion of its bucket counts
+ * is removed and returned for downstream cohort accounting (e.g., the
+ * settlement at home losing the wives/sons of the dead).
+ *
+ * Returns the per-crew-kind drain map (kind → removed demographics)
+ * suitable for forwarding to a settlement's PopulationPool.
+ *
+ * Mutates `caravan.crew` in place. Crew entries that drop to count==0
+ * are removed (matching tick.ts's existing filter).
+ *
+ * docs/06-caravans.md §"Crew demographics" — casualty accounting.
+ */
+export const applyCrewCasualties = (
+  caravan: Caravan,
+  totalDeaths: number,
+  rng: Rng,
+): ReadonlyMap<CrewKind, ReadonlyMap<string, number>> => {
+  const removed = new Map<CrewKind, ReadonlyMap<string, number>>();
+  if (!Number.isInteger(totalDeaths) || totalDeaths <= 0) return removed;
+  let remaining = totalDeaths;
+  for (const m of caravan.crew) {
+    if (remaining <= 0) break;
+    const take = Math.min(m.count, remaining);
+    if (take <= 0) continue;
+    m.count -= take;
+    remaining -= take;
+    if (m.demographics !== undefined) {
+      const mut = new Map(m.demographics);
+      const drained = drainDemographics(mut, take, rng.derive(`drain-${m.kind}`));
+      m.demographics = mut;
+      removed.set(m.kind, drained);
+    }
+  }
+  caravan.crew = caravan.crew.filter((m) => m.count > 0);
+  return removed;
 };

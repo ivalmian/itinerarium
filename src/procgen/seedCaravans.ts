@@ -38,7 +38,12 @@ import {
   type SettlementId,
 } from '../sim/types.js';
 import { createActor, type Actor } from '../sim/politics/actor.js';
-import { createCaravan, type Caravan, type CrewMember } from '../sim/caravan/caravan.js';
+import { createCaravan, type Caravan, type CrewKind, type CrewMember } from '../sim/caravan/caravan.js';
+import {
+  drawDemographicsFromPool,
+  ROLE_BIASES,
+  type RoleBias,
+} from '../sim/population/demographics.js';
 import { hexDistance, hexEquals, type Hex } from '../sim/world/hex.js';
 import type { Settlement } from '../sim/world/settlement.js';
 import type { WorldState } from './seed.js';
@@ -189,11 +194,43 @@ const buildStarterCargo = (rng: Rng): Map<ResourceId, number> => {
   return cargo;
 };
 
-const buildStarterCrew = (rng: Rng): CrewMember[] => {
+const CREW_ROLE_BIAS: Record<CrewKind, RoleBias> = {
+  merchant: ROLE_BIASES.caravan_merchant,
+  drover: ROLE_BIASES.caravan_drover,
+  caravan_guard: ROLE_BIASES.caravan_guard,
+  soldier: ROLE_BIASES.caravan_soldier,
+};
+
+/**
+ * Build the crew for a starter caravan, sampling per-role demographics from
+ * the origin settlement's working-age population pool. Per CLAUDE.md
+ * ("everyone in all units has gender and age") + docs/06 §"Crew demographics":
+ * each `CrewMember.demographics` map sums to its `count`.
+ *
+ * The same `rng` is used for both the count rolls and demographics draws —
+ * sub-derived per role so adding a new crew kind doesn't shift older streams.
+ */
+const buildStarterCrew = (rng: Rng, origin: Settlement): CrewMember[] => {
+  const merchantCount = 1;
+  const droverCount = rng.int(2, 4);
+  const guardCount = rng.int(1, 3);
+  const pool = origin.population;
+  const mk = (kind: CrewKind, count: number, weapons: number, armor: number): CrewMember => ({
+    kind,
+    count,
+    weapons,
+    armor,
+    demographics: drawDemographicsFromPool(
+      pool,
+      count,
+      CREW_ROLE_BIAS[kind],
+      rng.derive(`demo-${kind}`),
+    ),
+  });
   return [
-    { kind: 'merchant', count: 1, weapons: 0, armor: 0 },
-    { kind: 'drover', count: rng.int(2, 4), weapons: 0, armor: 0 },
-    { kind: 'caravan_guard', count: rng.int(1, 3), weapons: 0.4, armor: 0.2 },
+    mk('merchant', merchantCount, 0, 0),
+    mk('drover', droverCount, 0, 0),
+    mk('caravan_guard', guardCount, 0.4, 0.2),
   ];
 };
 
@@ -299,7 +336,7 @@ const buildOneCaravan = (
     ownerActor: owner.actor.id,
     position: originHex,
     destination: cloneHex(dest.hex),
-    crew: buildStarterCrew(rng.derive('crew')),
+    crew: buildStarterCrew(rng.derive('crew'), owner.origin),
     animals: buildStarterAnimals(rng.derive('animals')),
     vehicles: { pack_saddle: 1 },
     treasury: rng.int(50, 500),

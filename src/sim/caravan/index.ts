@@ -22,6 +22,7 @@ export {
   CREW_KINDS,
   VEHICLE_KINDS,
   VEHICLE_SPECS,
+  applyCrewCasualties,
   createCaravan,
   dailyAnimalFodderKg,
   dailyCrewRationKg,

@@ -47,6 +47,47 @@ Crew:
 - **Merchant**: makes trade decisions; 1 per caravan suffices.
 - Crew rations: ~0.4 kg grain-equivalent / crew / day.
 
+### Crew demographics
+
+Per the pillar-1 rule "everyone in all units has gender and age",
+every `CrewMember` carries an optional **demographics** map: a
+sparse `Map<string, number>` keyed by `${sex}|${ageBand}` whose
+values sum to the entry's `count`. The same encoding is used by
+`Settlement.population` so the two can be compared / fed into each
+other.
+
+Sourcing rule (procgen + recruitment):
+
+- A crew is drawn from the **origin settlement's working-age
+  population pool** via `drawDemographicsFromPool(pool, count, bias,
+  rng)` (in `src/sim/population/demographics.ts`).
+- Per-role bias profiles live in `ROLE_BIASES`:
+  - `caravan_merchant` — sex-neutral, peaks 25-44.
+  - `caravan_drover` — male-favored (0.2 weight on female), prime
+    adulthood 20-39.
+  - `caravan_guard` / `caravan_soldier` — heavily male
+    (0.05 weight on female), fighting-age 15-44.
+- Bias is a multiplicative weight on the cohort count, so it
+  collapses to whatever's actually available when a small hamlet
+  is the origin (a 50-person village fielding 5 guards may run
+  out of prime-age men and dip into older bands).
+
+Casualty rule (battle):
+
+- `applyCrewCasualties(caravan, deaths, rng)` in
+  `src/sim/caravan/caravan.ts` reduces `count` AND drains
+  `demographics` proportionally (largest-remainder rounding,
+  RNG-tie-breaking for determinism).
+- The drained per-bucket map is returned so a future caller can
+  feed deaths back to the home settlement's `PopulationPool` (the
+  widows-and-orphans accounting). The drain is wired; the
+  feed-back-to-home is staged for a tick-layer integration.
+
+The `demographics` field is **optional** so existing tests that
+construct ad-hoc crews don't all have to be updated at once.
+Serializers (snapshot, future save game) should treat it as part
+of the unit identity once a crew has been seeded with one.
+
 ## Movement (1 km hex, 1 day turn — locked)
 
 Distances are real. The numbers below are **hexes per day** (= km per
