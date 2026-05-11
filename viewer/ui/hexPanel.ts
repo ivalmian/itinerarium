@@ -331,12 +331,12 @@ export const createHexPanel = (opts: HexPanelOpts): HexPanel => {
     }
 
     // Caravans + patrols + news carriers physically here right now.
-    const caravansHere: { id: string; label: string }[] = [];
+    const caravansHere = [];
     for (const c of world.caravans.values()) {
       if (!hexEquals(c.position, hex)) continue;
       const owner = world.actors.get(c.ownerActor);
       caravansHere.push({
-        id: String(c.id),
+        id: c.id,
         label: `${owner?.name ?? String(c.ownerActor)}'s caravan (${c.crew.reduce((s, m) => s + m.count, 0)} crew)`,
       });
     }
@@ -347,10 +347,17 @@ export const createHexPanel = (opts: HexPanelOpts): HexPanel => {
       h.textContent = `Caravans here (${caravansHere.length}):`;
       root.appendChild(h);
       for (const c of caravansHere) {
-        const row = document.createElement('div');
-        row.style.fontSize = '11px';
-        row.textContent = `· ${c.label}`;
-        root.appendChild(row);
+        // Clickable button so the user can route from a hex to its caravan
+        // panel the same way settlement and bandit-camp links work.
+        const link = document.createElement('button');
+        link.className = 'copy-btn';
+        link.style.marginRight = '4px';
+        link.style.marginBottom = '2px';
+        link.textContent = c.label;
+        link.addEventListener('click', () => {
+          setSelection(state, { kind: 'caravan', id: c.id });
+        });
+        root.appendChild(link);
       }
     }
 

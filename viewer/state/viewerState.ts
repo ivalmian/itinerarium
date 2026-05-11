@@ -47,8 +47,8 @@ export interface ViewerState {
 }
 
 export const createViewerState = (): ViewerState => ({
-  speed: 16,
-  lastNonZeroSpeed: 16,
+  speed: 1,
+  lastNonZeroSpeed: 1,
   paused: false,
   overlay: 'none',
   selection: { kind: 'none' },

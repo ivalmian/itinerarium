@@ -281,9 +281,16 @@ export const createHexMap = (
     maxY: Number.NEGATIVE_INFINITY,
   };
 
-  // Hex sprite dimensions on screen (pointy-top, radius = hexSize).
-  const spriteW = SQRT3 * hexSize;
-  const spriteH = 2 * hexSize;
+  // Hex sprite dimensions on screen (pointy-top, radius = hexSize). We
+  // scale each sprite a hair larger than the geometric hex so adjacent
+  // sprites overlap by a few sub-pixels — eliminates the anti-aliased
+  // dark seam that otherwise appears between same-biome neighbors when
+  // each sprite's clip-path edge fades to transparent. Same-biome
+  // overlap is invisible (identical flat color); different-biome
+  // overlap creates a tiny natural bleed at the boundary.
+  const TILE_OVERLAP = 1.03;
+  const spriteW = SQRT3 * hexSize * TILE_OVERLAP;
+  const spriteH = 2 * hexSize * TILE_OVERLAP;
 
   const urbanTierByHex = buildUrbanTierLookup(Array.from(settlements));
 
