@@ -199,6 +199,23 @@ them — but pursuit creates additional risks (further survivors
 of THAT pursuit). A truly clean kill leaves no survivors to
 track, which is rare.
 
+### News carrier demographics
+
+Per the pillar-1 rule "everyone in all units has gender and age",
+each `NewsCarrier` carries an optional `demographics` map keyed by
+`${sex}|${ageBand}` with the same shape as `CrewMember.demographics`
+(docs/06) and `BanditCamp.banditDemographics` (docs/12). A carrier
+is logically one person — but the field is a map so a future change
+can model "a refugee family" or "a rescued caravan crew traveling
+together" without a breaking type change.
+
+When a battle produces escaped survivors and one is promoted to a
+news carrier, the carrier's demographics should be sliced from the
+losing unit's demographics (e.g., a single male drover, age 25-29).
+The drain helper for that lives in
+`src/sim/population/demographics.ts` (`drainDemographics`); the
+specific battle-survivor → carrier wiring is staged for a follow-up.
+
 ### Indirect propagation: missing caravans
 
 Even with no direct witnesses, the world notices when:

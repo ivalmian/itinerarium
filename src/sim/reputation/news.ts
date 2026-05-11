@@ -15,6 +15,7 @@
  * (T10) so terrain and roads matter.
  */
 
+import type { Demographics } from '../population/demographics.js';
 import type { Day } from '../types.js';
 import { hex, hexDistance, type Hex } from '../world/hex.js';
 import type { ReputationEvent, ReputationKey, ReputationMagnitude } from './table.js';
@@ -71,6 +72,16 @@ export interface NewsCarrier {
   readonly movementPointsPerDay: number;
   readonly arrived: boolean;
   readonly startedOnDay: Day;
+  /**
+   * Per-(sex, age band) split of the people walking. A news carrier
+   * is logically one person — but the field is left a map so a future
+   * change can model "a refugee family" or "a rescued caravan crew
+   * carrying news together" without a breaking type change.
+   * Optional; existing tests don't all need updating.
+   *
+   * docs/13-reputation-and-relationships.md §"News carrier demographics"
+   */
+  readonly demographics?: Demographics;
 }
 
 export interface CreateNewsCarrierInput {
@@ -80,6 +91,7 @@ export interface CreateNewsCarrierInput {
   readonly destination: Hex;
   readonly spawnDay: Day;
   readonly speed?: number;
+  readonly demographics?: Demographics;
 }
 
 export const createNewsCarrier = (input: CreateNewsCarrierInput): NewsCarrier => {
@@ -99,6 +111,9 @@ export const createNewsCarrier = (input: CreateNewsCarrierInput): NewsCarrier =>
     movementPointsPerDay: speed,
     arrived,
     startedOnDay: input.spawnDay,
+    ...(input.demographics !== undefined
+      ? { demographics: new Map(input.demographics) }
+      : {}),
   };
 };
 
