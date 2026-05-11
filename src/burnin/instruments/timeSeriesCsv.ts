@@ -12,9 +12,12 @@
  * - `stockpile`  — sum across every actor in the settlement's stockpileOwners
  *   (plus stragglers that show up over time as catchment / actor sets shift).
  * - `inflow`     — per-tick delta of `settlement.market.recentInflows[r]`.
- *   `recentInflows` accumulates monotonically (nothing in the sim resets it
- *   today), so the per-tick value is current minus the previous reading.
- * - `outflow`    — same delta semantics applied to `recentOutflows`.
+ *   `recentInflows` is now exponentially-decayed (~30-day half-life) every
+ *   day by `ageRecentFlowsPhase`, so the raw counter can DECREASE between
+ *   ticks on a day with no new flow. We clamp the delta to `≥ 0` here, so
+ *   "no flow today" days correctly record `inflow = 0` instead of a
+ *   negative decay-drift number.
+ * - `outflow`    — same clamped-delta semantics applied to `recentOutflows`.
  * - `lastClearingPrice` — `settlement.market.lastClearingPrice[r]` at the
  *   end of the tick (NaN encoded as empty cell when the resource has never
  *   cleared on this settlement).

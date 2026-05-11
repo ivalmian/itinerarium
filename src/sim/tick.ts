@@ -444,6 +444,20 @@ export const tick = (inputs: TickInputs): TickResult => {
   // recipe_blocked event without re-walking world.settlements.
   settlementsById = world.settlements;
 
+  // --- Phase 0: age the per-settlement recent-flow counters ----------------
+  // recentInflows / recentOutflows now follow exponential-decay semantics
+  // with a ~30-day half-life (factor exp(-1/30) ≈ 0.967/day). Without this
+  // the counters grew monotonically since world start, making "recent
+  // volume" displays show lifetime totals and producing pathological
+  // inflow/outflow imbalances on long-running worlds (e.g. a city's
+  // food inflow accumulates over years while consumption — which is NOT
+  // recorded as outflow — leaves outflow tiny by comparison). Decaying
+  // here, BEFORE the day's new flows are recorded, gives every
+  // recentInflows[r] the steady-state interpretation
+  //   ≈ (daily inflow rate of r) × 30
+  // i.e. roughly a one-month rolling window of trade activity.
+  ageRecentFlowsPhase(world);
+
   // --- Phase 1: Production -------------------------------------------------
   productionPhase(world, season, events, stats);
   // After production, drain mason+carpenter worker-days toward each
@@ -2661,6 +2675,31 @@ const countRoadNeighbors = (grid: WorldState['grid'], h: Hex): number => {
     if (neighbor !== undefined && neighbor.road !== 'none') n++;
   }
   return n;
+};
+
+/**
+ * Daily exponential decay applied to every settlement's market in/out-flow
+ * counters. Half-life ≈ 30 days (factor exp(-1/30) ≈ 0.967/day), so the
+ * counters approximate a 30-day rolling window. Entries that drift below
+ * the prune threshold are deleted so the maps stay tidy.
+ */
+const RECENT_FLOW_DECAY_FACTOR = Math.exp(-1 / 30);
+const RECENT_FLOW_PRUNE_BELOW = 0.5;
+
+const ageRecentFlowsPhase = (world: WorldState): void => {
+  for (const settlement of world.settlements.values()) {
+    const m = settlement.market;
+    for (const [r, v] of [...m.recentInflows]) {
+      const next = v * RECENT_FLOW_DECAY_FACTOR;
+      if (next < RECENT_FLOW_PRUNE_BELOW) m.recentInflows.delete(r);
+      else m.recentInflows.set(r, next);
+    }
+    for (const [r, v] of [...m.recentOutflows]) {
+      const next = v * RECENT_FLOW_DECAY_FACTOR;
+      if (next < RECENT_FLOW_PRUNE_BELOW) m.recentOutflows.delete(r);
+      else m.recentOutflows.set(r, next);
+    }
+  }
 };
 
 /**

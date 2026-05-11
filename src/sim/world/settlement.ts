@@ -48,15 +48,29 @@ export interface SettlementBuilding {
   hex: Hex;
   /** The actor that owns this physical building. */
   ownerActor: ActorId;
-  /** Current capacity (may be reduced from def by decay). */
+  /** Current remaining capacity for the active day. */
   capacity: number;
+  /**
+   * Installed daily capacity for this physical building. Starter buildings
+   * may be scaled above the catalog default; daily production resets
+   * `capacity` back to this value.
+   */
+  maxCapacity?: number;
   daysSinceMaintained: number;
 }
 
 export interface MarketSnapshot {
-  /** Inflows accumulated since the last reset (typically last ~10 days). */
+  /**
+   * Exponentially-decayed sum of recent market inflows per resource.
+   * The tick layer's `ageRecentFlowsPhase` multiplies every entry by
+   * `exp(-1/30) ≈ 0.967` once per day BEFORE new flows are recorded, so
+   * each value approximates the last ~30 days of inflow activity
+   * (steady-state ≈ 30 × daily-inflow-rate). Used by viewers, the tax
+   * assessor's "recent harvest" signal, and stale-clearing-price cleanup.
+   */
   recentInflows: Map<ResourceId, number>;
-  /** Outflows accumulated since the last reset. */
+  /** Same exponentially-decayed semantics as `recentInflows`, for sales /
+   *  exports out of the settlement. */
   recentOutflows: Map<ResourceId, number>;
   /** Last clearing price per resource (set by the market clearing tick). */
   lastClearingPrice: Map<ResourceId, number>;
