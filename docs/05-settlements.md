@@ -177,9 +177,18 @@ then decides whether to sell into the local market.
   arrives, disease is in remission.
 - Population shrinks when food fails, plague hits, war kills, or
   people migrate out.
-- A settlement can die: 0 population → buildings decay → eventually
-  a ruin hex (potentially re-discoverable later as a hidden feature
-  — see [07 — Geography](07-geography.md)).
+- A settlement can die. **Locked rule:** when a settlement's
+  population reaches 0, the settlement entity is removed
+  immediately (next daily tick), all of its buildings vanish with
+  it, all of its catchment hexes have their `ownerActor` cleared
+  (returning to wilderness), all of its urban hexes have their
+  `ownerActor` cleared and their terrain converted to `ruin`
+  (the abandoned town is now physically a ruin, potentially
+  re-discoverable later as a hidden feature — see
+  [07 — Geography](07-geography.md)). Stockpile actors (patrician
+  families, city corporations) survive on `world.actors` with
+  whatever goods they had; only their settlement-side accounting
+  goes away. Emits `settlement_abandoned`.
 - A settlement can grow into new hexes — a town that bursts past
   its built-up area annexes adjacent rural hexes as new urban
   hexes; its catchment expands.

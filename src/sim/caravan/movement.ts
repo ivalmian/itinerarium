@@ -77,7 +77,7 @@ const profileForCaravan = (stats: CaravanMovementStats): MovementProfile => ({
   costFor(terrain: Terrain, road: RoadGrade, season: Season, _loadFraction: number): number {
     if (!isPassable(terrain, season)) return Infinity;
     const allowance = dailyMpAllowanceWithStats(stats, terrain, road, season);
-    if (allowance <= 0) return Infinity;
+    if (!Number.isFinite(allowance) || allowance <= 0) return Infinity;
     // Crossing one hex consumes 1/allowance of a day's progress budget.
     return 1 / allowance;
   },

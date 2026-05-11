@@ -464,6 +464,13 @@ export const tick = (inputs: TickInputs): TickResult => {
     roadResetPhase(world, events);
   }
 
+  // --- Empty settlements disappear (docs/05 §"Growth and decay") ----------
+  // When pop hits 0, remove the settlement immediately (don't wait for the
+  // year boundary). Catchment hexes return to wilderness; urban hexes
+  // become `ruin`. Buildings vanish with the settlement object; stockpile
+  // actors survive on world.actors.
+  abandonmentPhase(world, today, events);
+
   // --- Annual hook (after the day's main work, before incrementing day) ----
   // The "year boundary" is when (day + 1) % YEAR_DAYS === 0 — i.e. the day
   // that just ended completed a full year. We hook in here so the new year
@@ -4276,15 +4283,20 @@ const pickBuildingHex = (
 
 // --- Annual hook ------------------------------------------------------------
 
-const annualPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[]): void => {
-  // Per the user's observation #2: empty settlements should disappear,
-  // not linger as ghosts. Anyone whose population reached 0 in the past
-  // year is collected here and removed:
-  //   - Their catchment hexes have ownerActor cleared (back to wilderness).
-  //   - Their stockpile owners survive on world.actors with their goods
-  //     intact (a patrician family who lost a village still has the wine).
-  //   - The Settlement entity is removed from world.settlements.
-  // Emits a `settlement_abandoned` event for telemetry.
+/**
+ * Empty settlements disappear (locked rule, docs/05 §"Growth and decay").
+ * When a settlement's population reaches 0, the settlement is removed
+ * the next daily tick. All buildings vanish with the settlement object.
+ * Catchment hexes have `ownerActor` cleared (back to wilderness). Urban
+ * hexes have `ownerActor` cleared AND have their terrain converted to
+ * `ruin` (the abandoned town is now physically a ruin, potentially
+ * re-discoverable later as a hidden feature). Stockpile actors survive
+ * on `world.actors` with whatever goods they had.
+ *
+ * Runs daily so the settlement disappears immediately when pop hits 0,
+ * not at the next year boundary.
+ */
+const abandonmentPhase = (world: WorldState, _today: Day, events: TickEvent[]): void => {
   const toRemove: Settlement[] = [];
   for (const settlement of world.settlements.values()) {
     if (settlement.population.total() === 0) toRemove.push(settlement);
@@ -4294,10 +4306,19 @@ const annualPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[
       const t = world.grid.get(c);
       if (t !== undefined) t.ownerActor = null;
     }
+    for (const u of settlement.urbanHexes) {
+      const t = world.grid.get(u);
+      if (t !== undefined) {
+        t.ownerActor = null;
+        if (t.terrain === 'urban') t.terrain = 'ruin';
+      }
+    }
     world.settlements.delete(settlement.id);
     events.push({ type: 'settlement_abandoned', settlement: settlement.id });
   }
+};
 
+const annualPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[]): void => {
   for (const settlement of world.settlements.values()) {
     if (settlement.population.total() === 0) continue;
     tickYearly(settlement.population, rng.derive(`settle-${String(settlement.id)}`));

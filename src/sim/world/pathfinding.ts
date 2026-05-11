@@ -154,91 +154,121 @@ const COORD_KEY_STRIDE = 65536;
 const coordKey = (q: number, r: number): number =>
   (q + COORD_KEY_OFFSET) * COORD_KEY_STRIDE + (r + COORD_KEY_OFFSET);
 
+const coordQ = (key: number): number => Math.floor(key / COORD_KEY_STRIDE) - COORD_KEY_OFFSET;
+const coordR = (key: number): number => (key % COORD_KEY_STRIDE) - COORD_KEY_OFFSET;
+
+const hexDistanceAt = (aq: number, ar: number, bq: number, br: number): number => {
+  const dq = aq - bq;
+  const dr = ar - br;
+  const ds = -dq - dr;
+  return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
+};
+
 // ---------------------------------------------------------------------------
 // Min-heap (binary heap) for A* open set
 // ---------------------------------------------------------------------------
 
-interface HeapEntry {
-  readonly key: number;
-  readonly hex: Hex;
-  readonly priority: number;
-  // Tie-breaker: insertion order. Keeps results deterministic when multiple
-  // entries share an f-score (otherwise heap-internal ordering varies).
-  readonly seq: number;
-}
-
 class MinHeap {
-  private readonly data: HeapEntry[] = [];
+  private readonly keys: number[] = [];
+  private readonly priorities: number[] = [];
+  private readonly seqs: number[] = [];
+  private length = 0;
+
+  clear(): void {
+    this.length = 0;
+    this.keys.length = 0;
+    this.priorities.length = 0;
+    this.seqs.length = 0;
+  }
 
   size(): number {
-    return this.data.length;
+    return this.length;
   }
 
-  push(entry: HeapEntry): void {
-    this.data.push(entry);
-    this.bubbleUp(this.data.length - 1);
-  }
-
-  pop(): HeapEntry | undefined {
-    if (this.data.length === 0) return undefined;
-    const top = this.data[0] as HeapEntry;
-    const last = this.data.pop() as HeapEntry;
-    if (this.data.length > 0) {
-      this.data[0] = last;
-      this.sinkDown(0);
-    }
-    return top;
-  }
-
-  private less(a: HeapEntry, b: HeapEntry): boolean {
-    if (a.priority !== b.priority) return a.priority < b.priority;
-    return a.seq < b.seq;
-  }
-
-  private bubbleUp(i: number): void {
-    const item = this.data[i] as HeapEntry;
+  push(key: number, priority: number, seq: number): void {
+    let i = this.length++;
+    this.keys[i] = key;
+    this.priorities[i] = priority;
+    this.seqs[i] = seq;
     while (i > 0) {
       const parent = (i - 1) >> 1;
-      const p = this.data[parent] as HeapEntry;
-      if (this.less(item, p)) {
-        this.data[i] = p;
+      if (this.less(i, parent)) {
+        this.swap(i, parent);
         i = parent;
       } else {
         break;
       }
     }
-    this.data[i] = item;
+  }
+
+  pop(): number | undefined {
+    if (this.length === 0) return undefined;
+    const top = this.keys[0] as number;
+    this.length--;
+    if (this.length > 0) {
+      this.keys[0] = this.keys[this.length] as number;
+      this.priorities[0] = this.priorities[this.length] as number;
+      this.seqs[0] = this.seqs[this.length] as number;
+      this.sinkDown(0);
+    }
+    this.keys.length = this.length;
+    this.priorities.length = this.length;
+    this.seqs.length = this.length;
+    return top;
+  }
+
+  private less(a: number, b: number): boolean {
+    const aPriority = this.priorities[a] as number;
+    const bPriority = this.priorities[b] as number;
+    if (aPriority !== bPriority) return aPriority < bPriority;
+    return (this.seqs[a] as number) < (this.seqs[b] as number);
+  }
+
+  private swap(a: number, b: number): void {
+    const key = this.keys[a] as number;
+    const priority = this.priorities[a] as number;
+    const seq = this.seqs[a] as number;
+    this.keys[a] = this.keys[b] as number;
+    this.priorities[a] = this.priorities[b] as number;
+    this.seqs[a] = this.seqs[b] as number;
+    this.keys[b] = key;
+    this.priorities[b] = priority;
+    this.seqs[b] = seq;
   }
 
   private sinkDown(i: number): void {
-    const item = this.data[i] as HeapEntry;
-    const n = this.data.length;
     for (;;) {
       const left = 2 * i + 1;
       const right = 2 * i + 2;
       let smallest = i;
-      let smallestEntry = item;
-      if (left < n) {
-        const l = this.data[left] as HeapEntry;
-        if (this.less(l, smallestEntry)) {
-          smallest = left;
-          smallestEntry = l;
-        }
+      if (left < this.length && this.less(left, smallest)) {
+        smallest = left;
       }
-      if (right < n) {
-        const r = this.data[right] as HeapEntry;
-        if (this.less(r, smallestEntry)) {
-          smallest = right;
-          smallestEntry = r;
-        }
+      if (right < this.length && this.less(right, smallest)) {
+        smallest = right;
       }
       if (smallest === i) break;
-      this.data[i] = smallestEntry;
+      this.swap(i, smallest);
       i = smallest;
     }
-    this.data[i] = item;
   }
 }
+
+class PathWorkspace {
+  readonly gScore = new Map<number, number>();
+  readonly cameFrom = new Map<number, number>();
+  readonly closed = new Set<number>();
+  readonly open = new MinHeap();
+
+  reset(): void {
+    this.gScore.clear();
+    this.cameFrom.clear();
+    this.closed.clear();
+    this.open.clear();
+  }
+}
+
+const pathWorkspace = new PathWorkspace();
 
 // ---------------------------------------------------------------------------
 // A*
@@ -261,35 +291,29 @@ export const findPath = (
     return { path: [start], totalCost: 0 };
   }
 
-  const gScore = new Map<number, number>();
-  const cameFrom = new Map<number, Hex>();
-  const closed = new Set<number>();
-  const open = new MinHeap();
+  pathWorkspace.reset();
+  const { gScore, cameFrom, closed, open } = pathWorkspace;
   let seq = 0;
 
   gScore.set(startKey, 0);
-  open.push({
-    key: startKey,
-    hex: start,
-    priority: hexDistance(start, goal) * MIN_STEP_COST,
-    seq: seq++,
-  });
+  open.push(startKey, hexDistance(start, goal) * MIN_STEP_COST, seq++);
 
   while (open.size() > 0) {
-    const current = open.pop() as HeapEntry;
-    if (closed.has(current.key)) continue;
-    closed.add(current.key);
+    const currentKey = open.pop() as number;
+    if (closed.has(currentKey)) continue;
+    closed.add(currentKey);
 
-    if (current.key === goalKey) {
-      return reconstruct(cameFrom, goal, gScore.get(goalKey) ?? Infinity);
+    if (currentKey === goalKey) {
+      return reconstruct(cameFrom, goalKey, gScore.get(goalKey) ?? Infinity);
     }
 
-    const currentHex = current.hex;
-    const currentG = gScore.get(current.key) ?? Infinity;
+    const currentQ = coordQ(currentKey);
+    const currentR = coordR(currentKey);
+    const currentG = gScore.get(currentKey) ?? Infinity;
 
     for (const dir of HEX_DIRECTIONS) {
-      const nq = currentHex.q + dir.q;
-      const nr = currentHex.r + dir.r;
+      const nq = currentQ + dir.q;
+      const nr = currentR + dir.r;
       const nKey = coordKey(nq, nr);
       if (closed.has(nKey)) continue;
       const tile = grid.getAt(nq, nr);
@@ -299,11 +323,10 @@ export const findPath = (
       const tentative = currentG + stepCost;
       const existing = gScore.get(nKey);
       if (existing !== undefined && tentative >= existing) continue;
-      const neighbor = { q: nq, r: nr };
       gScore.set(nKey, tentative);
-      cameFrom.set(nKey, currentHex);
-      const f = tentative + hexDistance(neighbor, goal) * MIN_STEP_COST;
-      open.push({ key: nKey, hex: neighbor, priority: f, seq: seq++ });
+      cameFrom.set(nKey, currentKey);
+      const f = tentative + hexDistanceAt(nq, nr, goal.q, goal.r) * MIN_STEP_COST;
+      open.push(nKey, f, seq++);
     }
   }
 
@@ -311,19 +334,22 @@ export const findPath = (
 };
 
 const reconstruct = (
-  cameFrom: ReadonlyMap<number, Hex>,
-  goal: Hex,
+  cameFrom: ReadonlyMap<number, number>,
+  goalKey: number,
   totalCost: number,
 ): PathResult => {
-  const path: Hex[] = [goal];
-  let current: Hex | undefined = goal;
+  const pathKeys: number[] = [goalKey];
+  let currentKey = goalKey;
   for (;;) {
-    const key = coordKey(current.q, current.r);
-    const prev = cameFrom.get(key);
+    const prev = cameFrom.get(currentKey);
     if (prev === undefined) break;
-    path.push(prev);
-    current = prev;
+    pathKeys.push(prev);
+    currentKey = prev;
   }
-  path.reverse();
+  const path: Hex[] = [];
+  for (let i = pathKeys.length - 1; i >= 0; i--) {
+    const key = pathKeys[i] as number;
+    path.push({ q: coordQ(key), r: coordR(key) });
+  }
   return { path, totalCost };
 };
