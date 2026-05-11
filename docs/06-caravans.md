@@ -289,7 +289,7 @@ These are first-pass; numbers will move during burn-in:
 | `WEAR_PER_NEWS_CARRIER`         | 0.2     | per hex entered                                    |
 | `WEAR_PER_PATROL_SOLDIER`       | 0.5     | per hex entered                                    |
 | `WEAR_DECAY_PER_DAY`            | 1.0     | per hex with wear > 0                              |
-| `DIRT_ROAD_DECAY_PER_DAY`       | 1.5     | per dirt-road hex with wear > 0 (baseline; scales 2^(n−2) with road-neighbor count) |
+| `DIRT_ROAD_DECAY_PER_DAY`       | 0.75    | per dirt-road hex with wear > 0 (baseline; scales 2^(n−2) with road-neighbor count) |
 | `DIRT_UPGRADE_THRESHOLD`        | 100     | wear needed to upgrade `none` → `dirt`             |
 | `DIRT_DOWNGRADE_THRESHOLD`      | 20      | wear floor below which `dirt` → `none`             |
 | `MAX_ROAD_WEAR`                 | 200     | maximum stored wear on a non-Roman hex             |

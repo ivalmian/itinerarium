@@ -1240,9 +1240,10 @@ const initializeSubsistenceAccess = (world: WorldState): SubsistenceAccessMap =>
  *
  * The grain draw lives in market clearing so subsistence has a price and a
  * concrete buyer. The fallback ration draw keeps bread/flour/legumes/etc.
- * usable as emergency food without double-consuming grain. When the combined
- * access is short of need, famine pressure accrues; sustained pressure emits
- * cohort_deaths.
+ * usable as emergency food without double-consuming grain. Fresh fish/game
+ * are included here because they are local subsistence foods, not just
+ * salted-trade intermediates. When the combined access is short of need,
+ * famine pressure accrues; sustained pressure emits cohort_deaths.
  */
 const consumptionPhase = (
   world: WorldState,
@@ -1336,6 +1337,8 @@ const FOOD_PRIORITY: readonly ResourceId[] = [
   GRAIN_RESOURCE,
   resourceId('food.legumes'),
   resourceId('food.flour'),
+  resourceId('food.fish'),
+  resourceId('food.game'),
   resourceId('food.cheese'),
   resourceId('food.salted_meat'),
   resourceId('food.salted_fish'),
@@ -1504,6 +1507,8 @@ const rationProcessingMarkup = (id: ResourceId): number => {
 const grainEquivalentMultiplier = (id: ResourceId): number => {
   const idStr = String(id);
   if (idStr === 'food.bread') return 1.3; // 1.3 kg bread ≈ 1 kg grain
+  if (idStr === 'food.fish') return 0.5;
+  if (idStr === 'food.game') return 0.5;
   if (idStr === 'food.cheese') return 0.6;
   if (idStr === 'food.salted_meat') return 0.5;
   if (idStr === 'food.salted_fish') return 0.5;
@@ -1657,7 +1662,7 @@ const WEAR_PER_CREW = 0.05;
 const WEAR_PER_NEWS_CARRIER = 0.2;
 const WEAR_PER_PATROL_SOLDIER = 0.5;
 const WEAR_DECAY_PER_DAY = 1.0;
-const DIRT_ROAD_DECAY_PER_DAY = 1.5;
+const DIRT_ROAD_DECAY_PER_DAY = 0.75;
 const DIRT_UPGRADE_THRESHOLD = 100;
 const DIRT_DOWNGRADE_THRESHOLD = 20;
 const MAX_ROAD_WEAR = 200;

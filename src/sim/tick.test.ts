@@ -787,6 +787,60 @@ describe('tick (per-day loop)', () => {
       expect(household.stockpile.get(flour) ?? 0).toBe(0);
     });
 
+    it('buys fresh fish and game as priced fallback rations', () => {
+      for (const resourceName of ['food.fish', 'food.game'] as const) {
+        const w = buildEmptyWorld();
+        const anchor = hex(0, 0);
+        w.grid.set(anchor, makeTile('plains'));
+
+        const sId = settlementId(`fresh-ration-${resourceName}`);
+        const sellerId = actorId(`fresh-ration-seller-${resourceName}`);
+        const householdId = actorId(`fresh-ration-household-${resourceName}`);
+        const ration = resourceId(resourceName);
+        const settlement = createSettlement({
+          id: sId,
+          tier: 'village',
+          name: 'Fresh Ration Village',
+          anchor,
+          urbanHexes: [anchor],
+          catchmentHexes: [],
+        });
+        settlement.population.set({ age: '20-24', sex: 'male', class: 'plebeian' }, 500);
+        settlement.stockpileOwners.push(sellerId, householdId);
+
+        const seller = createActor({
+          id: sellerId,
+          kind: 'city_corporation',
+          name: 'Fresh Ration Seller',
+          homeSettlement: sId,
+          treasury: 0,
+        });
+        seller.stockpile.set(ration, 100);
+        const household = createActor({
+          id: householdId,
+          kind: 'hamlet_household',
+          name: 'Fresh Ration Household',
+          homeSettlement: sId,
+          treasury: 500,
+        });
+
+        w.settlements.set(sId, settlement);
+        w.actors.set(sellerId, seller);
+        w.actors.set(householdId, household);
+
+        const beforeHouseholdTreasury = household.treasury;
+        const r = tick({ world: w, rng: createRng(`fresh-ration-${resourceName}`) });
+        const cleared = eventsOfType(r.events, 'market_cleared').find((e) => e.resource === ration);
+
+        expect(cleared).toBeDefined();
+        expect(settlement.market.lastClearingPrice.get(ration)).toBeGreaterThan(0);
+        expect(seller.stockpile.get(ration)).toBeLessThan(100);
+        expect(seller.treasury).toBeGreaterThan(0);
+        expect(household.treasury).toBeLessThan(beforeHouseholdTreasury);
+        expect(household.stockpile.get(ration) ?? 0).toBe(0);
+      }
+    });
+
     it('lets civic ration reserves self-provision local famine shortfalls', () => {
       const w = buildOneSettlementWorld({
         populationByClass: { plebeian: 500 },
@@ -941,13 +995,12 @@ describe('tick (per-day loop)', () => {
 
     it('demotes unused dirt roads near the downgrade threshold and clears their wear', () => {
       const w = buildEmptyWorld();
-      // Isolated dirt hex (0 road neighbors): decay = 3.0 × 2^-2 = 0.75/day.
-      // Isolated dirt hex (0 road neighbors): decay = 1.5 × 2^-2 = 0.375/day.
-      // Seed it at 20.2 so a single tick brings it below DIRT_DOWNGRADE_THRESHOLD (20).
+      // Isolated dirt hex (0 road neighbors): decay = 0.75 × 2^-2 = 0.1875/day.
+      // Seed it at 20.1 so a single tick brings it below DIRT_DOWNGRADE_THRESHOLD (20).
       w.grid.set(hex(0, 0), {
         ...makeTile('plains'),
         road: 'dirt',
-        roadWear: 20.2,
+        roadWear: 20.1,
       });
 
       const r = tick({ world: w, rng: createRng('road-decay') });
@@ -970,9 +1023,9 @@ describe('tick (per-day loop)', () => {
         roadWear: 100,
       });
       tick({ world: isolated, rng: createRng('iso') });
-      // Baseline DIRT_ROAD_DECAY_PER_DAY = 1.5; with n=0, decay = 1.5 × 2^-2 = 0.375.
-      // 100 - 0.375 = 99.625.
-      expect(isolated.grid.get(hex(10, 10))?.roadWear).toBeCloseTo(99.625, 2);
+      // Baseline DIRT_ROAD_DECAY_PER_DAY = 0.75; with n=0, decay = 0.75 × 2^-2 = 0.1875.
+      // 100 - 0.1875 = 99.8125.
+      expect(isolated.grid.get(hex(10, 10))?.roadWear).toBeCloseTo(99.8125, 2);
 
       const dense = buildEmptyWorld();
       const center = hex(10, 10);
@@ -988,8 +1041,8 @@ describe('tick (per-day loop)', () => {
         dense.grid.set(d, { ...dense.grid.get(d)!, road: 'dirt', roadWear: 100 });
       }
       tick({ world: dense, rng: createRng('dense') });
-      // With n=3, decay = 1.5 × 2^1 = 3.0. 100 - 3 = 97.
-      expect(dense.grid.get(center)?.roadWear).toBeCloseTo(97, 2);
+      // With n=3, decay = 0.75 × 2^1 = 1.5. 100 - 1.5 = 98.5.
+      expect(dense.grid.get(center)?.roadWear).toBeCloseTo(98.5, 2);
     });
   });
 
@@ -1274,6 +1327,66 @@ describe('tick (per-day loop)', () => {
       expect(seller.treasury).toBeGreaterThan(0);
       expect(buyer.treasury).toBeLessThan(beforeBuyerTreasury);
       expect(buyer.stockpile.get(weapons) ?? 0).toBe(0);
+    });
+
+    it('clears local service capacity for coin without creating stockpile cargo', () => {
+      const w = buildEmptyWorld();
+      const anchor = hex(0, 0);
+      w.grid.set(anchor, makeTile('plains'));
+
+      const sId = settlementId('priesthood-market');
+      const templeOwnerId = actorId('temple-owner');
+      const householdId = actorId('service-household');
+      const priesthood = resourceId('service.priesthood');
+      const settlement = createSettlement({
+        id: sId,
+        tier: 'town',
+        name: 'Temple Town',
+        anchor,
+        urbanHexes: [anchor],
+        catchmentHexes: [],
+      });
+      settlement.population.set({ age: '20-24', sex: 'male', class: 'plebeian' }, 500);
+      settlement.stockpileOwners.push(templeOwnerId, householdId);
+      settlement.buildings.push({
+        buildingId: buildingId('temple'),
+        hex: anchor,
+        ownerActor: templeOwnerId,
+        capacity: 100,
+        daysSinceMaintained: 0,
+      });
+
+      const templeOwner = createActor({
+        id: templeOwnerId,
+        kind: 'temple',
+        name: 'Temple Owner',
+        homeSettlement: sId,
+        treasury: 0,
+      });
+      const household = createActor({
+        id: householdId,
+        kind: 'common_household',
+        name: 'Temple Household',
+        homeSettlement: sId,
+        treasury: 500,
+      });
+
+      w.settlements.set(sId, settlement);
+      w.actors.set(templeOwnerId, templeOwner);
+      w.actors.set(householdId, household);
+
+      const beforeHouseholdTreasury = household.treasury;
+      const r = tick({ world: w, rng: createRng('service-capacity-trade') });
+      const cleared = eventsOfType(r.events, 'market_cleared').find(
+        (e) => e.resource === priesthood,
+      );
+
+      expect(cleared).toBeDefined();
+      expect(cleared?.volume).toBeGreaterThan(0);
+      expect(templeOwner.treasury).toBeGreaterThan(0);
+      expect(household.treasury).toBeLessThan(beforeHouseholdTreasury);
+      expect(templeOwner.stockpile.get(priesthood) ?? 0).toBe(0);
+      expect(household.stockpile.get(priesthood) ?? 0).toBe(0);
     });
   });
 
