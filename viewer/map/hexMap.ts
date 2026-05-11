@@ -55,6 +55,24 @@ const hexRotationIndex = (h: Hex): number => {
 };
 
 /**
+ * Terrains whose baked-in detail has no directional "up" — safe to rotate
+ * per hex. Mountains have peaks pointing up + NW-light shading, hills
+ * have light/shadow sides, lake/river have water highlights assuming a
+ * fixed light direction, urban tiles have grid orientation, ruins have
+ * a recognizable silhouette. Those keep their authored orientation so
+ * the directional features (peak, shadow, glint) read correctly.
+ */
+const ROTATABLE_TERRAINS: ReadonlySet<Terrain> = new Set<Terrain>([
+  'plains',
+  'fertile_valley',
+  'forest',
+  'dense_forest',
+  'marsh',
+  'desert',
+  'steppe',
+]);
+
+/**
  * Mulberry32 PRNG seeded by a per-hex integer so scatter placement is
  * deterministic across reloads but distinct per hex.
  */
@@ -279,9 +297,13 @@ export const createHexMap = (
     sprite.width = spriteW;
     sprite.height = spriteH;
     sprite.position.set(px.x, px.y);
-    // Per-hex rotation in 60° steps. The hex silhouette stays the same;
-    // baked-in interior detail (trees, ripples, dunes) reorients.
-    sprite.rotation = hexRotationIndex(h) * ROT_60;
+    // Per-hex rotation in 60° steps for terrains with no directional "up".
+    // Mountains/hills/water/urban/ruin keep their authored orientation so
+    // their directional shading (peak up, NW light, water glint) reads
+    // correctly across the map.
+    if (ROTATABLE_TERRAINS.has(tile.terrain)) {
+      sprite.rotation = hexRotationIndex(h) * ROT_60;
+    }
     fills.addChild(sprite);
     entries.set(key, { sprite });
     if (px.x < bounds.minX) bounds.minX = px.x;

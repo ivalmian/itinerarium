@@ -1,12 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
   <defs>
     <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
-    <mask id="softhex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37" fill="white" filter="url(#hexblur)"/></mask>
-    <filter id="hexblur" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="2"/></filter>
-    <linearGradient id="lg-base" x1="0" y1="0" x2="0.8" y2="1">
-      <stop offset="0" stop-color="#a08c63"/>
-      <stop offset="1" stop-color="#5c4a2a"/>
-    </linearGradient>
     <linearGradient id="lg-wall" x1="0" y1="0" x2="0.4" y2="1">
       <stop offset="0" stop-color="#e8d2a4"/>
       <stop offset="1" stop-color="#806237"/>
@@ -31,8 +25,8 @@
       <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
   </defs>
-  <g mask="url(#softhex)">
-    <rect x="0" y="0" width="128" height="148" fill="url(#lg-base)"/>
+  <g clip-path="url(#hex)">
+    <rect x="0" y="0" width="128" height="148" fill="#7d6a3a"/>
     <rect x="0" y="0" width="128" height="148" fill="#3a2c14" filter="url(#nz)" opacity="0.4"/>
     <!-- street grid (two streets crossing) -->
     <g stroke="#3a2c14" stroke-width="1.2" opacity="0.75">

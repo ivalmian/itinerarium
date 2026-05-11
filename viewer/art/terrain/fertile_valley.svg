@@ -1,12 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
   <defs>
     <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
-    <mask id="softhex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37" fill="white" filter="url(#hexblur)"/></mask>
-    <filter id="hexblur" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="2"/></filter>
-    <linearGradient id="lg-base" x1="0" y1="0" x2="0.8" y2="1">
-      <stop offset="0" stop-color="#8aa848"/>
-      <stop offset="1" stop-color="#506b22"/>
-    </linearGradient>
     <linearGradient id="lg-rows" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#a3c354" stop-opacity="0"/>
       <stop offset="1" stop-color="#314818" stop-opacity="0.5"/>
@@ -17,8 +11,8 @@
       <feComposite in2="SourceGraphic" operator="in"/>
     </filter>
   </defs>
-  <g mask="url(#softhex)">
-    <rect x="0" y="0" width="128" height="148" fill="url(#lg-base)"/>
+  <g clip-path="url(#hex)">
+    <rect x="0" y="0" width="128" height="148" fill="#6f8b39"/>
     <rect x="0" y="0" width="128" height="148" fill="url(#lg-rows)"/>
     <rect x="0" y="0" width="128" height="148" fill="#1f2c0e" filter="url(#nz)" opacity="0.55"/>
     <!-- furrow rows, slightly curved -->

@@ -1,12 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
   <defs>
     <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
-    <mask id="softhex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37" fill="white" filter="url(#hexblur)"/></mask>
-    <filter id="hexblur" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="2"/></filter>
-    <linearGradient id="lg-base" x1="0" y1="0" x2="0.8" y2="1">
-      <stop offset="0" stop-color="#a89968"/>
-      <stop offset="1" stop-color="#5a4a28"/>
-    </linearGradient>
     <linearGradient id="lg-thatch" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#a8783a"/>
       <stop offset="1" stop-color="#4a2e12"/>
@@ -27,8 +21,8 @@
       <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
   </defs>
-  <g mask="url(#softhex)">
-    <rect x="0" y="0" width="128" height="148" fill="url(#lg-base)"/>
+  <g clip-path="url(#hex)">
+    <rect x="0" y="0" width="128" height="148" fill="#7d6a3a"/>
     <rect x="0" y="0" width="128" height="148" fill="#3a2c14" filter="url(#nz)" opacity="0.45"/>
     <!-- garden plots / fields -->
     <g stroke="#3e3014" stroke-width="0.5" opacity="0.55" fill="none">

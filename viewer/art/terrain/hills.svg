@@ -1,12 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
   <defs>
     <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
-    <mask id="softhex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37" fill="white" filter="url(#hexblur)"/></mask>
-    <filter id="hexblur" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="2"/></filter>
-    <linearGradient id="lg-base" x1="0" y1="0" x2="0.8" y2="1">
-      <stop offset="0" stop-color="#b59067"/>
-      <stop offset="1" stop-color="#6e5236"/>
-    </linearGradient>
     <linearGradient id="lg-mound" x1="0" y1="0" x2="0.6" y2="1">
       <stop offset="0" stop-color="#c4a07a"/>
       <stop offset="1" stop-color="#5e4524"/>
@@ -23,8 +17,8 @@
       <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
   </defs>
-  <g mask="url(#softhex)">
-    <rect x="0" y="0" width="128" height="148" fill="url(#lg-base)"/>
+  <g clip-path="url(#hex)">
+    <rect x="0" y="0" width="128" height="148" fill="#91714e"/>
     <rect x="0" y="0" width="128" height="148" fill="#3e2a14" filter="url(#nz)" opacity="0.5"/>
     <g filter="url(#ds)">
       <!-- back ridge -->
