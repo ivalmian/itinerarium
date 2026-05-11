@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="lg-armor" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#9a9aa4"/>
+      <stop offset="1" stop-color="#3a3a42"/>
+    </linearGradient>
+    <linearGradient id="lg-tunic" x1="0" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#c84838"/>
+      <stop offset="1" stop-color="#5a1408"/>
+    </linearGradient>
+    <linearGradient id="lg-banner" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#daca7a"/>
+      <stop offset="1" stop-color="#7a5a18"/>
+    </linearGradient>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.5"/>
+      <feOffset dx="0.4" dy="0.6"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <ellipse cx="16" cy="28" rx="15" ry="2" fill="#2a1e10" opacity="0.55"/>
+  <!-- standard (signum) — tall pole with eagle and disks -->
+  <g filter="url(#ds)">
+    <line x1="16" y1="1" x2="16" y2="13" stroke="#3a2008" stroke-width="0.6"/>
+    <!-- aquila (eagle) -->
+    <path d="M 14 1 L 18 1 L 17 3 L 15 3 Z" fill="url(#lg-banner)" stroke="#3a2008" stroke-width="0.3"/>
+    <circle cx="16" cy="2" r="0.5" fill="#3a2008"/>
+    <!-- standard disks -->
+    <circle cx="16" cy="5" r="1" fill="url(#lg-banner)" stroke="#3a2008" stroke-width="0.2"/>
+    <circle cx="16" cy="7" r="1" fill="url(#lg-banner)" stroke="#3a2008" stroke-width="0.2"/>
+    <!-- SPQR-style banner -->
+    <rect x="13" y="9" width="6" height="3" fill="url(#lg-tunic)" stroke="#3a0e08" stroke-width="0.2"/>
+    <text x="16" y="11.5" text-anchor="middle" font-family="serif" font-size="2.5" fill="#daca7a" font-weight="bold">SPQR</text>
+  </g>
+  <g filter="url(#ds)">
+    <!-- 6 soldiers in 2-row formation (3+3) -->
+    <!-- row 1 (front) -->
+    <g transform="translate(4 16)">
+      <ellipse cx="0" cy="0" rx="1.4" ry="1.2" fill="#e8c894"/>
+      <path d="M -1.5 0 L 1.5 0 Q 1.5 -2.5 0 -3.5 Q -1.5 -2.5 -1.5 0 Z" fill="url(#lg-armor)"/>
+      <path d="M -0.8 -3.5 L 0.8 -3.5 L 0.8 -4.3 L -0.8 -4.3 Z" fill="#c84838"/>
+      <rect x="-1.5" y="1" width="3" height="5" fill="url(#lg-armor)"/>
+      <ellipse cx="-3" cy="3" rx="1.4" ry="2.6" fill="url(#lg-tunic)" stroke="#3a0e04" stroke-width="0.2"/>
+      <line x1="2.5" y1="-6" x2="2.5" y2="9" stroke="#6a4a26" stroke-width="0.4"/>
+    </g>
+    <g transform="translate(11 16)">
+      <ellipse cx="0" cy="0" rx="1.4" ry="1.2" fill="#e8c894"/>
+      <path d="M -1.5 0 L 1.5 0 Q 1.5 -2.5 0 -3.5 Q -1.5 -2.5 -1.5 0 Z" fill="url(#lg-armor)"/>
+      <path d="M -0.8 -3.5 L 0.8 -3.5 L 0.8 -4.3 L -0.8 -4.3 Z" fill="#c84838"/>
+      <rect x="-1.5" y="1" width="3" height="5" fill="url(#lg-armor)"/>
+      <ellipse cx="-3" cy="3" rx="1.4" ry="2.6" fill="url(#lg-tunic)" stroke="#3a0e04" stroke-width="0.2"/>
+      <line x1="2.5" y1="-6" x2="2.5" y2="9" stroke="#6a4a26" stroke-width="0.4"/>
+    </g>
+    <g transform="translate(21 16)">
+      <ellipse cx="0" cy="0" rx="1.4" ry="1.2" fill="#e8c894"/>
+      <path d="M -1.5 0 L 1.5 0 Q 1.5 -2.5 0 -3.5 Q -1.5 -2.5 -1.5 0 Z" fill="url(#lg-armor)"/>
+      <path d="M -0.8 -3.5 L 0.8 -3.5 L 0.8 -4.3 L -0.8 -4.3 Z" fill="#c84838"/>
+      <rect x="-1.5" y="1" width="3" height="5" fill="url(#lg-armor)"/>
+      <ellipse cx="-3" cy="3" rx="1.4" ry="2.6" fill="url(#lg-tunic)" stroke="#3a0e04" stroke-width="0.2"/>
+      <line x1="2.5" y1="-6" x2="2.5" y2="9" stroke="#6a4a26" stroke-width="0.4"/>
+    </g>
+    <g transform="translate(28 16)">
+      <ellipse cx="0" cy="0" rx="1.4" ry="1.2" fill="#e8c894"/>
+      <path d="M -1.5 0 L 1.5 0 Q 1.5 -2.5 0 -3.5 Q -1.5 -2.5 -1.5 0 Z" fill="url(#lg-armor)"/>
+      <path d="M -0.8 -3.5 L 0.8 -3.5 L 0.8 -4.3 L -0.8 -4.3 Z" fill="#c84838"/>
+      <rect x="-1.5" y="1" width="3" height="5" fill="url(#lg-armor)"/>
+      <ellipse cx="-3" cy="3" rx="1.4" ry="2.6" fill="url(#lg-tunic)" stroke="#3a0e04" stroke-width="0.2"/>
+      <line x1="2.5" y1="-6" x2="2.5" y2="9" stroke="#6a4a26" stroke-width="0.4"/>
+    </g>
+    <!-- legs -->
+    <g stroke="#3a342a" stroke-width="0.8">
+      <line x1="3" y1="22" x2="3" y2="26"/>
+      <line x1="5" y1="22" x2="5" y2="26"/>
+      <line x1="10" y1="22" x2="10" y2="26"/>
+      <line x1="12" y1="22" x2="12" y2="26"/>
+      <line x1="20" y1="22" x2="20" y2="26"/>
+      <line x1="22" y1="22" x2="22" y2="26"/>
+      <line x1="27" y1="22" x2="27" y2="26"/>
+      <line x1="29" y1="22" x2="29" y2="26"/>
+    </g>
+  </g>
+</svg>

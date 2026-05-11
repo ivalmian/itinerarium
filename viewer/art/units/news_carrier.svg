@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="lg-horse" x1="0" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#9a6a3a"/>
+      <stop offset="1" stop-color="#3a2008"/>
+    </linearGradient>
+    <linearGradient id="lg-cloak" x1="0" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#a83828"/>
+      <stop offset="1" stop-color="#3a0e08"/>
+    </linearGradient>
+    <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.5"/>
+      <feOffset dx="0.4" dy="0.8"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <ellipse cx="16" cy="26" rx="13" ry="2" fill="#2a1e10" opacity="0.55"/>
+  <g filter="url(#ds)">
+    <!-- horse galloping -->
+    <ellipse cx="16" cy="20" rx="9" ry="3.5" fill="url(#lg-horse)"/>
+    <!-- horse neck -->
+    <path d="M 22 19 L 26 14 L 27 18 L 23 22 Z" fill="url(#lg-horse)"/>
+    <!-- horse head -->
+    <ellipse cx="27" cy="13" rx="2" ry="1.4" fill="#a87a4a"/>
+    <!-- ears -->
+    <polygon points="25,12 26,10 26,12" fill="#3a2008"/>
+    <polygon points="27,12 28,10 28,12" fill="#3a2008"/>
+    <!-- nose / mouth -->
+    <ellipse cx="29" cy="14" rx="0.7" ry="0.5" fill="#3a2008"/>
+    <circle cx="27" cy="13" r="0.3" fill="#1a0e04"/>
+    <!-- mane -->
+    <path d="M 23 16 L 25 13 L 24 16 L 26 13 L 25 16" stroke="#3a2008" stroke-width="0.4" fill="none"/>
+    <!-- legs in motion (front extended, back extended) -->
+    <line x1="22" y1="23" x2="26" y2="28" stroke="#3a2008" stroke-width="1.2"/>
+    <line x1="20" y1="23" x2="22" y2="28" stroke="#3a2008" stroke-width="1.2"/>
+    <line x1="10" y1="23" x2="6" y2="28" stroke="#3a2008" stroke-width="1.2"/>
+    <line x1="12" y1="23" x2="10" y2="28" stroke="#3a2008" stroke-width="1.2"/>
+    <!-- tail trailing -->
+    <path d="M 8 18 Q 4 17 2 20" stroke="#3a2008" stroke-width="1.2" fill="none"/>
+    <!-- rider (cloaked, leaning forward) -->
+    <ellipse cx="14" cy="14" rx="1.6" ry="1.4" fill="#e8c894"/>
+    <path d="M 12 15 L 17 15 L 19 22 L 11 22 Z" fill="url(#lg-cloak)" stroke="#1a0e04" stroke-width="0.3"/>
+    <!-- cloak streaming back -->
+    <path d="M 12 16 L 6 19 L 8 22 L 13 20 Z" fill="url(#lg-cloak)" opacity="0.85"/>
+    <!-- scroll/letter in hand -->
+    <rect x="17" y="16" width="3" height="1.4" fill="#e8d8a4" stroke="#5a4a32" stroke-width="0.2"/>
+  </g>
+  <!-- dust kicked up -->
+  <ellipse cx="6" cy="28" rx="3" ry="0.7" fill="#daca7a" opacity="0.5"/>
+  <ellipse cx="3" cy="29" rx="2" ry="0.5" fill="#daca7a" opacity="0.35"/>
+</svg>

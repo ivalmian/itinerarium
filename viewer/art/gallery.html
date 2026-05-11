@@ -44,7 +44,8 @@
 <p>Tier-specific architecture: round wattle hut (hamlet) → cluster of houses (village) → multi-house town with bell tower → walled small city → multi-tower large city with grand temple.</p>
 <div class="grid sq" id="g-settlements"></div>
 
-<h2>Units — 2</h2>
+<h2>Units — 7 mover types</h2>
+<p>Distinct per sim mover class: <code>caravan</code> = trade caravan (Caravan), <code>migrant_column</code> = displaced peasants (MigrationMovement), <code>news_carrier</code> = single rider (NewsMovement), <code>patrol</code> = 3 legionaries (PatrolRoutes), <code>legion</code> = larger military formation, <code>bandit_raid</code> = mobile bandit party, <code>bandit_camp</code> = stationary lair (BanditCamp).</p>
 <div class="grid sq" id="g-units"></div>
 
 <h2>River segments — 6 directional</h2>
@@ -115,13 +116,13 @@
 <p>Color-tintable (<code>color="currentColor"</code>) feather strips. The viewer sets the source-terrain color before rasterizing, replacing the procedural biome-edge darkening currently in <code>hexMap.ts</code>. Shown here in black.</p>
 <div class="grid hex" id="g-biome"></div>
 
-<footer>Total: <span id="count">88</span> SVGs. Open any file directly in a browser to inspect; SVGs are hand-authored and editable in any vector tool.</footer>
+<footer>Total: <span id="count">93</span> SVGs. Open any file directly in a browser to inspect; SVGs are hand-authored and editable in any vector tool.</footer>
 
 <script>
 const terrain = ['plains','fertile_valley','hills','mountains','forest','dense_forest','marsh','desert','steppe','river','lake','urban_hamlet','urban_village','urban_town','urban_small_city','urban_large_city','ruin'];
 const buildings = ['farm','pasture','mine','quarry','forester_camp','sawmill','mill','bakery','bloomery','kiln','pottery','charcoal_kiln','granary','warehouse','cistern','smithy','weaver_workshop','tailor_shop','winery','oil_press','dairy','tannery','fishery','vineyard','olive_grove','orchard','cart_wright','mint','temple','forum_market','walls','barracks','aqueduct_segment','road_segment'];
 const settlements = ['hamlet','village','town','small_city','large_city'];
-const units = ['caravan','bandit_camp'];
+const units = ['caravan','migrant_column','news_carrier','patrol','legion','bandit_raid','bandit_camp'];
 const dirs = ['e','ne','nw','w','sw','se'];
 
 const makeCell = (path, label, shape='sq', bg=null) => {
