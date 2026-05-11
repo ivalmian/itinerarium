@@ -3,17 +3,30 @@
  * docs/08 §"Communicated price discovery via guilds" + docs/10
  * Decision 27).
  *
- * Each city of size ≥ town hosts a merchant guild. Member NPC
- * caravans drop their recent price observations into the guild's
- * shared ledger when they arrive home, and read the latest
- * collective ledger when they depart. The result is a delayed
- * shared-information channel: the spread caravan A spotted in
- * City B is visible to caravan C at City A several days later
- * (the round trip of caravan A), but never instantaneously.
+ * **Pillar 1 (no hidden hands) compliance:** guild information
+ * NEVER teleports. Every entry in a guild's `priceLedger` was put
+ * there by a specific caravan that actually walked to the
+ * observed settlement, observed the price, and then walked back
+ * to a guild member's location. The ledger is just a shared
+ * memo-pad that physically-present members write to and read from.
  *
- * Cross-guild rumor: when two members of different guilds happen
- * to be on the same hex (caravans pass each other on the road),
- * they exchange a slice of their ledgers. Long-haul rumor.
+ * Each city of size ≥ town hosts a merchant guild. Member NPC
+ * caravans:
+ *   - On ARRIVAL at a settlement that's the home of any guild
+ *     they belong to: deposit their priceBook (which they built up
+ *     by actually visiting other cities) into the guild's ledger.
+ *   - On DEPARTURE from the same settlement: read the freshest
+ *     collective ledger entries back into their priceBook.
+ *
+ * Cross-guild rumor: when two caravans of DIFFERENT guilds are
+ * physically CO-LOCATED on the same hex (passed each other on the
+ * road, met at a market, etc.), they exchange a slice of their
+ * ledgers. Both caravans must be real units on the map; there is
+ * no remote ledger sync.
+ *
+ * Result: a price spike caravan A spotted in City B is visible to
+ * caravan C at City A only after caravan A has physically walked
+ * back home. Round trip = real travel time, not "at caravan speed."
  */
 
 import type { ActorId, CaravanId, Day, ResourceId, SettlementId } from '../types.js';

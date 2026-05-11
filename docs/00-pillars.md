@@ -31,6 +31,17 @@ these.
    travellers, letters that take time to arrive. No omniscient market
    screen.
 
+7. **Information spreads with units, never with action at a distance —
+   not even delayed action at a distance.** If A learns something B
+   knows, it's because a specific unit (caravan, news carrier, refugee,
+   patrol, migrant) physically traveled between them. There is no
+   "guild ledger sync at 20 hex/day" pretending to be physical;
+   the ledger is a memo-pad two members write to and read from when
+   they happen to be present at the guild hall, and those members had
+   to walk there with their own observations. Same for reputation
+   propagation, news of battles, and price discovery.
+
 These pillars are also the test for new feature ideas: if a proposed
 feature requires breaking one (e.g. a global price ticker that everyone
-sees instantly), the answer is no, find another way.
+sees instantly, or a guild ledger that magically syncs across cities
+even when no caravan made the trip), the answer is no, find another way.
