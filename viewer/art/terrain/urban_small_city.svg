@@ -1,6 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
   <defs>
     <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
+    <mask id="softhex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37" fill="white" filter="url(#hexblur)"/></mask>
+    <filter id="hexblur" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="2"/></filter>
     <linearGradient id="lg-base" x1="0" y1="0" x2="0.8" y2="1">
       <stop offset="0" stop-color="#a89968"/>
       <stop offset="1" stop-color="#5e4a28"/>
@@ -33,7 +35,7 @@
       <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
   </defs>
-  <g clip-path="url(#hex)">
+  <g mask="url(#softhex)">
     <rect x="0" y="0" width="128" height="148" fill="url(#lg-base)"/>
     <rect x="0" y="0" width="128" height="148" fill="#3a2c14" filter="url(#nz)" opacity="0.35"/>
     <!-- city wall (running around outer hex edge area) -->

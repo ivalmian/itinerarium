@@ -26,10 +26,27 @@ import { hexToPixel } from './coords.js';
 import { type ArtRegistry, type EdgeDir, EDGE_DIRS, terrainArtKey } from '../art/index.js';
 
 const SQRT3 = Math.sqrt(3);
+const ROT_60 = Math.PI / 3;
 
 /** Categories used only to decide whether a lake hex needs a shore overlay
  *  on a given edge. */
 const WATER_TERRAINS: ReadonlySet<Terrain> = new Set(['river', 'lake']);
+
+/**
+ * Deterministic per-hex rotation index in {0..5} so the same world looks
+ * identical on every reload but the regular grid pattern is broken up.
+ * A pointy-top regular hexagon has 6-fold rotational symmetry so a
+ * 60° rotation step leaves the silhouette unchanged while shuffling the
+ * interior detail (trees, ripples, grass tufts, dunes) to a different
+ * orientation.
+ */
+const hexRotationIndex = (h: Hex): number => {
+  // FNV-1a-ish on (q, r). Stable, fast, well-distributed across small ints.
+  let x = (h.q * 73856093) ^ (h.r * 19349663);
+  x = Math.imul(x ^ (x >>> 13), 1274126177);
+  x = x ^ (x >>> 16);
+  return (x >>> 0) % 6;
+};
 
 export interface HexMap {
   readonly container: Container;
@@ -104,6 +121,9 @@ export const createHexMap = (
     sprite.width = spriteW;
     sprite.height = spriteH;
     sprite.position.set(px.x, px.y);
+    // Per-hex rotation in 60° steps. The hex silhouette stays the same;
+    // baked-in interior detail (trees, ripples, dunes) reorients.
+    sprite.rotation = hexRotationIndex(h) * ROT_60;
     fills.addChild(sprite);
     entries.set(key, { sprite });
     if (px.x < bounds.minX) bounds.minX = px.x;
