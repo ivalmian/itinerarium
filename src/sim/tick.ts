@@ -247,6 +247,25 @@ export type TickEvent =
       readonly spoiled: number;
     }
   | {
+      readonly type: 'riot';
+      readonly settlement: SettlementId;
+      readonly trigger: ResourceId;
+      readonly priceMultipleOfBaseline: number;
+    }
+  | {
+      readonly type: 'edict_issued';
+      readonly settlement: SettlementId;
+      readonly resource: ResourceId;
+      readonly priceCap: number;
+    }
+  | {
+      readonly type: 'mob_looting';
+      readonly settlement: SettlementId;
+      readonly resource: ResourceId;
+      readonly fromActor: ActorId;
+      readonly looted: number;
+    }
+  | {
       readonly type: 'edge_hub_spawned';
       readonly newCaravans: number;
     }
@@ -371,6 +390,12 @@ export const tick = (inputs: TickInputs): TickResult => {
   // Caravan instances spawned at edge hexes. Without this call,
   // off-map trade only fires in standalone tests.
   edgeHubPhase(world, season, today, rng.derive('edge-hub'), events);
+
+  // --- Civil unrest cascade (docs/15 §C16) -------------------------------
+  // Sustained grain-price spikes trigger: riot → governor edict (price
+  // cap + forced patrician sales) → mob looting (if cap fails). Self-
+  // regulates because each step relaxes the underlying constraint.
+  civilUnrestPhase(world, today, events);
 
   // --- Storage spoilage (docs/15 §C10) ----------------------------------
   // Stockpiles above the settlement's storage capacity rot at a gentle
@@ -884,6 +909,125 @@ const addRoadWear = (world: WorldState, h: Hex, amount: number): void => {
   // Roman roads neither accrue wear nor decay (engineered + maintained).
   if (tile.road === 'roman') return;
   tile.roadWear = (tile.roadWear ?? 0) + amount;
+};
+
+// --- Civil unrest cascade (docs/15 §C16) ---------------------------------
+
+/** Number of consecutive days of price > RIOT_PRICE_MULT × baseline before riot. */
+const RIOT_PRICE_STREAK_DAYS = 14;
+const RIOT_PRICE_MULT = 5;
+/** Days a riot persists before triggering an edict (governor must respond). */
+const EDICT_TRIGGER_AFTER_RIOT_DAYS = 7;
+/** Edict caps grain at this multiple of the baseline. */
+const EDICT_PRICE_CAP_MULT = 3;
+/** Days an edict can be in effect before mob looting if it isn't enough. */
+const LOOTING_TRIGGER_AFTER_EDICT_DAYS = 14;
+/** Mob takes this fraction of patrician + city-corp grain stockpile. */
+const LOOTING_FRACTION = 0.08;
+
+interface UnrestState {
+  /** Per-settlement, per-resource consecutive days price >= mult × baseline. */
+  readonly priceSpikeStreak: Map<string, number>;
+  /** Per-settlement: days since current riot started, or undefined if no riot. */
+  readonly riotDays: Map<SettlementId, number>;
+  /** Per-settlement: days since current edict issued, or undefined. */
+  readonly edictDays: Map<SettlementId, number>;
+}
+
+const unrest: UnrestState = {
+  priceSpikeStreak: new Map(),
+  riotDays: new Map(),
+  edictDays: new Map(),
+};
+
+const civilUnrestPhase = (world: WorldState, _today: Day, events: TickEvent[]): void => {
+  const grainResource = resourceId('food.grain');
+  const baseline = DEFAULT_GLOBAL_PRICES.get(grainResource) ?? 1.5;
+
+  for (const settlement of world.settlements.values()) {
+    if (settlement.population.total() === 0) continue;
+    const price = settlement.market.lastClearingPrice.get(grainResource) ?? 0;
+    const streakKey = `${String(settlement.id)}|food.grain`;
+
+    // Update streak.
+    if (price >= baseline * RIOT_PRICE_MULT) {
+      unrest.priceSpikeStreak.set(streakKey, (unrest.priceSpikeStreak.get(streakKey) ?? 0) + 1);
+    } else {
+      unrest.priceSpikeStreak.set(streakKey, 0);
+    }
+
+    const streak = unrest.priceSpikeStreak.get(streakKey) ?? 0;
+    const inRiot = unrest.riotDays.has(settlement.id);
+    const inEdict = unrest.edictDays.has(settlement.id);
+
+    // Trigger riot.
+    if (!inRiot && streak >= RIOT_PRICE_STREAK_DAYS) {
+      unrest.riotDays.set(settlement.id, 0);
+      events.push({
+        type: 'riot',
+        settlement: settlement.id,
+        trigger: grainResource,
+        priceMultipleOfBaseline: price / baseline,
+      });
+    }
+
+    // Advance riot timer.
+    if (inRiot) {
+      const days = (unrest.riotDays.get(settlement.id) ?? 0) + 1;
+      unrest.riotDays.set(settlement.id, days);
+
+      // Trigger edict after enough riot days.
+      if (!inEdict && days >= EDICT_TRIGGER_AFTER_RIOT_DAYS) {
+        unrest.edictDays.set(settlement.id, 0);
+        events.push({
+          type: 'edict_issued',
+          settlement: settlement.id,
+          resource: grainResource,
+          priceCap: baseline * EDICT_PRICE_CAP_MULT,
+        });
+        // Force-cap the recorded clearing price (next-tick demand sources
+        // will see the lower price and not bid as high).
+        recordClearingPrice(settlement, grainResource, baseline * EDICT_PRICE_CAP_MULT);
+      }
+    }
+
+    // Advance edict timer + trigger looting if cap insufficient.
+    if (inEdict) {
+      const days = (unrest.edictDays.get(settlement.id) ?? 0) + 1;
+      unrest.edictDays.set(settlement.id, days);
+
+      if (days >= LOOTING_TRIGGER_AFTER_EDICT_DAYS && price > baseline * RIOT_PRICE_MULT) {
+        // Mob loots grain from richest patricians + city corp.
+        for (const oId of settlement.stockpileOwners) {
+          const a = world.actors.get(oId);
+          if (a === undefined) continue;
+          if (a.kind !== 'patrician_family' && a.kind !== 'city_corporation') continue;
+          const have = a.stockpile.get(grainResource) ?? 0;
+          if (have <= 0) continue;
+          const looted = have * LOOTING_FRACTION;
+          if (looted < 1) continue;
+          const remaining = have - looted;
+          if (remaining > 1e-9) a.stockpile.set(grainResource, remaining);
+          else a.stockpile.delete(grainResource);
+          events.push({
+            type: 'mob_looting',
+            settlement: settlement.id,
+            resource: grainResource,
+            fromActor: a.id,
+            looted,
+          });
+        }
+        // Reset edict timer (governor re-issues + waits another window).
+        unrest.edictDays.set(settlement.id, 0);
+      }
+    }
+
+    // Cool-off: prices back to normal → end riot + edict.
+    if (price < baseline * RIOT_PRICE_MULT && streak === 0) {
+      unrest.riotDays.delete(settlement.id);
+      unrest.edictDays.delete(settlement.id);
+    }
+  }
 };
 
 // --- Roman road maintenance (docs/15 §C11) -------------------------------
