@@ -117,6 +117,7 @@ export const createSidebar = (opts: SidebarOpts): Sidebar => {
   const banditCampPanel = createBanditCampPanel({
     host: selectedHost,
     state,
+    history: opts.history,
     onClear: () => setSelection(state, { kind: 'none' }),
   });
   const hexPanel = createHexPanel({
