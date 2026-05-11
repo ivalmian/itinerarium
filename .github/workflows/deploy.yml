@@ -1,0 +1,76 @@
+name: Deploy viewer to S3 + CloudFront
+
+# Trigger on every push to main, plus a manual button in the Actions UI.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Required for the OIDC ↔ AWS handshake. `id-token: write` lets GH issue
+# the signed identity token; `contents: read` is the default for checkout.
+permissions:
+  id-token: write
+  contents: read
+
+# Cancel in-progress deploys when a newer push lands — no point uploading
+# a stale build over a fresher one.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # Build the viewer. Vite emits to `dist/` with hashed asset names,
+      # which lets us cache aggressively at CloudFront (the cache policy
+      # in infra/aws/cloudfront.tf honors origin Cache-Control headers).
+      - name: Build
+        run: npm run build
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # Sync everything in dist/ to S3.
+      #   --delete removes objects no longer in dist (old hashed assets).
+      #   --cache-control on the hashed assets gets a long TTL; index.html
+      #   gets a short TTL so the next deploy is visible quickly.
+      - name: Sync assets to S3 (long-cache for hashed files)
+        run: |
+          aws s3 sync dist/ s3://${{ vars.AWS_S3_BUCKET }}/ \
+            --delete \
+            --exclude "index.html" \
+            --exclude "*.html" \
+            --cache-control "public, max-age=31536000, immutable"
+
+      - name: Sync HTML to S3 (short-cache)
+        run: |
+          aws s3 sync dist/ s3://${{ vars.AWS_S3_BUCKET }}/ \
+            --exclude "*" \
+            --include "*.html" \
+            --cache-control "public, max-age=60, must-revalidate"
+
+      # Flush CloudFront's edge cache so the new index.html is picked up
+      # immediately. Hashed asset URLs change every deploy so they don't
+      # need invalidation, but / and /index.html do.
+      - name: Invalidate CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ vars.AWS_CLOUDFRONT_DISTRIBUTION_ID }} \
+            --paths "/" "/index.html"
