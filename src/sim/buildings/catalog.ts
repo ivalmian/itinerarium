@@ -30,6 +30,19 @@ export interface BuildingDef {
   readonly constructionCost: ReadonlyMap<ResourceId, Quantity>;
   readonly maintenancePerDay: ReadonlyMap<ResourceId, Quantity>;
   readonly decayDaysIfUnmaintained: number;
+  /**
+   * Storage contribution per resource. Granaries hold a large
+   * `food.grain` quota; warehouses are mostly `wildcardCapacityKg`
+   * (any tradable). Per docs/15 §C10 + docs/05 §"Storage capacity".
+   * Empty / absent = no resource-specific storage.
+   */
+  readonly storageCapacity?: ReadonlyMap<ResourceId, Quantity>;
+  /**
+   * Generic in-process storage in kilograms. Any tradable resource
+   * occupies this pool weighted by its weightKgPerUnit. Production
+   * buildings each carry a small slug (~50 kg). Per docs/15 §C10.
+   */
+  readonly wildcardCapacityKg?: number;
   readonly notes?: string;
 }
 
@@ -41,6 +54,8 @@ interface BuildingInput {
   readonly constructionCost: Readonly<Record<string, Quantity>>;
   readonly maintenancePerDay?: Readonly<Record<string, Quantity>>;
   readonly decayDaysIfUnmaintained: number;
+  readonly storageCapacity?: Readonly<Record<string, Quantity>>;
+  readonly wildcardCapacityKg?: number;
   readonly notes?: string;
 }
 
@@ -344,6 +359,8 @@ const DEFS: readonly BuildingInput[] = [
     constructionCost: { 'material.cut_stone': 8, 'material.brick_tile': 6, 'material.lumber': 4 },
     maintenancePerDay: { 'material.brick_tile': 0.02 },
     decayDaysIfUnmaintained: 365,
+    storageCapacity: { 'food.grain': 5000 },
+    wildcardCapacityKg: 1000,
     notes: 'Bulk grain storage. Reduces grain spoilage.',
   },
   {
@@ -354,6 +371,7 @@ const DEFS: readonly BuildingInput[] = [
     constructionCost: { 'material.lumber': 8, 'material.brick_tile': 4, 'material.cut_stone': 2 },
     maintenancePerDay: { 'material.lumber': 0.02 },
     decayDaysIfUnmaintained: 365,
+    wildcardCapacityKg: 10000,
     notes: 'General-purpose storage; used by merchants and patrons.',
   },
   {
@@ -451,6 +469,16 @@ const buildCatalog = (): ReadonlyMap<BuildingId, BuildingDef> => {
         maintenance.set(resourceId(resKey), qty);
       }
     }
+    const storage = new Map<ResourceId, Quantity>();
+    if (input.storageCapacity !== undefined) {
+      for (const [resKey, qty] of Object.entries(input.storageCapacity)) {
+        storage.set(resourceId(resKey), qty);
+      }
+    }
+    // Default: every building carries 50 kg of in-process slack so
+    // production actors aren't immediately spilling onto the cap.
+    // Storage buildings explicitly override (granary, warehouse).
+    const wildcard = input.wildcardCapacityKg ?? 50;
     const def: BuildingDef = Object.freeze({
       id,
       category: input.category,
@@ -459,6 +487,8 @@ const buildCatalog = (): ReadonlyMap<BuildingId, BuildingDef> => {
       constructionCost: freezeMap(construction),
       maintenancePerDay: freezeMap(maintenance),
       decayDaysIfUnmaintained: input.decayDaysIfUnmaintained,
+      storageCapacity: freezeMap(storage),
+      wildcardCapacityKg: wildcard,
       ...(input.notes !== undefined ? { notes: input.notes } : {}),
     });
     map.set(id, def);

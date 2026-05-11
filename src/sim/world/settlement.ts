@@ -16,7 +16,9 @@
  *   docs/11-politics-and-ownership.md
  */
 
+import { getBuilding } from '../buildings/catalog.js';
 import { emptyPool, type PopulationPool } from '../population/index.js';
+import type { Quantity } from '../types.js';
 import type {
   ActorId,
   BuildingId,
@@ -362,6 +364,51 @@ export const setHexOwner = (grid: HexGrid, hex: Hex, owner: ActorId | null): voi
   const tile = grid.get(hex);
   if (tile === undefined) return;
   tile.ownerActor = owner;
+};
+
+export interface SettlementStorage {
+  /** Per-resource cap (in resource units). */
+  readonly perResource: ReadonlyMap<ResourceId, Quantity>;
+  /** Generic in-process cap in kilograms (any tradable). */
+  readonly wildcardKg: number;
+}
+
+/**
+ * Aggregate storage capacity from this settlement's buildings, plus a
+ * per-capita household baseline so buildingless hamlets aren't capped
+ * at zero. Per docs/15 §C10 + docs/05 §"Storage capacity".
+ */
+export const computeStorageCapacity = (s: Settlement): SettlementStorage => {
+  const perResource = new Map<ResourceId, Quantity>();
+  let wildcardKg = 0;
+
+  // Households: ~50 kg of mixed storage per adult (the family attic +
+  // a couple of grain pots). Without this floor, a hamlet of 100 with
+  // no granary can't hold any reserves at all — unrealistic.
+  const adults = adultPopulationCount(s);
+  wildcardKg += adults * 50;
+
+  for (const b of s.buildings) {
+    const def = getBuilding(b.buildingId);
+    const sc = def.storageCapacity;
+    if (sc !== undefined) {
+      for (const [r, qty] of sc) {
+        perResource.set(r, (perResource.get(r) ?? 0) + qty);
+      }
+    }
+    wildcardKg += def.wildcardCapacityKg ?? 0;
+  }
+  return { perResource, wildcardKg };
+};
+
+/** Sum of working-age cohorts (15-59). Local helper. */
+const adultPopulationCount = (s: Settlement): number => {
+  let n = 0;
+  for (const [key, count] of s.population.cohorts()) {
+    const age = parseInt(key.age.split('-')[0] ?? '0', 10);
+    if (age >= 15 && age < 60) n += count;
+  }
+  return n;
 };
 
 export interface CatchmentRecomputeResult {

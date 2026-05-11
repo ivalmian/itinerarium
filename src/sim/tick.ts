@@ -93,6 +93,7 @@ import { allRecipes } from './production/recipes.js';
 import type { Rng } from './rng.js';
 import {
   addBuilding,
+  computeStorageCapacity,
   recomputeCatchment,
   recordClearingPrice,
   recordInflow,
@@ -240,6 +241,12 @@ export type TickEvent =
       readonly settlement: SettlementId;
     }
   | {
+      readonly type: 'storage_spoilage';
+      readonly settlement: SettlementId;
+      readonly resource: ResourceId;
+      readonly spoiled: number;
+    }
+  | {
       readonly type: 'edge_hub_spawned';
       readonly newCaravans: number;
     }
@@ -360,6 +367,12 @@ export const tick = (inputs: TickInputs): TickResult => {
   // Caravan instances spawned at edge hexes. Without this call,
   // off-map trade only fires in standalone tests.
   edgeHubPhase(world, season, today, rng.derive('edge-hub'), events);
+
+  // --- Storage spoilage (docs/15 §C10) ----------------------------------
+  // Stockpiles above the settlement's storage capacity rot at a gentle
+  // rate (1%/day above cap) instead of being force-sold. Avoids the
+  // cascading inflation bug from the prior C10 attempt.
+  storageSpoilagePhase(world, events);
 
   // --- Trail wear decay + threshold check ---------------------------------
   // Daily decay: -1 wear per hex; on threshold, upgrade 'none' → 'dirt';
@@ -858,6 +871,141 @@ const addRoadWear = (world: WorldState, h: Hex, amount: number): void => {
   // Roman roads neither accrue wear nor decay (engineered + maintained).
   if (tile.road === 'roman') return;
   tile.roadWear = (tile.roadWear ?? 0) + amount;
+};
+
+// --- Storage spoilage (docs/15 §C10) -------------------------------------
+
+const SPOILAGE_RATE_PER_DAY = 0.002; // 0.2% per day above cap
+/** Grace period: bootstrap stockpiles get a year to be consumed naturally
+ *  before spoilage kicks in. Without this the procgen-seeded bootstrap
+ *  (90 days of grain in a 30k city = 161k modii vs. one granary's 5k)
+ *  spoils away in months and the world starves. */
+const SPOILAGE_GRACE_DAYS = 365;
+
+/**
+ * Whether a resource can spoil at all. Hard goods (iron, tools,
+ * weapons, cut stone) never spoil; perishables (grain, bread, meat,
+ * fish, milk) can. We use the catalog's `perishableDays` as the
+ * proxy: present = spoils, absent = inert. Per docs/02 + docs/15 §C10.
+ */
+const isPerishable = (resource: ResourceId): boolean => {
+  const def = getResource(resource);
+  return def.perishableDays !== undefined && def.perishableDays > 0;
+};
+
+/**
+ * Per-day, for each settlement: compute its aggregate storage capacity
+ * (per-resource + wildcard kg). For each (owner, resource): if the
+ * settlement's combined stockpile of `resource` exceeds the cap,
+ * each owner's share spoils proportionally at 0.2%/day. The spoiled
+ * goods evaporate (we don't model rats), and emit a `storage_spoilage`
+ * event so telemetry can see the rejected delta.
+ *
+ * Why gentle: the prior C10 attempt did instant force-sales at a
+ * floor price, which cascaded into inflation+market-collapse. Slow
+ * decay lets the trade phase find equilibrium first; if cap is
+ * still exceeded after the grace period, production naturally backs
+ * off (output goes nowhere → seller's stockpile stays full → next
+ * round's market clears at lower prices → derived input demand
+ * falls). The system self-regulates instead of imploding.
+ */
+const storageSpoilagePhase = (world: WorldState, events: TickEvent[]): void => {
+  if (world.day < SPOILAGE_GRACE_DAYS) return;
+  for (const settlement of world.settlements.values()) {
+    if (settlement.population.total() === 0) continue;
+    const cap = computeStorageCapacity(settlement);
+
+    // Aggregate stockpiles across owners + count owners holding each
+    // resource so we can split the spoilage fairly.
+    const totalByResource = new Map<ResourceId, number>();
+    const ownersWithStock = new Map<ResourceId, Actor[]>();
+    let wildcardKgUsed = 0;
+
+    for (const oId of settlement.stockpileOwners) {
+      const a = world.actors.get(oId);
+      if (a === undefined) continue;
+      for (const [r, qty] of a.stockpile) {
+        if (qty <= 0) continue;
+        totalByResource.set(r, (totalByResource.get(r) ?? 0) + qty);
+        let arr = ownersWithStock.get(r);
+        if (arr === undefined) {
+          arr = [];
+          ownersWithStock.set(r, arr);
+        }
+        arr.push(a);
+        // Resources with a per-resource cap don't draw on wildcard.
+        if (!cap.perResource.has(r)) {
+          wildcardKgUsed += qty * getResource(r).weightKgPerUnit;
+        }
+      }
+    }
+
+    // Per-resource caps first. Only PERISHABLE resources spoil — iron,
+    // tools, cut stone, etc. sit in stockpiles indefinitely.
+    for (const [r, total] of totalByResource) {
+      if (!isPerishable(r)) continue;
+      const limit = cap.perResource.get(r);
+      if (limit === undefined) continue;
+      if (total <= limit) continue;
+      const excess = total - limit;
+      const spoil = excess * SPOILAGE_RATE_PER_DAY;
+      drainSpoilageProportional(ownersWithStock.get(r) ?? [], r, spoil);
+      events.push({
+        type: 'storage_spoilage',
+        settlement: settlement.id,
+        resource: r,
+        spoiled: spoil,
+      });
+    }
+
+    // Wildcard pool: only perishables spoil. Hard goods (iron, tools,
+    // weapons) just stack up.
+    if (wildcardKgUsed > cap.wildcardKg && cap.wildcardKg > 0) {
+      let perishableKgUsed = 0;
+      for (const [r, total] of totalByResource) {
+        if (cap.perResource.has(r)) continue;
+        if (!isPerishable(r)) continue;
+        perishableKgUsed += total * getResource(r).weightKgPerUnit;
+      }
+      if (perishableKgUsed <= 0) continue;
+      const overflowKg = wildcardKgUsed - cap.wildcardKg;
+      const overflowPerishableShare = Math.min(overflowKg, perishableKgUsed);
+      const spoilFraction = (overflowPerishableShare * SPOILAGE_RATE_PER_DAY) / perishableKgUsed;
+      for (const [r, total] of totalByResource) {
+        if (cap.perResource.has(r)) continue;
+        if (!isPerishable(r)) continue;
+        const spoil = total * spoilFraction;
+        if (spoil <= 0) continue;
+        drainSpoilageProportional(ownersWithStock.get(r) ?? [], r, spoil);
+        events.push({
+          type: 'storage_spoilage',
+          settlement: settlement.id,
+          resource: r,
+          spoiled: spoil,
+        });
+      }
+    }
+  }
+};
+
+const drainSpoilageProportional = (
+  owners: readonly Actor[],
+  resource: ResourceId,
+  totalSpoil: number,
+): void => {
+  if (owners.length === 0 || totalSpoil <= 1e-9) return;
+  // Weighted by current stock. Spoil more from the bigger holders.
+  let totalStock = 0;
+  for (const a of owners) totalStock += a.stockpile.get(resource) ?? 0;
+  if (totalStock <= 0) return;
+  for (const a of owners) {
+    const have = a.stockpile.get(resource) ?? 0;
+    if (have <= 0) continue;
+    const share = (have / totalStock) * totalSpoil;
+    const remaining = have - share;
+    if (remaining > 1e-9) a.stockpile.set(resource, remaining);
+    else a.stockpile.delete(resource);
+  }
 };
 
 // --- Tax shipment phase (docs/11 §"Taxes" + codex review #2) -------------
