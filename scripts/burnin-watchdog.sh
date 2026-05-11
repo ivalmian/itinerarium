@@ -21,12 +21,10 @@
 # Project-scoped: wired in .claude/settings.json.
 #
 # Note: typecheck ~5s, lint ~5s, test+coverage ~30s, 6-year burn-in
-# ~8-10 min on a recent laptop after the codex review #5 swap to the
-# full demand/supply scheduler (every catalog resource clears, not
-# just the v1 hardcoded 8). Hook timeout in settings.json is 900s
-# (15 min). The tradePhase per-resource per-settlement loop is the
-# main cost; v1.5 optimization target is to cache schedules across
-# ticks since input prices change slowly.
+# ~2-3 min on a recent laptop after the codex sim-speed-opt merge
+# (SoA cohort iteration, schedule caching, batched RNG sampling, and
+# pathfinding/grid index improvements got the per-tick cost down ~3x).
+# Hook timeout in settings.json is 420s (7 min) for headroom.
 
 set -u
 cd "$(dirname "$0")/.."
