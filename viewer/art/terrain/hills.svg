@@ -1,41 +1,56 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
   <defs>
     <clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath>
-    <!-- Purely vertical gradient (x2 = x1 = 0). With any horizontal
-         component the left and right edges of the mound have different
-         colors, breaking the left-right hex-boundary color match. -->
-    <linearGradient id="lg-mound" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#c4a07a"/>
+    <!-- Purely vertical gradients (x1 = x2 = 0) so left/right edges of each
+         mound layer have the same color, matching the neighbor. -->
+    <linearGradient id="lg-far" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a08160"/>
       <stop offset="1" stop-color="#5e4524"/>
     </linearGradient>
-    <filter id="nz" x="0" y="0" width="1" height="1">
-      <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="2" seed="11"/>
-      <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.2 0"/>
-      <feComposite in2="SourceGraphic" operator="in"/>
-    </filter>
+    <linearGradient id="lg-mid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b48f6a"/>
+      <stop offset="1" stop-color="#6c5028"/>
+    </linearGradient>
+    <linearGradient id="lg-near" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c4a07a"/>
+      <stop offset="1" stop-color="#785834"/>
+    </linearGradient>
     <filter id="ds" x="-30%" y="-30%" width="160%" height="160%">
       <feGaussianBlur in="SourceAlpha" stdDeviation="1"/>
       <feOffset dx="1" dy="2"/>
-      <feComponentTransfer><feFuncA type="linear" slope="0.5"/></feComponentTransfer>
+      <feComponentTransfer><feFuncA type="linear" slope="0.4"/></feComponentTransfer>
       <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
   </defs>
   <g clip-path="url(#hex)">
+    <!-- Base fill spans the entire hex so the outer ring is uniform color
+         everywhere (left edge = right edge = top edge = bottom edge). -->
     <rect x="0" y="0" width="128" height="148" fill="#91714e"/>
+    <!-- Three ridges layered front-to-back so the whole hex reads as
+         continuous hilly terrain rather than "flat-base + bottom mound".
+         Each ridge path's left and right ends touch the SVG bounds at the
+         same y as its right counterpart, so left-edge color = right-edge
+         color at every horizontal slice. -->
     <g filter="url(#ds)">
-      <!-- back ridge -->
-      <path d="M 8 96 Q 38 64 70 82 Q 96 96 122 78 L 128 148 L 0 148 Z" fill="url(#lg-mound)" opacity="0.85"/>
-      <!-- front mound -->
-      <path d="M 16 122 Q 50 92 78 116 Q 102 134 122 116 L 128 148 L 0 148 Z" fill="url(#lg-mound)"/>
+      <!-- Farthest ridge — runs across the top third of the hex -->
+      <path d="M -4 38 Q 32 22 64 36 Q 96 50 132 32 L 132 60 Q 96 78 64 64 Q 32 50 -4 66 Z" fill="url(#lg-far)" opacity="0.85"/>
+      <!-- Middle ridge — runs across the middle of the hex -->
+      <path d="M -4 76 Q 32 60 64 76 Q 96 92 132 70 L 132 100 Q 96 118 64 102 Q 32 86 -4 104 Z" fill="url(#lg-mid)" opacity="0.9"/>
+      <!-- Near ridge — runs across the bottom third of the hex -->
+      <path d="M -4 118 Q 32 100 64 116 Q 96 132 132 110 L 132 152 L -4 152 Z" fill="url(#lg-near)"/>
     </g>
-    <!-- shadow valleys -->
-    <path d="M 8 96 Q 38 64 70 82 Q 96 96 122 78" fill="none" stroke="#3a2818" stroke-width="0.6" opacity="0.5"/>
-    <path d="M 16 122 Q 50 92 78 116 Q 102 134 122 116" fill="none" stroke="#2f1f12" stroke-width="0.6" opacity="0.5"/>
-    <!-- grass tufts on hills -->
-    <g stroke="#3e3618" stroke-width="0.7" stroke-linecap="round" opacity="0.6">
-      <line x1="34" y1="106" x2="34" y2="100"/>
-      <line x1="62" y1="112" x2="62" y2="106"/>
-      <line x1="90" y1="124" x2="90" y2="118"/>
+    <!-- Shadow valley lines along each ridge crest for definition -->
+    <g stroke="#3a2818" stroke-width="0.6" fill="none" opacity="0.45">
+      <path d="M -4 38 Q 32 22 64 36 Q 96 50 132 32"/>
+      <path d="M -4 76 Q 32 60 64 76 Q 96 92 132 70"/>
+      <path d="M -4 118 Q 32 100 64 116 Q 96 132 132 110"/>
+    </g>
+    <!-- Sparse grass tufts on the front-near ridge -->
+    <g stroke="#3e3618" stroke-width="0.7" stroke-linecap="round" opacity="0.55">
+      <line x1="22" y1="128" x2="22" y2="122"/>
+      <line x1="48" y1="124" x2="48" y2="118"/>
+      <line x1="78" y1="130" x2="78" y2="124"/>
+      <line x1="100" y1="118" x2="100" y2="112"/>
     </g>
   </g>
-  </svg>
+</svg>
