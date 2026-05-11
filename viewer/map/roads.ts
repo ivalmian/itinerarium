@@ -97,9 +97,11 @@ export const createRoadLayer = (grid: HexGrid, hexSize: number): RoadLayer => {
   const romanRailGap = Math.max(1.0, Math.min(1.5, hexSize * 0.18));
   const romanRailWidth = 0.6;
   const dirtLineWidth = 0.8;
+  const roads = new Graphics();
+  container.addChild(roads);
 
   const drawAll = (gridArg: HexGrid): void => {
-    container.removeChildren();
+    roads.clear();
     for (const [h, tile] of gridArg.tiles()) {
       if (tile.road === 'none') continue;
       const grade = tile.road;
@@ -120,33 +122,29 @@ export const createRoadLayer = (grid: HexGrid, hexSize: number): RoadLayer => {
       }
 
       if (conns.length === 0) {
-        const dot = new Graphics();
-        dot.circle(cx, cy, Math.max(1.2, style.width)).fill({ color: style.color, alpha: style.alpha });
-        container.addChild(dot);
+        roads
+          .circle(cx, cy, Math.max(1.2, style.width))
+          .fill({ color: style.color, alpha: style.alpha });
         continue;
       }
 
       for (const c of conns) {
         if (grade === 'roman') {
-          drawRomanHalfSegment(container, cx, cy, c.ex, c.ey, style, romanRailWidth, romanRailGap);
+          drawRomanHalfSegment(roads, cx, cy, c.ex, c.ey, style, romanRailWidth, romanRailGap);
         } else {
-          drawDirtHalfSegment(container, cx, cy, c.ex, c.ey, style, dirtLineWidth);
+          drawDirtHalfSegment(roads, cx, cy, c.ex, c.ey, style, dirtLineWidth);
         }
       }
 
       const hubR = grade === 'roman' ? romanRailGap * 0.9 + romanRailWidth : dirtLineWidth * 1.0;
-      const hubG = new Graphics();
-      hubG.circle(cx, cy, hubR).fill({ color: style.color, alpha: style.alpha });
-      container.addChild(hubG);
+      roads.circle(cx, cy, hubR).fill({ color: style.color, alpha: style.alpha });
 
       for (const c of conns) {
         if (c.neighborGrade === grade) continue;
         const milestoneColor = 0xf2e2b8;
         const dotR = Math.max(0.9, hexSize * 0.12);
-        const dot = new Graphics();
-        dot.circle(c.ex, c.ey, dotR).fill({ color: milestoneColor, alpha: 1.0 });
-        dot.circle(c.ex, c.ey, dotR).stroke({ color: 0x3a2e1b, width: 0.3, alpha: 0.9 });
-        container.addChild(dot);
+        roads.circle(c.ex, c.ey, dotR).fill({ color: milestoneColor, alpha: 1.0 });
+        roads.circle(c.ex, c.ey, dotR).stroke({ color: 0x3a2e1b, width: 0.3, alpha: 0.9 });
       }
     }
   };
@@ -164,7 +162,7 @@ export const createRoadLayer = (grid: HexGrid, hexSize: number): RoadLayer => {
  * to the segment direction by ±romanRailGap/2.
  */
 const drawRomanHalfSegment = (
-  container: Container,
+  g: Graphics,
   cx: number,
   cy: number,
   ex: number,
@@ -185,10 +183,8 @@ const drawRomanHalfSegment = (
     const ay = cy + py * off * sign;
     const bx = ex + px * off * sign;
     const by = ey + py * off * sign;
-    const g = new Graphics();
     g.moveTo(ax, ay).lineTo(bx, by);
     g.stroke({ color: style.color, width: railWidth, alpha: style.alpha });
-    container.addChild(g);
   }
 };
 
@@ -199,7 +195,7 @@ const drawRomanHalfSegment = (
  * geometry so the same pair of hexes produces the same wave on every reload.
  */
 const drawDirtHalfSegment = (
-  container: Container,
+  g: Graphics,
   cx: number,
   cy: number,
   ex: number,
@@ -224,8 +220,6 @@ const drawDirtHalfSegment = (
   const mx = mx0 + px * ampl;
   const my = my0 + py * ampl;
 
-  const g = new Graphics();
   g.moveTo(cx, cy).quadraticCurveTo(mx, my, ex, ey);
   g.stroke({ color: style.color, width, alpha: style.alpha });
-  container.addChild(g);
 };

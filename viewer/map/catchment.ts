@@ -57,32 +57,27 @@ export const createCatchmentLayer = (): CatchmentLayer => {
   container.label = 'catchment';
   // Catchment shading is informational chrome, not interactive.
   container.eventMode = 'none';
+  const catchment = new Graphics();
+  container.addChild(catchment);
 
   const rebuild = (world: WorldState, hexSize: number): void => {
-    // Tear down existing children. PIXI Containers are cheap to repopulate.
-    for (const child of container.removeChildren()) {
-      child.destroy();
-    }
+    catchment.clear();
     for (const s of world.settlements.values()) {
-      drawSettlementCatchment(container, s, hexSize);
+      drawSettlementCatchment(catchment, s, hexSize);
     }
   };
 
   return { container, rebuild };
 };
 
-const drawSettlementCatchment = (container: Container, s: Settlement, hexSize: number): void => {
+const drawSettlementCatchment = (g: Graphics, s: Settlement, hexSize: number): void => {
   if (s.catchmentHexes.length === 0) return;
   const color = TIER_COLOR[s.tier];
   const alpha = TIER_ALPHA[s.tier];
-  // One Graphics per settlement (not per hex) keeps the display-object count
-  // tractable even with thousands of catchment hexes worldwide.
-  const g = new Graphics();
   for (const h of s.catchmentHexes) {
     appendHexPolygon(g, h, hexSize);
   }
   g.fill({ color, alpha });
-  container.addChild(g);
 };
 
 const appendHexPolygon = (g: Graphics, h: Hex, hexSize: number): void => {

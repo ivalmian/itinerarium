@@ -44,14 +44,73 @@ export const createBuildingsLayer = (): BuildingsLayer => {
   const container = new Container();
   container.label = 'buildings';
   container.eventMode = 'none'; // informational; clicks land on settlements
+  const iconPool: Graphics[] = [];
+  const labelPool: Text[] = [];
+  const activeIcons: Graphics[] = [];
+  const activeLabels: Text[] = [];
+
+  const acquireIcon = (): Graphics => {
+    const g = iconPool.pop() ?? new Graphics();
+    if (g.parent === null) container.addChild(g);
+    g.clear();
+    g.alpha = ICON_ALPHA;
+    g.visible = true;
+    activeIcons.push(g);
+    return g;
+  };
+
+  const acquireLabel = (): Text => {
+    const t = labelPool.pop() ?? new Text({
+      text: '',
+      style: {
+        fontSize: 7,
+        fill: 0x111111,
+        fontFamily: 'monospace',
+      },
+    });
+    if (t.parent === null) container.addChild(t);
+    t.visible = true;
+    t.alpha = 0.85;
+    activeLabels.push(t);
+    return t;
+  };
+
+  const releaseActive = (): void => {
+    for (const g of activeIcons) {
+      g.clear();
+      g.visible = false;
+      iconPool.push(g);
+    }
+    activeIcons.length = 0;
+    for (const t of activeLabels) {
+      t.visible = false;
+      labelPool.push(t);
+    }
+    activeLabels.length = 0;
+  };
+
+  const trimPools = (): void => {
+    const iconKeep = Math.max(64, activeIcons.length);
+    while (iconPool.length > iconKeep) {
+      const g = iconPool.pop()!;
+      container.removeChild(g);
+      g.destroy();
+    }
+
+    const labelKeep = Math.max(16, activeLabels.length);
+    while (labelPool.length > labelKeep) {
+      const t = labelPool.pop()!;
+      container.removeChild(t);
+      t.destroy();
+    }
+  };
 
   const rebuild = (world: WorldState, hexSize: number): void => {
-    for (const child of container.removeChildren()) {
-      child.destroy();
-    }
+    releaseActive();
     for (const s of world.settlements.values()) {
-      drawSettlementBuildings(container, s, hexSize);
+      drawSettlementBuildings(s, hexSize, acquireIcon, acquireLabel);
     }
+    trimPools();
   };
 
   return { container, rebuild };
@@ -64,9 +123,10 @@ interface Bucket {
 }
 
 const drawSettlementBuildings = (
-  container: Container,
   s: Settlement,
   hexSize: number,
+  acquireIcon: () => Graphics,
+  acquireLabel: () => Text,
 ): void => {
   if (s.buildings.length === 0) return;
 
@@ -98,7 +158,7 @@ const drawSettlementBuildings = (
   for (const [, list] of byHex) {
     const center = hexToPixel(list[0]!.hex, hexSize);
     if (list.length === 1) {
-      drawBuildingIcon(container, list[0]!, center.x, center.y, hexSize);
+      drawBuildingIcon(list[0]!, center.x, center.y, hexSize, acquireIcon, acquireLabel);
     } else {
       // Sort for stable angle assignment (deterministic across rebuilds).
       const sorted = list.slice().sort((a, b) => String(a.buildingId).localeCompare(String(b.buildingId)));
@@ -107,7 +167,7 @@ const drawSettlementBuildings = (
         const angle = (2 * Math.PI * i) / sorted.length - Math.PI / 2;
         const x = center.x + Math.cos(angle) * ringR;
         const y = center.y + Math.sin(angle) * ringR;
-        drawBuildingIcon(container, sorted[i]!, x, y, hexSize);
+        drawBuildingIcon(sorted[i]!, x, y, hexSize, acquireIcon, acquireLabel);
       }
     }
   }
@@ -117,31 +177,22 @@ const ICON_ALPHA = 0.72;
 const ICON_SCALE = 1.0; // base size; individual icons set their own pixel sizes
 
 const drawBuildingIcon = (
-  container: Container,
   bucket: Bucket,
   x: number,
   y: number,
   _hexSize: number,
+  acquireIcon: () => Graphics,
+  acquireLabel: () => Text,
 ): void => {
   const id = String(bucket.buildingId);
-  const g = new Graphics();
+  const g = acquireIcon();
   g.position.set(x, y);
   drawIconShape(g, id);
-  g.alpha = ICON_ALPHA;
-  container.addChild(g);
 
   if (bucket.count > 1) {
-    const t = new Text({
-      text: `×${bucket.count}`,
-      style: {
-        fontSize: 7,
-        fill: 0x111111,
-        fontFamily: 'monospace',
-      },
-    });
+    const t = acquireLabel();
+    t.text = `×${bucket.count}`;
     t.position.set(x + 3.5, y - 4.5);
-    t.alpha = 0.85;
-    container.addChild(t);
   }
 };
 
