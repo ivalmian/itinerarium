@@ -12,6 +12,8 @@ import type { BanditCampId } from '../../src/sim/types.js';
 import type { ViewerState } from '../state/viewerState.js';
 import type { ViewerHistory } from '../state/history.js';
 import { createSparkline, fmtCompact } from './sparkline.js';
+import { createFactionLink } from './factionLink.js';
+import { findFactionByActor } from './factionScreen.js';
 
 export interface BanditCampPanel {
   update(world: WorldState): void;
@@ -56,12 +58,26 @@ export const createBanditCampPanel = (opts: BanditCampPanelOpts): BanditCampPane
     meta.style.marginBottom = '6px';
     let lootUnits = 0;
     for (const v of camp.loot.values()) lootUnits += v;
-    meta.innerHTML =
-      `leader actor: ${owner?.name ?? String(camp.ownerActor)}<br>` +
+
+    // Leader line: if owner-actor backs a faction (the bandit_band Faction),
+    // render the faction name as a click-target. Otherwise plain actor name.
+    const leaderRow = document.createElement('div');
+    leaderRow.appendChild(document.createTextNode('leader: '));
+    const leaderFaction = findFactionByActor(world, camp.ownerActor);
+    if (leaderFaction !== undefined) {
+      leaderRow.appendChild(createFactionLink(state, leaderFaction.id, leaderFaction.name));
+    } else {
+      leaderRow.appendChild(document.createTextNode(owner?.name ?? String(camp.ownerActor)));
+    }
+    meta.appendChild(leaderRow);
+
+    const rest = document.createElement('div');
+    rest.innerHTML =
       `hex: (${camp.hex.q}, ${camp.hex.r})<br>` +
       `bandits ${camp.banditCount} · hangers-on ${camp.hangersOnCount}<br>` +
       `weapons ${(camp.weaponsPerBandit * 100).toFixed(0)}% · armor ${(camp.armorPerBandit * 100).toFixed(0)}% · health ${(camp.averageHealth * 100).toFixed(0)}%<br>` +
       `treasury ${Math.round(camp.treasury)} coin · loot ${lootUnits} units`;
+    meta.appendChild(rest);
     root.appendChild(meta);
 
     if (camp.loot.size > 0) {

@@ -7,6 +7,8 @@ import type { CaravanId } from '../../src/sim/types.js';
 import type { ViewerState } from '../state/viewerState.js';
 import type { ViewerHistory } from '../state/history.js';
 import { createSparkline, fmtCompact } from './sparkline.js';
+import { createFactionLink } from './factionLink.js';
+import { findFactionByActor } from './factionScreen.js';
 
 export interface CaravanPanel {
   update(world: WorldState): void;
@@ -58,16 +60,40 @@ export const createCaravanPanel = (opts: CaravanPanelOpts): CaravanPanel => {
     meta.style.marginBottom = '6px';
     const totalCrew = c.crew.reduce((acc, m) => acc + m.count, 0);
     const totalAnimals = Object.values(c.animals).reduce<number>((a, b) => a + (b ?? 0), 0);
-    const ownerLine = homeName.length > 0
-      ? `${escapeHtml(ownerName)} (${escapeHtml(ownerKind)} · ${escapeHtml(homeName)})`
-      : `${escapeHtml(ownerName)} (${escapeHtml(ownerKind)})`;
-    meta.innerHTML =
-      `owner: ${ownerLine}<br>` +
+
+    // Owner line: if the owner-actor backs a faction, render the faction
+    // name as a clickable link; otherwise just print the actor name.
+    const ownerRow = document.createElement('div');
+    const ownerLabel = document.createElement('span');
+    ownerLabel.textContent = 'owner: ';
+    ownerRow.appendChild(ownerLabel);
+    const ownerFaction = findFactionByActor(world, c.ownerActor);
+    if (ownerFaction !== undefined) {
+      ownerRow.appendChild(createFactionLink(state, ownerFaction.id, ownerFaction.name));
+      const tail = document.createElement('span');
+      const tailText =
+        homeName.length > 0 ? ` (${ownerKind} · ${homeName})` : ` (${ownerKind})`;
+      tail.textContent = tailText;
+      ownerRow.appendChild(tail);
+    } else {
+      const tail = document.createElement('span');
+      const tailText =
+        homeName.length > 0
+          ? `${ownerName} (${ownerKind} · ${homeName})`
+          : `${ownerName} (${ownerKind})`;
+      tail.textContent = tailText;
+      ownerRow.appendChild(tail);
+    }
+    meta.appendChild(ownerRow);
+
+    const rest = document.createElement('div');
+    rest.innerHTML =
       `position: (${c.position.q}, ${c.position.r}) → ${
         c.destination ? `(${c.destination.q}, ${c.destination.r})` : '—'
       }<br>` +
       `crew ${totalCrew} · animals ${totalAnimals} · treasury ${Math.round(c.treasury)} coin<br>` +
       `health ${(c.health * 100).toFixed(0)}% · MP today ${Math.round(c.mpRemainingToday)}`;
+    meta.appendChild(rest);
     root.appendChild(meta);
 
     const cargoHeader = document.createElement('div');
@@ -135,13 +161,6 @@ export const createCaravanPanel = (opts: CaravanPanelOpts): CaravanPanel => {
 
   return { update };
 };
-
-const escapeHtml = (s: string): string =>
-  s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 
 /**
  * Caravan history: cargo / treasury / health sparklines + condensed route

@@ -7,7 +7,12 @@
  * sim loop.
  */
 
-import type { BanditCampId, CaravanId, SettlementId } from '../../src/sim/types.js';
+import type {
+  BanditCampId,
+  CaravanId,
+  FactionId,
+  SettlementId,
+} from '../../src/sim/types.js';
 import type { Hex } from '../../src/sim/world/hex.js';
 
 /**
@@ -33,7 +38,8 @@ export type Selection =
   | { readonly kind: 'settlement'; readonly id: SettlementId }
   | { readonly kind: 'caravan'; readonly id: CaravanId }
   | { readonly kind: 'bandit_camp'; readonly id: BanditCampId }
-  | { readonly kind: 'hex'; readonly hex: Hex };
+  | { readonly kind: 'hex'; readonly hex: Hex }
+  | { readonly kind: 'faction'; readonly id: FactionId };
 
 export interface ViewerState {
   speed: Speed;

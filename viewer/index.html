@@ -236,6 +236,256 @@
         max-height: 140px;
         overflow-y: auto;
       }
+      /* Faction-link: inline button that opens the faction screen. */
+      .faction-link {
+        background: transparent;
+        color: var(--accent-bright);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        padding: 1px 6px;
+        margin: 1px 3px 1px 0;
+        font-family: inherit;
+        font-size: 11px;
+        cursor: pointer;
+        text-decoration: none;
+      }
+      .faction-link:hover {
+        background: var(--panel);
+        border-color: var(--accent);
+        color: var(--accent-bright);
+      }
+      /* Faction screen — modal popup. */
+      .faction-screen-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.65);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 100;
+      }
+      .faction-screen-panel {
+        background: #1a1611;
+        color: #d8c8a4;
+        border: 1px solid var(--border);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+        width: min(720px, 90vw);
+        max-height: 86vh;
+        overflow-y: auto;
+        padding: 16px 22px 14px 22px;
+        font-family: 'Iowan Old Style', 'Palatino', 'Georgia', serif;
+      }
+      .faction-screen-header {
+        margin-bottom: 12px;
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 8px;
+      }
+      .faction-screen-title-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 8px;
+      }
+      .faction-screen-title {
+        margin: 0;
+        font-size: 22px;
+        color: var(--accent-bright);
+        font-weight: 600;
+        letter-spacing: 0.01em;
+      }
+      .faction-screen-close {
+        background: transparent;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        font-size: 18px;
+        line-height: 1;
+        padding: 2px 8px;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      .faction-screen-close:hover {
+        color: var(--accent-bright);
+        border-color: var(--accent);
+      }
+      .faction-screen-subtitle {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 4px;
+      }
+      .faction-screen-muted {
+        color: var(--muted);
+        font-size: 11px;
+        font-style: italic;
+      }
+      .faction-screen-section {
+        margin-top: 14px;
+      }
+      .faction-screen-section-title {
+        margin: 0 0 6px 0;
+        color: var(--accent);
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        font-weight: 600;
+      }
+      .faction-screen-subhead {
+        color: var(--muted);
+        font-size: 11px;
+        margin-top: 8px;
+        margin-bottom: 2px;
+        letter-spacing: 0.04em;
+      }
+      .faction-screen-leadership {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .faction-screen-member {
+        font-size: 12px;
+        padding: 2px 0;
+      }
+      .faction-screen-member-name {
+        color: var(--text);
+      }
+      .faction-screen-member-leader {
+        color: var(--accent-bright);
+        font-weight: 600;
+      }
+      .faction-screen-member-meta {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .faction-screen-stocklist {
+        max-height: 160px;
+        overflow-y: auto;
+        font-size: 12px;
+      }
+      .faction-screen-chiplist {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+      .faction-screen-chip {
+        background: var(--panel);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        padding: 2px 8px;
+        font-size: 11px;
+        font-family: inherit;
+        cursor: pointer;
+      }
+      .faction-screen-chip:hover {
+        border-color: var(--accent);
+        color: var(--accent-bright);
+      }
+      .faction-screen-caravans {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        max-height: 150px;
+        overflow-y: auto;
+      }
+      .faction-screen-caravan-row {
+        background: var(--panel);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        padding: 3px 8px;
+        font-size: 11px;
+        font-family: ui-monospace, 'SF Mono', monospace;
+        cursor: pointer;
+        text-align: left;
+      }
+      .faction-screen-caravan-row:hover {
+        border-color: var(--accent);
+        color: var(--accent-bright);
+      }
+      .faction-screen-inline-link {
+        background: transparent;
+        color: var(--accent-bright);
+        border: none;
+        padding: 0;
+        font-family: inherit;
+        font-size: inherit;
+        cursor: pointer;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+      .faction-screen-inline-link:hover {
+        color: var(--accent);
+      }
+      .faction-screen-rep-head {
+        display: grid;
+        grid-template-columns: 1.4fr 1fr 1fr;
+        gap: 8px;
+        padding: 4px 0;
+        border-bottom: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .faction-screen-rep-row {
+        display: grid;
+        grid-template-columns: 1.4fr 1fr 1fr;
+        gap: 8px;
+        align-items: center;
+        padding: 3px 0;
+        font-size: 12px;
+      }
+      .faction-screen-rep-col-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .faction-screen-rep-col-bar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .faction-screen-rep-bar-track {
+        position: relative;
+        flex: 1;
+        height: 8px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      .faction-screen-rep-bar-track::before {
+        content: '';
+        position: absolute;
+        left: 50%;
+        top: 0;
+        bottom: 0;
+        width: 1px;
+        background: var(--border);
+      }
+      .faction-screen-rep-bar-fill {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        background: var(--good);
+      }
+      .faction-screen-rep-bar-num {
+        font-variant-numeric: tabular-nums;
+        font-size: 11px;
+        min-width: 32px;
+        text-align: right;
+      }
+      .faction-screen-rep-meta {
+        margin-top: 6px;
+      }
+      .faction-screen-footer {
+        margin-top: 14px;
+        border-top: 1px solid var(--border);
+        padding-top: 8px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
       /* --- Session-configuration splash screen -------------------------- */
       #splash {
         position: fixed;
@@ -352,6 +602,256 @@
         background: var(--accent);
         width: 0%;
         transition: width 80ms linear;
+      }
+      /* Faction-link: inline button that opens the faction screen. */
+      .faction-link {
+        background: transparent;
+        color: var(--accent-bright);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        padding: 1px 6px;
+        margin: 1px 3px 1px 0;
+        font-family: inherit;
+        font-size: 11px;
+        cursor: pointer;
+        text-decoration: none;
+      }
+      .faction-link:hover {
+        background: var(--panel);
+        border-color: var(--accent);
+        color: var(--accent-bright);
+      }
+      /* Faction screen — modal popup. */
+      .faction-screen-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.65);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 200;
+      }
+      .faction-screen-panel {
+        background: #1a1611;
+        color: #d8c8a4;
+        border: 1px solid var(--border);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+        width: min(720px, 90vw);
+        max-height: 86vh;
+        overflow-y: auto;
+        padding: 16px 22px 14px 22px;
+        font-family: 'Iowan Old Style', 'Palatino', 'Georgia', serif;
+      }
+      .faction-screen-header {
+        margin-bottom: 12px;
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 8px;
+      }
+      .faction-screen-title-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 8px;
+      }
+      .faction-screen-title {
+        margin: 0;
+        font-size: 22px;
+        color: var(--accent-bright);
+        font-weight: 600;
+        letter-spacing: 0.01em;
+      }
+      .faction-screen-close {
+        background: transparent;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        font-size: 18px;
+        line-height: 1;
+        padding: 2px 8px;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      .faction-screen-close:hover {
+        color: var(--accent-bright);
+        border-color: var(--accent);
+      }
+      .faction-screen-subtitle {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 4px;
+      }
+      .faction-screen-muted {
+        color: var(--muted);
+        font-size: 11px;
+        font-style: italic;
+      }
+      .faction-screen-section {
+        margin-top: 14px;
+      }
+      .faction-screen-section-title {
+        margin: 0 0 6px 0;
+        color: var(--accent);
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        font-weight: 600;
+      }
+      .faction-screen-subhead {
+        color: var(--muted);
+        font-size: 11px;
+        margin-top: 8px;
+        margin-bottom: 2px;
+        letter-spacing: 0.04em;
+      }
+      .faction-screen-leadership {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .faction-screen-member {
+        font-size: 12px;
+        padding: 2px 0;
+      }
+      .faction-screen-member-name {
+        color: var(--text);
+      }
+      .faction-screen-member-leader {
+        color: var(--accent-bright);
+        font-weight: 600;
+      }
+      .faction-screen-member-meta {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .faction-screen-stocklist {
+        max-height: 160px;
+        overflow-y: auto;
+        font-size: 12px;
+      }
+      .faction-screen-chiplist {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+      .faction-screen-chip {
+        background: var(--panel);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        padding: 2px 8px;
+        font-size: 11px;
+        font-family: inherit;
+        cursor: pointer;
+      }
+      .faction-screen-chip:hover {
+        border-color: var(--accent);
+        color: var(--accent-bright);
+      }
+      .faction-screen-caravans {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        max-height: 150px;
+        overflow-y: auto;
+      }
+      .faction-screen-caravan-row {
+        background: var(--panel);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        padding: 3px 8px;
+        font-size: 11px;
+        font-family: ui-monospace, 'SF Mono', monospace;
+        cursor: pointer;
+        text-align: left;
+      }
+      .faction-screen-caravan-row:hover {
+        border-color: var(--accent);
+        color: var(--accent-bright);
+      }
+      .faction-screen-inline-link {
+        background: transparent;
+        color: var(--accent-bright);
+        border: none;
+        padding: 0;
+        font-family: inherit;
+        font-size: inherit;
+        cursor: pointer;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+      .faction-screen-inline-link:hover {
+        color: var(--accent);
+      }
+      .faction-screen-rep-head {
+        display: grid;
+        grid-template-columns: 1.4fr 1fr 1fr;
+        gap: 8px;
+        padding: 4px 0;
+        border-bottom: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .faction-screen-rep-row {
+        display: grid;
+        grid-template-columns: 1.4fr 1fr 1fr;
+        gap: 8px;
+        align-items: center;
+        padding: 3px 0;
+        font-size: 12px;
+      }
+      .faction-screen-rep-col-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .faction-screen-rep-col-bar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .faction-screen-rep-bar-track {
+        position: relative;
+        flex: 1;
+        height: 8px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      .faction-screen-rep-bar-track::before {
+        content: '';
+        position: absolute;
+        left: 50%;
+        top: 0;
+        bottom: 0;
+        width: 1px;
+        background: var(--border);
+      }
+      .faction-screen-rep-bar-fill {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        background: var(--good);
+      }
+      .faction-screen-rep-bar-num {
+        font-variant-numeric: tabular-nums;
+        font-size: 11px;
+        min-width: 32px;
+        text-align: right;
+      }
+      .faction-screen-rep-meta {
+        margin-top: 6px;
+      }
+      .faction-screen-footer {
+        margin-top: 14px;
+        border-top: 1px solid var(--border);
+        padding-top: 8px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
       }
     </style>
   </head>

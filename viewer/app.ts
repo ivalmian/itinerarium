@@ -55,6 +55,7 @@ import {
   type ViewerHistory,
 } from './state/history.js';
 import { createSidebar, type Sidebar } from './ui/sidebar.js';
+import { createFactionScreen, type FactionScreen } from './ui/factionScreen.js';
 
 export interface ViewerApp {
   destroy(): void;
@@ -402,6 +403,23 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     onReset: reset,
   });
 
+  // Faction screen: modal popup mounted on document.body so it floats above
+  // the entire viewer. It snapshots the world on open + refresh; close clears
+  // the selection so subsequent panel renders don't get a phantom 'faction'
+  // selection.
+  const factionScreen: FactionScreen = createFactionScreen({
+    host: document.body,
+    state,
+    getWorld: () => world,
+    onClose: () => {
+      // Only clear the selection if it still points at a faction (avoids
+      // racing with a Selection change initiated elsewhere).
+      if (state.selection.kind === 'faction') {
+        setSelection(state, { kind: 'none' });
+      }
+    },
+  });
+
   // Wire pan / zoom. Background clicks pick a hex from the click position
   // (so wilderness hexes become inspectable) instead of deselecting; clicks
   // off the grid (no tile under the cursor) clear the selection.
@@ -554,6 +572,7 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
       applyOverlay(world, layers.hexMap, state.overlay);
     }
     refreshHighlights();
+    factionScreen.refresh(world);
 
     lastTickWallMs = performance.now();
     lastCaravanVisualSyncMs = lastTickWallMs;
@@ -569,10 +588,17 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
 
   // Re-render the selected-entity panels and the hex highlight whenever the
   // selection changes. Without this, paused-time clicks wouldn't update the
-  // sidebar (sidebar.update only runs on a sim tick).
+  // sidebar (sidebar.update only runs on a sim tick). Also drives the
+  // faction-screen modal: opening when selection.kind === 'faction', closing
+  // when the selection moves away (or to a different faction).
   onSelectionChange(() => {
     sidebar.update(world, []);
     refreshHighlights();
+    if (state.selection.kind === 'faction') {
+      factionScreen.openForFaction(state.selection.id);
+    } else if (factionScreen.isOpen()) {
+      factionScreen.close();
+    }
   });
 
   // PIXI ticker drives both interpolation and tick scheduling.

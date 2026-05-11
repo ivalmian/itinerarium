@@ -12,6 +12,7 @@ import { hexEquals } from '../../src/sim/world/hex.js';
 import { setSelection, type ViewerState } from '../state/viewerState.js';
 import type { ViewerHistory } from '../state/history.js';
 import { createSparkline, fmtCompact } from './sparkline.js';
+import { createFactionLink } from './factionLink.js';
 
 export interface SettlementPanel {
   update(world: WorldState): void;
@@ -85,6 +86,25 @@ export const createSettlementPanel = (opts: SettlementPanelOpts): SettlementPane
         stackList.appendChild(link);
       }
       root.appendChild(stackList);
+    }
+
+    // Factions present in this settlement (docs/11). Every entry is a click
+    // target that opens the faction screen.
+    if (s.factions.length > 0) {
+      const facHeader = document.createElement('div');
+      facHeader.style.color = 'var(--muted)';
+      facHeader.style.fontSize = '11px';
+      facHeader.style.marginBottom = '2px';
+      facHeader.textContent = `Factions (${s.factions.length}):`;
+      root.appendChild(facHeader);
+      const facList = document.createElement('div');
+      facList.style.marginBottom = '6px';
+      for (const fId of s.factions) {
+        const f = world.factions.get(fId);
+        const label = f?.name ?? `(unknown ${String(fId).slice(-6)})`;
+        facList.appendChild(createFactionLink(state, fId, label));
+      }
+      root.appendChild(facList);
     }
 
     // Aggregate stockpiles across all stockpile owners.
