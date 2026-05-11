@@ -60,13 +60,15 @@ export interface ArtRegistry {
   settlement(tier: SettlementTier): Texture;
   /** Per-unit-kind glyph. */
   unit(kind: UnitKind): Texture;
-  /** River channel segment in the given edge direction (composited over the
-   *  river-base tile when the neighbor on that edge also has river/lake). */
-  river(dir: EdgeDir): Texture;
-  /** Dirt road segment in the given edge direction. */
-  dirtRoad(dir: EdgeDir): Texture;
-  /** Roman road segment in the given edge direction. */
-  romanRoad(dir: EdgeDir): Texture;
+  /** River network for a given 6-bit connection bitmask (bit d = edge d
+   *  has a connected neighbor). Pre-rendered full-tile shape with bends
+   *  and junctions; meets every connected edge midpoint at a fixed width
+   *  and color so neighbors match seamlessly. */
+  river(bitmask: number): Texture;
+  /** Dirt road network for a given 6-bit connection bitmask. */
+  dirtRoad(bitmask: number): Texture;
+  /** Roman road network for a given 6-bit connection bitmask. */
+  romanRoad(bitmask: number): Texture;
   /** Lake shore strip along the given edge (composited over lake base when
    *  the neighbor on that edge is land). */
   lakeShore(dir: EdgeDir): Texture;
@@ -205,9 +207,9 @@ export const loadArt = async (opts: LoadArtOpts = {}): Promise<ArtRegistry> => {
   const building = new Map<string, Texture>();
   const settlement = new Map<SettlementTier, Texture>();
   const unit = new Map<UnitKind, Texture>();
-  const river = new Map<EdgeDir, Texture>();
-  const dirtRoad = new Map<EdgeDir, Texture>();
-  const romanRoad = new Map<EdgeDir, Texture>();
+  const river: Texture[] = new Array(64);
+  const dirtRoad: Texture[] = new Array(64);
+  const romanRoad: Texture[] = new Array(64);
   const lakeShore = new Map<EdgeDir, Texture>();
   const biomeEdge = new Map<EdgeDir, Texture>();
   const scatter = new Map<ScatterKind, Texture>();
@@ -218,7 +220,8 @@ export const loadArt = async (opts: LoadArtOpts = {}): Promise<ArtRegistry> => {
     SETTLEMENT_TIERS.length +
     UNIT_KINDS.length +
     SCATTER_KINDS.length +
-    EDGE_DIRS.length * 5;
+    EDGE_DIRS.length * 2 +  // lake_shore + biome_edge
+    64 * 3;                 // 64-bitmask river / dirt / roman atlases
   let loaded = 0;
   const tick = (): void => {
     loaded++;
@@ -244,16 +247,16 @@ export const loadArt = async (opts: LoadArtOpts = {}): Promise<ArtRegistry> => {
     unit.set(u, await loadTexture(lookupRaw(`./units/${u}.svg`), `art-unit-${u}`));
     tick();
   }
-  for (const d of EDGE_DIRS) {
-    river.set(d, await loadTexture(lookupRaw(`./rivers/${d}.svg`), `art-river-${d}`));
+  for (let bm = 0; bm < 64; bm++) {
+    river[bm] = await loadTexture(lookupRaw(`./rivers/c${bm}.svg`), `art-river-c${bm}`);
     tick();
   }
-  for (const d of EDGE_DIRS) {
-    dirtRoad.set(d, await loadTexture(lookupRaw(`./roads/dirt/${d}.svg`), `art-roaddirt-${d}`));
+  for (let bm = 0; bm < 64; bm++) {
+    dirtRoad[bm] = await loadTexture(lookupRaw(`./roads/dirt/c${bm}.svg`), `art-roaddirt-c${bm}`);
     tick();
   }
-  for (const d of EDGE_DIRS) {
-    romanRoad.set(d, await loadTexture(lookupRaw(`./roads/roman/${d}.svg`), `art-roadroman-${d}`));
+  for (let bm = 0; bm < 64; bm++) {
+    romanRoad[bm] = await loadTexture(lookupRaw(`./roads/roman/c${bm}.svg`), `art-roadroman-c${bm}`);
     tick();
   }
   for (const d of EDGE_DIRS) {
@@ -281,9 +284,9 @@ export const loadArt = async (opts: LoadArtOpts = {}): Promise<ArtRegistry> => {
     building: (id) => building.get(String(id)) ?? placeholderBuilding,
     settlement: (tier) => settlement.get(tier)!,
     unit: (kind) => unit.get(kind)!,
-    river: (dir) => river.get(dir)!,
-    dirtRoad: (dir) => dirtRoad.get(dir)!,
-    romanRoad: (dir) => romanRoad.get(dir)!,
+    river: (bm) => river[bm & 0x3f]!,
+    dirtRoad: (bm) => dirtRoad[bm & 0x3f]!,
+    romanRoad: (bm) => romanRoad[bm & 0x3f]!,
     lakeShore: (dir) => lakeShore.get(dir)!,
     biomeEdge: (dir) => biomeEdge.get(dir)!,
     scatter: (kind) => scatter.get(kind)!,

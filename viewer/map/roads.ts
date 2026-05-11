@@ -1,23 +1,24 @@
 /**
- * Road layer — SVG-sprite composed.
+ * Road layer — atlas-based.
  *
- * For each road tile (dirt or roman) we look at its 6 axial neighbors. For
- * every neighbor that has the SAME road grade we add a directional segment
- * sprite (viewer/art/roads/<grade>/<dir>.svg). A road tile that has only
- * different-grade neighbors still draws nothing in those directions; mixed
- * boundaries get the visual handoff from each side's own segment which
- * extends past the shared hex edge.
+ * For each road hex we compute a 6-bit connection bitmask (bit d = the
+ * neighbor on direction d has the SAME road grade) and draw a single
+ * Sprite of the pre-rendered network shape for that bitmask
+ * (viewer/art/roads/{dirt,roman}/c<bitmask>.svg). Mixed-grade boundaries
+ * are intentionally not bridged in the bitmask — each side draws only
+ * its own grade's network. Both sides' channels meet the shared hex
+ * edge midpoint at the same width and color so the visual handoff
+ * still looks continuous.
  *
- * Exposes refresh(grid) so the road network can be re-rendered after sim
- * events (trail wear upgrades, demolition, etc.) without recreating the
- * container.
+ * Exposes refresh(grid) so the road network can be re-rendered after
+ * sim events (trail wear upgrades, demolition, etc.).
  */
 
 import { Container, Sprite } from 'pixi.js';
 import { HEX_DIRECTIONS, hexAdd, type Hex } from '../../src/sim/world/hex.js';
 import type { HexGrid } from '../../src/sim/world/grid.js';
 import { hexToPixel } from './coords.js';
-import { type ArtRegistry, type EdgeDir, EDGE_DIRS } from '../art/index.js';
+import type { ArtRegistry } from '../art/index.js';
 
 const SQRT3 = Math.sqrt(3);
 
@@ -40,34 +41,29 @@ export const createRoadLayer = (
 
   const drawAll = (g: HexGrid): void => {
     for (const child of container.removeChildren()) child.destroy();
-
     for (const [h, tile] of g.tiles()) {
       if (tile.road === 'none') continue;
       const grade = tile.road;
-      const px = hexToPixel(h, hexSize);
-
+      let bitmask = 0;
       for (let d = 0; d < 6; d++) {
         const dir = HEX_DIRECTIONS[d] as Hex;
-        const nHex = hexAdd(h, dir);
-        const nTile = g.get(nHex);
-        if (nTile === undefined || nTile.road === 'none') continue;
-        if (nTile.road !== grade) continue;
-        const dirName = EDGE_DIRS[d] as EdgeDir;
-        const tex = grade === 'roman' ? art.romanRoad(dirName) : art.dirtRoad(dirName);
-        const seg = new Sprite(tex);
-        seg.anchor.set(0.5, 0.5);
-        seg.width = spriteW;
-        seg.height = spriteH;
-        seg.position.set(px.x, px.y);
-        container.addChild(seg);
+        const n = g.get(hexAdd(h, dir));
+        if (n === undefined) continue;
+        if (n.road === grade) bitmask |= 1 << d;
       }
+      if (bitmask === 0) continue;
+      const px = hexToPixel(h, hexSize);
+      const tex = grade === 'roman' ? art.romanRoad(bitmask) : art.dirtRoad(bitmask);
+      const sprite = new Sprite(tex);
+      sprite.anchor.set(0.5, 0.5);
+      sprite.width = spriteW;
+      sprite.height = spriteH;
+      sprite.position.set(px.x, px.y);
+      container.addChild(sprite);
     }
   };
 
   drawAll(grid);
 
-  return {
-    container,
-    refresh: drawAll,
-  };
+  return { container, refresh: drawAll };
 };
