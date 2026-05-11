@@ -13,8 +13,10 @@ import { createFaction, type Faction } from './politics/faction.js';
 import { createCharacter, type NamedCharacter } from './politics/character.js';
 import { createReputationTable } from './reputation/table.js';
 import { createCaravan, type Caravan } from './caravan/caravan.js';
+import { createCamp } from './bandit/camp.js';
 import {
   actorId,
+  banditCampId,
   buildingId,
   caravanId,
   characterId,
@@ -259,6 +261,25 @@ describe('tick (per-day loop)', () => {
       expect(after).toBeGreaterThan(before);
     });
 
+    it('idles production when the owner already holds the output stock target', () => {
+      const w = buildOneSettlementWorld({
+        populationByClass: { plebeian: 200 },
+        grainModii: 10_000,
+        flourSacks: 6_000,
+        addMill: true,
+      });
+      const owner = w.actors.get(actorId('city-corp-1'));
+      if (owner === undefined) throw new Error('missing owner');
+      const beforeFlour = owner.stockpile.get(resourceId('food.flour')) ?? 0;
+
+      const r = tick({ world: w, rng: createRng('mill-output-stock-target') });
+
+      expect(
+        eventsOfType(r.events, 'recipe_ran').some((e) => String(e.recipe) === 'mill_grain'),
+      ).toBe(false);
+      expect(owner.stockpile.get(resourceId('food.flour')) ?? 0).toBeLessThanOrEqual(beforeFlour);
+    });
+
     it('resets daily building capacity to the installed per-building maximum', () => {
       const w = buildOneSettlementWorld({
         populationByClass: { plebeian: 200 },
@@ -377,6 +398,75 @@ describe('tick (per-day loop)', () => {
       const r = tick({ world: w, rng: createRng('mill-blocked') });
       const blocked = eventsOfType(r.events, 'recipe_blocked');
       expect(blocked.some((e) => e.reason === 'missing_input')).toBe(true);
+    });
+
+    it('requires a matching finite deposit for mine recipes', () => {
+      const buildMiningWorld = (depositResource?: string): WorldState => {
+        const w = buildOneSettlementWorld({ populationByClass: { plebeian: 20 } });
+        const settlement = w.settlements.get(settlementId('settle-1'));
+        const owner = w.actors.get(actorId('city-corp-1'));
+        const mineHex = hex(1, 0);
+        if (settlement === undefined || owner === undefined) {
+          throw new Error('invalid mining fixture');
+        }
+        const tile = w.grid.get(mineHex);
+        if (tile === undefined) throw new Error('missing mine tile');
+        tile.terrain = 'hills';
+        if (depositResource !== undefined) {
+          tile.deposit = { resource: resourceId(depositResource), remaining: 5 };
+        }
+        settlement.jobAllocations.set(jobId('miner'), 20);
+        settlement.buildings.push({
+          buildingId: buildingId('mine'),
+          hex: mineHex,
+          ownerActor: owner.id,
+          capacity: 10,
+          daysSinceMaintained: 0,
+        });
+        owner.stockpile.set(resourceId('goods.tools'), 100);
+        return w;
+      };
+
+      const withoutDeposit = tick({
+        world: buildMiningWorld(),
+        rng: createRng('mine-without-deposit'),
+      });
+      expect(
+        eventsOfType(withoutDeposit.events, 'recipe_ran').some(
+          (e) => String(e.recipe) === 'mine_iron',
+        ),
+      ).toBe(false);
+      expect(
+        eventsOfType(withoutDeposit.events, 'recipe_blocked').some(
+          (e) => String(e.recipe) === 'mine_iron' && e.reason === 'missing_deposit',
+        ),
+      ).toBe(true);
+
+      const mismatchedDeposit = tick({
+        world: buildMiningWorld('mineral.salt'),
+        rng: createRng('mine-with-salt-deposit'),
+      });
+      expect(
+        eventsOfType(mismatchedDeposit.events, 'recipe_ran').some(
+          (e) => String(e.recipe) === 'mine_iron',
+        ),
+      ).toBe(false);
+      expect(
+        eventsOfType(mismatchedDeposit.events, 'recipe_blocked').some(
+          (e) => String(e.recipe) === 'mine_iron' && e.reason === 'missing_deposit',
+        ),
+      ).toBe(false);
+
+      const withDepositWorld = buildMiningWorld('mineral.iron_ore');
+      const withDeposit = tick({ world: withDepositWorld, rng: createRng('mine-with-deposit') });
+      const owner = withDepositWorld.actors.get(actorId('city-corp-1'));
+      expect(
+        eventsOfType(withDeposit.events, 'recipe_ran').some(
+          (e) => String(e.recipe) === 'mine_iron',
+        ),
+      ).toBe(true);
+      expect(owner?.stockpile.get(resourceId('mineral.iron_ore')) ?? 0).toBeCloseTo(5, 6);
+      expect(withDepositWorld.grid.get(hex(1, 0))?.deposit).toBeUndefined();
     });
 
     it('phase ordering: bake_bread sees flour produced earlier in the same tick', () => {
@@ -553,9 +643,9 @@ describe('tick (per-day loop)', () => {
       const result = tick({ world: w, rng: createRng('common-cannot-command-slaves') });
 
       expect(eventsOfType(result.events, 'recipe_ran')).toHaveLength(0);
-      expect(eventsOfType(result.events, 'recipe_blocked').some((e) => e.reason === 'no_labor')).toBe(
-        true,
-      );
+      expect(
+        eventsOfType(result.events, 'recipe_blocked').some((e) => e.reason === 'no_labor'),
+      ).toBe(true);
     });
   });
 
@@ -592,7 +682,7 @@ describe('tick (per-day loop)', () => {
         urbanHexes: [anchor],
         catchmentHexes: [],
       });
-      settlement.population.set({ age: '20-24', sex: 'male', class: 'plebeian' }, 100);
+      settlement.population.set({ age: '20-24', sex: 'male', class: 'plebeian' }, 1);
       settlement.stockpileOwners.push(sellerId, buyerId);
 
       const seller = createActor({
@@ -697,6 +787,37 @@ describe('tick (per-day loop)', () => {
       expect(household.stockpile.get(flour) ?? 0).toBe(0);
     });
 
+    it('lets civic ration reserves self-provision local famine shortfalls', () => {
+      const w = buildOneSettlementWorld({
+        populationByClass: { plebeian: 500 },
+        grainModii: 100,
+      });
+      const settlement = w.settlements.get(settlementId('settle-1'))!;
+      const city = w.actors.get(actorId('city-corp-1'))!;
+      const household = createActor({
+        id: actorId('cashless-household'),
+        kind: 'common_household',
+        name: 'Cashless Households',
+        homeSettlement: settlement.id,
+        treasury: 0,
+      });
+      w.actors.set(household.id, household);
+      settlement.stockpileOwners.push(household.id);
+      city.stockpile.set(resourceId('food.bread'), 100);
+
+      const before = city.stockpile.get(resourceId('food.bread')) ?? 0;
+      const result = tick({ world: w, rng: createRng('civic-ration-self-provision') });
+      const after = city.stockpile.get(resourceId('food.bread')) ?? 0;
+
+      expect(after).toBeLessThan(before);
+      expect(household.treasury).toBe(0);
+      expect(
+        eventsOfType(result.events, 'market_cleared').some(
+          (e) => e.resource === resourceId('food.bread'),
+        ),
+      ).toBe(true);
+    });
+
     it('emits cohort_deaths with cause famine when there is no food', () => {
       const w = buildOneSettlementWorld({
         populationByClass: { plebeian: 500 },
@@ -742,6 +863,9 @@ describe('tick (per-day loop)', () => {
       // The caravan should have moved at least one hex toward the destination.
       expect(c.position.q).toBeGreaterThan(0);
       expect(moves.length).toBeGreaterThan(0);
+      for (let i = 1; i < moves.length; i++) {
+        expect(moves[i]?.from).toEqual(moves[i - 1]?.to);
+      }
     });
 
     it('emits caravan_arrived when a caravan reaches its destination', () => {
@@ -818,11 +942,12 @@ describe('tick (per-day loop)', () => {
     it('demotes unused dirt roads near the downgrade threshold and clears their wear', () => {
       const w = buildEmptyWorld();
       // Isolated dirt hex (0 road neighbors): decay = 3.0 × 2^-2 = 0.75/day.
-      // Seed it at 20.5 so a single tick brings it below DIRT_DOWNGRADE_THRESHOLD (20).
+      // Isolated dirt hex (0 road neighbors): decay = 1.5 × 2^-2 = 0.375/day.
+      // Seed it at 20.2 so a single tick brings it below DIRT_DOWNGRADE_THRESHOLD (20).
       w.grid.set(hex(0, 0), {
         ...makeTile('plains'),
         road: 'dirt',
-        roadWear: 20.5,
+        roadWear: 20.2,
       });
 
       const r = tick({ world: w, rng: createRng('road-decay') });
@@ -845,9 +970,9 @@ describe('tick (per-day loop)', () => {
         roadWear: 100,
       });
       tick({ world: isolated, rng: createRng('iso') });
-      // Baseline DIRT_ROAD_DECAY_PER_DAY = 3.0; with n=0, decay = 3 × 2^-2 = 0.75.
-      // 100 - 0.75 = 99.25.
-      expect(isolated.grid.get(hex(10, 10))?.roadWear).toBeCloseTo(99.25, 2);
+      // Baseline DIRT_ROAD_DECAY_PER_DAY = 1.5; with n=0, decay = 1.5 × 2^-2 = 0.375.
+      // 100 - 0.375 = 99.625.
+      expect(isolated.grid.get(hex(10, 10))?.roadWear).toBeCloseTo(99.625, 2);
 
       const dense = buildEmptyWorld();
       const center = hex(10, 10);
@@ -863,8 +988,8 @@ describe('tick (per-day loop)', () => {
         dense.grid.set(d, { ...dense.grid.get(d)!, road: 'dirt', roadWear: 100 });
       }
       tick({ world: dense, rng: createRng('dense') });
-      // With n=3, decay = 3 × 2^1 = 6.0. 100 - 6 = 94.
-      expect(dense.grid.get(center)?.roadWear).toBeCloseTo(94, 2);
+      // With n=3, decay = 1.5 × 2^1 = 3.0. 100 - 3 = 97.
+      expect(dense.grid.get(center)?.roadWear).toBeCloseTo(97, 2);
     });
   });
 
@@ -895,9 +1020,89 @@ describe('tick (per-day loop)', () => {
       const settlement = w.settlements.get(settlementId('settle-1'));
 
       expect(shortage).toBeDefined();
-      expect(settlement?.market.lastClearingPrice.get(resourceId('food.grain'))).toBeGreaterThan(
-        100,
+      const price = settlement?.market.lastClearingPrice.get(resourceId('food.grain')) ?? 0;
+      expect(price).toBeGreaterThan(10);
+      expect(price).toBeLessThanOrEqual(18);
+    });
+
+    it('uses a finite local-only scarcity ceiling instead of pinning missing wood at the universal cap', () => {
+      const w = buildOneSettlementWorld({
+        populationByClass: { plebeian: 500 },
+        grainModii: 500,
+        woodCords: 0,
+      });
+
+      const r = tick({ world: w, rng: createRng('mkt-wood-shortage') });
+      const shortage = eventsOfType(r.events, 'market_shortage').find(
+        (e) => e.resource === resourceId('material.wood'),
       );
+      const settlement = w.settlements.get(settlementId('settle-1'));
+
+      expect(shortage).toBeDefined();
+      const price = settlement?.market.lastClearingPrice.get(resourceId('material.wood')) ?? 0;
+      expect(price).toBeGreaterThan(100);
+      expect(price).toBeLessThan(10_000);
+    });
+
+    it('removes stale scarcity quotes when no current buyer or seller exists', () => {
+      const w = buildOneSettlementWorld({
+        populationByClass: { plebeian: 1 },
+      });
+      const settlement = w.settlements.get(settlementId('settle-1'));
+      if (settlement === undefined) throw new Error('missing settlement');
+      const city = w.actors.get(actorId('city-corp-1'));
+      if (city === undefined) throw new Error('missing city actor');
+      city.treasury = 0;
+      const tools = resourceId('goods.tools');
+      settlement.market.lastClearingPrice.set(tools, 2500);
+
+      tick({ world: w, rng: createRng('mkt-stale-no-bid') });
+
+      expect(settlement.market.lastClearingPrice.has(tools)).toBe(false);
+    });
+
+    it('records a seller ask when stock exists but no buyer is active', () => {
+      const w = buildOneSettlementWorld({
+        populationByClass: { plebeian: 1 },
+      });
+      const settlement = w.settlements.get(settlementId('settle-1'));
+      const city = w.actors.get(actorId('city-corp-1'));
+      if (settlement === undefined || city === undefined) throw new Error('missing fixture');
+      const tools = resourceId('goods.tools');
+      city.stockpile.set(tools, 100);
+      settlement.market.lastClearingPrice.set(tools, 2500);
+
+      tick({ world: w, rng: createRng('mkt-seller-ask-no-bid') });
+
+      const quote = settlement.market.lastClearingPrice.get(tools);
+      expect(quote).toBeGreaterThan(0);
+    });
+
+    it('does not let dust-sized producer demand broadcast a scarcity quote', () => {
+      const w = buildOneSettlementWorld({
+        populationByClass: { plebeian: 1 },
+      });
+      const settlement = w.settlements.get(settlementId('settle-1'));
+      const city = w.actors.get(actorId('city-corp-1'));
+      if (settlement === undefined || city === undefined) throw new Error('missing fixture');
+      city.treasury = 5;
+      settlement.buildings.push({
+        buildingId: buildingId('farm'),
+        hex: settlement.anchor,
+        ownerActor: city.id,
+        capacity: 1,
+        daysSinceMaintained: 0,
+      });
+      const tools = resourceId('goods.tools');
+      settlement.market.lastClearingPrice.set(tools, 1000);
+      settlement.market.lastClearingPrice.set(resourceId('food.grain'), 0.335);
+
+      const r = tick({ world: w, rng: createRng('mkt-dust-tool-shortage') });
+
+      expect(eventsOfType(r.events, 'market_shortage').some((e) => e.resource === tools)).toBe(
+        false,
+      );
+      expect(settlement.market.lastClearingPrice.has(tools)).toBe(false);
     });
 
     it('transfers producer-input purchases to the building owner stockpile', () => {
@@ -1072,6 +1277,32 @@ describe('tick (per-day loop)', () => {
     });
   });
 
+  describe('storage spoilage', () => {
+    it('short-lived perishables spoil even during the bootstrap storage grace period', () => {
+      const w = buildOneSettlementWorld({
+        populationByClass: { plebeian: 0, slave: 100 },
+        grainModii: 1_000,
+      });
+      const owner = w.actors.get(actorId('city-corp-1'));
+      if (owner === undefined) throw new Error('missing owner');
+      const grapes = resourceId('food.grapes');
+      const cheese = resourceId('food.cheese');
+      owner.stockpile.set(grapes, 100);
+      owner.stockpile.set(cheese, 100);
+
+      const r = tick({ world: w, rng: createRng('natural-short-spoilage') });
+
+      expect(owner.stockpile.get(grapes) ?? 0).toBeLessThan(100);
+      expect(owner.stockpile.get(cheese) ?? 0).toBe(100);
+      expect(eventsOfType(r.events, 'storage_spoilage').some((e) => e.resource === grapes)).toBe(
+        true,
+      );
+      expect(eventsOfType(r.events, 'storage_spoilage').some((e) => e.resource === cheese)).toBe(
+        false,
+      );
+    });
+  });
+
   describe('caravan replan / price observation (same-hex)', () => {
     // docs/05 §"Same-hex coexistence": multiple settlements may share a hex.
     // The caravan's price book must observe ALL same-hex settlements at
@@ -1155,8 +1386,17 @@ describe('tick (per-day loop)', () => {
       const w = buildOneSettlementWorld({ populationByClass: { plebeian: 100 } });
       const settlement = w.settlements.get(settlementId('settle-1'))!;
       const buyer = w.actors.get(actorId('city-corp-1'))!;
-      const spices = resourceId('exotic.spices');
-      settlement.market.lastClearingPrice.set(spices, 10);
+      const tools = resourceId('goods.tools');
+      settlement.buildings.push({
+        buildingId: buildingId('forum_market'),
+        hex: settlement.anchor,
+        ownerActor: buyer.id,
+        capacity: 100,
+        maxCapacity: 100,
+        daysSinceMaintained: 0,
+      });
+      settlement.market.lastClearingPrice.set(tools, 100);
+      buyer.stockpile.set(tools, 1);
 
       const cId = caravanId('import-arrived');
       const c = createCaravan({
@@ -1168,18 +1408,65 @@ describe('tick (per-day loop)', () => {
         animals: { mule: 2 },
         vehicles: {},
       });
-      c.cargo.set(spices, 20);
+      c.cargo.set(tools, 2);
       w.caravans.set(cId, c);
 
       const beforeTreasury = buyer.treasury;
       const r = tick({ world: w, rng: createRng('caravan-sell') });
       const trades = eventsOfType(r.events, 'caravan_traded').filter((e) => e.caravan === cId);
+      const sale = trades.find((e) => e.side === 'sold' && e.resource === tools);
 
-      expect(trades.some((e) => e.side === 'sold' && e.resource === spices)).toBe(true);
+      expect(sale).toBeDefined();
+      expect(sale?.quantity ?? 0).toBeGreaterThan(0);
+      expect(c.cargo.get(tools) ?? 0).toBeCloseTo(2 - sale!.quantity, 6);
+      expect(c.treasury).toBeCloseTo(sale!.coin, 6);
+      expect(buyer.treasury).toBeCloseTo(beforeTreasury - sale!.coin, 6);
+      expect(buyer.stockpile.get(tools) ?? 0).toBeGreaterThan(1);
+    });
+
+    it('consigns unsold off-map imports and routes them back to their edge gate', () => {
+      const w = buildOneSettlementWorld({ populationByClass: { plebeian: 100 } });
+      const settlement = w.settlements.get(settlementId('settle-1'))!;
+      const buyer = w.actors.get(actorId('city-corp-1'))!;
+      const edge = hex(-2, 0);
+      const spices = resourceId('exotic.spices');
+      settlement.market.lastClearingPrice.set(spices, 10);
+      buyer.treasury = 0;
+
+      const offMapOwner = actorId(`off-map-house-${edge.q},${edge.r}`);
+      w.actors.set(
+        offMapOwner,
+        createActor({
+          id: offMapOwner,
+          kind: 'off_map_house',
+          name: 'Western Off-map House',
+          treasury: 0,
+        }),
+      );
+
+      const cId = caravanId('import-1--2,0-test');
+      const c = createCaravan({
+        id: cId,
+        ownerActor: offMapOwner,
+        position: hex(0, 0),
+        destination: hex(0, 0),
+        crew: [{ kind: 'merchant', count: 1, weapons: 0, armor: 0 }],
+        animals: { mule: 4 },
+        vehicles: {},
+      });
+      c.cargo.set(spices, 20);
+      w.caravans.set(cId, c);
+
+      tick({ world: w, rng: createRng('import-return-route') });
+
       expect(c.cargo.get(spices) ?? 0).toBe(0);
-      expect(c.treasury).toBeCloseTo(200, 6);
-      expect(buyer.treasury).toBeCloseTo(beforeTreasury - 200, 6);
       expect(buyer.stockpile.get(spices)).toBeCloseTo(20, 6);
+      expect(c.treasury).toBe(0);
+      expect(c.destination).toEqual(edge);
+
+      tick({ world: w, rng: createRng('import-return-exit') });
+
+      expect(w.caravans.has(cId)).toBe(false);
     });
 
     it('buys road rations from the local market before departing', () => {
@@ -1233,6 +1520,186 @@ describe('tick (per-day loop)', () => {
       expect(c.treasury).toBeLessThan(20);
       expect(seller.treasury).toBeGreaterThan(0);
       expect(seller.stockpile.get(bread)).toBeLessThan(100);
+    });
+
+    it('paces replacement merchant caravans from owner treasury when the trade fleet is thin', () => {
+      const w = buildOneSettlementWorld({ populationByClass: { plebeian: 100 } });
+      const familyId = actorId('replacement-family');
+      const settlement = w.settlements.get(settlementId('settle-1'))!;
+      const family = createActor({
+        id: familyId,
+        kind: 'patrician_family',
+        name: 'Replacement Family',
+        homeSettlement: settlement.id,
+        treasury: 1_000,
+      });
+      family.stockpile.set(resourceId('livestock.equines'), 5);
+      family.stockpile.set(resourceId('goods.cart'), 1);
+      family.stockpile.set(resourceId('food.grain'), 100);
+      w.actors.set(familyId, family);
+
+      const r = tick({ world: w, rng: createRng('merchant-replacement') });
+      const dispatched = eventsOfType(r.events, 'merchant_caravan_dispatched');
+
+      expect(dispatched).toHaveLength(1);
+      expect(dispatched[0]?.ownerActor).toBe(familyId);
+      expect(family.treasury).toBeLessThan(1_000);
+      const caravan = w.caravans.get(dispatched[0]!.caravan);
+      expect(caravan).toBeDefined();
+      expect(caravan?.ownerActor).toBe(familyId);
+      expect(caravan?.position).toEqual(settlement.anchor);
+      expect(caravan?.destination).toEqual(settlement.anchor);
+      expect(caravan?.treasury).toBeGreaterThan(0);
+      expect(caravan?.vehicles.light_cart).toBe(1);
+      expect(caravan?.cargo.get(resourceId('food.grain'))).toBeGreaterThan(0);
+      expect(family.stockpile.get(resourceId('livestock.equines'))).toBeLessThan(5);
+      expect(family.stockpile.get(resourceId('goods.cart'))).toBeUndefined();
+      expect(family.stockpile.get(resourceId('food.grain'))).toBeLessThan(100);
+    });
+
+    it('does not launch replacement merchants without local starter rations', () => {
+      const w = buildOneSettlementWorld({ populationByClass: { plebeian: 100 } });
+      const familyId = actorId('unfed-replacement-family');
+      const settlement = w.settlements.get(settlementId('settle-1'))!;
+      const family = createActor({
+        id: familyId,
+        kind: 'patrician_family',
+        name: 'Unfed Replacement Family',
+        homeSettlement: settlement.id,
+        treasury: 1_000,
+      });
+      family.stockpile.set(resourceId('livestock.equines'), 5);
+      family.stockpile.set(resourceId('goods.cart'), 1);
+      w.actors.set(familyId, family);
+
+      const r = tick({ world: w, rng: createRng('merchant-replacement-no-rations') });
+
+      expect(eventsOfType(r.events, 'merchant_caravan_dispatched')).toEqual([]);
+      expect(family.treasury).toBe(1_000);
+      expect(family.stockpile.get(resourceId('livestock.equines'))).toBe(5);
+      expect(family.stockpile.get(resourceId('goods.cart'))).toBe(1);
+    });
+
+    it('sizes replacement merchants down to available pack animals', () => {
+      const w = buildOneSettlementWorld({ populationByClass: { plebeian: 100 } });
+      const familyId = actorId('lean-replacement-family');
+      const settlement = w.settlements.get(settlementId('settle-1'))!;
+      const family = createActor({
+        id: familyId,
+        kind: 'patrician_family',
+        name: 'Lean Replacement Family',
+        homeSettlement: settlement.id,
+        treasury: 1_000,
+      });
+      family.stockpile.set(resourceId('livestock.equines'), 1);
+      family.stockpile.set(resourceId('food.grain'), 100);
+      w.actors.set(familyId, family);
+
+      const r = tick({ world: w, rng: createRng('merchant-replacement-lean') });
+      const dispatched = eventsOfType(r.events, 'merchant_caravan_dispatched');
+      const caravan = w.caravans.get(dispatched[0]!.caravan);
+
+      expect(dispatched).toHaveLength(1);
+      expect(caravan?.animals.mule).toBe(6);
+      expect(caravan?.animals.donkey ?? 0).toBe(0);
+      expect(family.stockpile.get(resourceId('livestock.equines'))).toBeUndefined();
+    });
+
+    it('lets replacement owners buy local pack animals before assembly', () => {
+      const w = buildOneSettlementWorld({ populationByClass: { plebeian: 100 } });
+      const familyId = actorId('market-replacement-family');
+      const settlement = w.settlements.get(settlementId('settle-1'))!;
+      const seller = w.actors.get(actorId('city-corp-1'))!;
+      seller.stockpile.set(resourceId('livestock.equines'), 1);
+      settlement.market.lastClearingPrice.set(resourceId('livestock.equines'), 100);
+      const sellerTreasuryBefore = seller.treasury;
+      const family = createActor({
+        id: familyId,
+        kind: 'patrician_family',
+        name: 'Market Replacement Family',
+        homeSettlement: settlement.id,
+        treasury: 10_000,
+      });
+      family.stockpile.set(resourceId('food.grain'), 100);
+      w.actors.set(familyId, family);
+
+      const r = tick({ world: w, rng: createRng('merchant-replacement-market-animals') });
+      const dispatched = eventsOfType(r.events, 'merchant_caravan_dispatched');
+
+      expect(dispatched).toHaveLength(1);
+      expect(dispatched[0]?.ownerActor).toBe(familyId);
+      expect(seller.stockpile.get(resourceId('livestock.equines'))).toBeUndefined();
+      expect(seller.treasury).toBeGreaterThan(sellerTreasuryBefore);
+      expect(family.stockpile.get(resourceId('livestock.equines'))).toBeUndefined();
+    });
+
+    it('does not assemble replacement merchants when temporary convoys fill the world cap', () => {
+      const w = buildOneSettlementWorld({ populationByClass: { plebeian: 100 } });
+      const settlement = w.settlements.get(settlementId('settle-1'))!;
+      const familyId = actorId('capped-replacement-family');
+      const family = createActor({
+        id: familyId,
+        kind: 'patrician_family',
+        name: 'Capped Replacement Family',
+        homeSettlement: settlement.id,
+        treasury: 10_000,
+      });
+      family.stockpile.set(resourceId('livestock.equines'), 50);
+      family.stockpile.set(resourceId('goods.cart'), 10);
+      w.actors.set(familyId, family);
+
+      for (let i = 0; i < 96; i++) {
+        const cId = caravanId(`import-existing-${i}`);
+        const c = createCaravan({
+          id: cId,
+          ownerActor: actorId(`off-map-house-${i}`),
+          position: settlement.anchor,
+          destination: settlement.anchor,
+          crew: [{ kind: 'merchant', count: 1, weapons: 0, armor: 0 }],
+          animals: { mule: 1 },
+          vehicles: {},
+        });
+        c.cargo.set(resourceId('food.bread'), 10);
+        w.caravans.set(cId, c);
+      }
+
+      const r = tick({ world: w, rng: createRng('merchant-global-cap') });
+      const dispatched = eventsOfType(r.events, 'merchant_caravan_dispatched');
+
+      expect(dispatched).toEqual([]);
+      expect(family.treasury).toBe(10_000);
+      expect(w.caravans.size).toBeLessThanOrEqual(96);
+    });
+
+    it('remits standing caravan profits to the owner when back at the home market', () => {
+      const w = buildOneSettlementWorld({ populationByClass: { plebeian: 1 } });
+      const settlement = w.settlements.get(settlementId('settle-1'))!;
+      const owner = w.actors.get(actorId('city-corp-1'))!;
+      const cId = caravanId('merchant-profit-remit');
+      const c = createCaravan({
+        id: cId,
+        ownerActor: owner.id,
+        position: settlement.anchor,
+        destination: settlement.anchor,
+        crew: [{ kind: 'merchant', count: 1, weapons: 0, armor: 0 }],
+        animals: { mule: 4 },
+        vehicles: {},
+        treasury: 5_000,
+      });
+      w.caravans.set(cId, c);
+
+      const beforeOwnerTreasury = owner.treasury;
+      const r = tick({ world: w, rng: createRng('caravan-profit-remit') });
+      const remitted = eventsOfType(r.events, 'caravan_profit_remitted').find(
+        (e) => e.caravan === cId,
+      );
+
+      expect(remitted).toBeDefined();
+      expect(remitted?.ownerActor).toBe(owner.id);
+      expect(remitted?.settlement).toBe(settlement.id);
+      expect(remitted?.coin).toBeCloseTo(2_000, 6);
+      expect(owner.treasury).toBeCloseTo(beforeOwnerTreasury + 2_000, 6);
+      expect(c.treasury).toBeCloseTo(3_000, 6);
     });
 
     it('loads profitable cargo before departing for a dearer observed market', () => {
@@ -1310,6 +1777,95 @@ describe('tick (per-day loop)', () => {
       expect(c.cargo.get(grain)).toBeGreaterThan(0);
       expect(c.treasury).toBeLessThan(50);
       expect(seller.stockpile.get(grain)).toBeLessThan(100);
+    });
+
+    it('uses known bandit risk when scouting without a profitable route', () => {
+      const w = buildEmptyWorld();
+      for (let q = -13; q <= 13; q++) {
+        for (let r = -2; r <= 2; r++) w.grid.set(hex(q, r), makeTile('plains'));
+      }
+
+      const mkSettlement = (
+        id: string,
+        name: string,
+        anchor: ReturnType<typeof hex>,
+      ): Settlement => {
+        const s = createSettlement({
+          id: settlementId(id),
+          tier: 'town',
+          name,
+          anchor,
+          urbanHexes: [anchor],
+          catchmentHexes: [],
+        });
+        s.population.set({ age: '20-24', sex: 'male', class: 'plebeian' }, 10);
+        const ownerId = actorId(`${id}-owner`);
+        s.stockpileOwners.push(ownerId);
+        w.actors.set(
+          ownerId,
+          createActor({
+            id: ownerId,
+            kind: 'city_corporation',
+            name: `${name} Corporation`,
+            homeSettlement: s.id,
+            treasury: 1000,
+          }),
+        );
+        w.settlements.set(s.id, s);
+        return s;
+      };
+
+      const origin = mkSettlement('origin-risk-scout', 'Origin', hex(0, 0));
+      const risky = mkSettlement('risky-risk-scout', 'Risky', hex(12, 0));
+      const safe = mkSettlement('safe-risk-scout', 'Safe', hex(-12, 0));
+
+      const banditOwner = actorId('risk-scout-bandits');
+      const campId = banditCampId('risk-scout-camp');
+      w.actors.set(
+        banditOwner,
+        createActor({
+          id: banditOwner,
+          kind: 'bandit_camp',
+          name: 'Risk Scout Bandits',
+          treasury: 0,
+        }),
+      );
+      (w as WorldState & { banditCamps: NonNullable<WorldState['banditCamps']> }).banditCamps =
+        new Map([
+          [
+            campId,
+            createCamp({
+              id: campId,
+              name: 'Risk Scout Camp',
+              hex: hex(8, 0),
+              ownerActor: banditOwner,
+              banditCount: 120,
+              hangersOnCount: 0,
+              weaponsPerBandit: 0.5,
+              armorPerBandit: 0.2,
+              averageHealth: 1,
+            }),
+          ],
+        ]);
+
+      const cId = caravanId('risk-aware-scout');
+      const c = createCaravan({
+        id: cId,
+        ownerActor: actorId('merchant-owner'),
+        position: origin.anchor,
+        destination: origin.anchor,
+        crew: [{ kind: 'merchant', count: 1, weapons: 0, armor: 0 }],
+        animals: { mule: 2 },
+        vehicles: {},
+        treasury: 50,
+      });
+      c.cargo.set(resourceId('food.grain'), 1);
+      w.caravans.set(cId, c);
+
+      tick({ world: w, rng: createRng('risk-aware-scout') });
+
+      expect(c.destination).toEqual(safe.anchor);
+      expect(c.destination).not.toEqual(risky.anchor);
     });
   });
 
@@ -1525,6 +2081,38 @@ describe('tick (per-day loop)', () => {
       expect(refreshed?.jobAllocations.get(jobId('farmer'))).toBeLessThan(200);
     });
 
+    it('splits monthly worker moves across multiple labor bottlenecks', () => {
+      const w = buildOneSettlementWorld({
+        populationByClass: { plebeian: 200 },
+        addMill: true,
+        addBakery: true,
+        grainModii: 2000,
+        flourSacks: 2000,
+        woodCords: 2000,
+      });
+      const sId = settlementId('settle-1');
+      const settle = w.settlements.get(sId);
+      if (settle === undefined) throw new Error('expected fixture settlement');
+      settle.jobAllocations.clear();
+      settle.jobAllocations.set(jobId('farmer'), 200);
+
+      let world: WorldState = w;
+      let collected: TickEvent[] = [];
+      for (let d = 0; d < 30; d++) {
+        const r = tick({ world, rng: createRng(`worker-split-${d}`) });
+        collected = collected.concat(r.events);
+        world = r.world;
+      }
+
+      const moves = eventsOfType(collected, 'workers_reallocated');
+      expect(moves.some((m) => m.toJob === jobId('miller'))).toBe(true);
+      expect(moves.some((m) => m.toJob === jobId('baker'))).toBe(true);
+      const refreshed = world.settlements.get(sId);
+      expect(refreshed?.jobAllocations.get(jobId('miller'))).toBeGreaterThan(0);
+      expect(refreshed?.jobAllocations.get(jobId('baker'))).toBeGreaterThan(0);
+      expect(refreshed?.jobAllocations.get(jobId('farmer'))).toBeLessThan(200);
+    });
+
     it('emits no workers_reallocated event when no recipes are blocked by labor', async () => {
       // Settlement with no buildings → no recipes can run → no labor blocks.
       // The reallocation phase has nothing to do.
@@ -1549,7 +2137,155 @@ describe('tick (per-day loop)', () => {
     });
   });
 
+  describe('investment phase', () => {
+    const buildMiningInvestmentWorld = (withDeposit: boolean): WorldState => {
+      const w = buildEmptyWorld();
+      const ownerId = actorId('mine-investor');
+      const sId = settlementId('mining-town');
+      const anchor = hex(0, 0);
+      const depositHex = hex(1, 0);
+      const spareHex = hex(0, 1);
+      w.grid.set(anchor, makeTile('plains'));
+      w.grid.set(depositHex, {
+        ...makeTile('mountains'),
+        ...(withDeposit
+          ? { deposit: { resource: resourceId('mineral.iron_ore'), remaining: 500_000 } }
+          : {}),
+      });
+      w.grid.set(spareHex, makeTile('plains'));
+
+      const settlement = createSettlement({
+        id: sId,
+        tier: 'town',
+        name: 'Mining Town',
+        anchor,
+        urbanHexes: [anchor],
+        catchmentHexes: [depositHex, spareHex],
+      });
+      settlement.stockpileOwners.push(ownerId);
+      settlement.population.set({ age: '20-24', sex: 'male', class: 'plebeian' }, 1);
+      settlement.buildings.push({
+        buildingId: buildingId('bloomery'),
+        hex: anchor,
+        ownerActor: ownerId,
+        capacity: 100,
+        daysSinceMaintained: 0,
+      });
+      for (let i = 0; i < 6; i++) {
+        settlement.buildings.push({
+          buildingId: buildingId('quarry'),
+          hex: spareHex,
+          ownerActor: ownerId,
+          capacity: 3,
+          daysSinceMaintained: 0,
+        });
+      }
+      settlement.market.lastClearingPrice.set(resourceId('mineral.iron_ore'), 5_000);
+      settlement.market.lastClearingPrice.set(resourceId('food.grain'), 1);
+      settlement.market.lastClearingPrice.set(resourceId('food.legumes'), 1);
+      settlement.market.lastClearingPrice.set(resourceId('goods.tools'), 1);
+      settlement.market.lastClearingPrice.set(resourceId('material.lumber'), 1);
+      settlement.market.lastClearingPrice.set(resourceId('material.cut_stone'), 1);
+      settlement.market.lastClearingPrice.set(resourceId('material.brick_tile'), 1);
+      settlement.market.lastClearingPrice.set(resourceId('material.charcoal'), 1);
+      settlement.market.lastClearingPrice.set(resourceId('metal.iron'), 480);
+
+      const owner = createActor({
+        id: ownerId,
+        kind: 'city_corporation',
+        name: 'Mine Investor',
+        homeSettlement: sId,
+        treasury: 100_000,
+      });
+      owner.stockpile.set(resourceId('material.lumber'), 100);
+      owner.stockpile.set(resourceId('material.cut_stone'), 100);
+      owner.stockpile.set(resourceId('material.brick_tile'), 100);
+      owner.stockpile.set(resourceId('goods.tools'), 100);
+      owner.stockpile.set(resourceId('material.charcoal'), 100);
+      owner.stockpile.set(resourceId('food.grain'), 100);
+      owner.stockpile.set(resourceId('food.legumes'), 100);
+
+      w.settlements.set(sId, settlement);
+      w.actors.set(ownerId, owner);
+      w.day = 89;
+      return w;
+    };
+
+    it('places mine investments only on matching mineral deposits, including mountain deposits', () => {
+      const w = buildMiningInvestmentWorld(true);
+
+      const r = tick({ world: w, rng: createRng('deposit-backed-investment') });
+      const invested = eventsOfType(r.events, 'building_invested').find(
+        (event) => event.building === buildingId('mine'),
+      );
+      const settlement = w.settlements.get(settlementId('mining-town'));
+
+      expect(invested).toBeDefined();
+      expect(settlement?.pendingBuildings.some((b) => b.buildingId === buildingId('mine'))).toBe(
+        true,
+      );
+      expect(
+        settlement?.pendingBuildings.find((b) => b.buildingId === buildingId('mine'))?.hex,
+      ).toEqual(hex(1, 0));
+    });
+
+    it('does not invest in fake mines when no matching local deposit exists', () => {
+      const w = buildMiningInvestmentWorld(false);
+
+      tick({ world: w, rng: createRng('depositless-investment') });
+      const settlement = w.settlements.get(settlementId('mining-town'));
+
+      expect(settlement?.pendingBuildings.some((b) => b.buildingId === buildingId('mine'))).toBe(
+        false,
+      );
+    });
+  });
+
   describe('tax shipments', () => {
+    it('delivers tax caravans at the capital instead of turning them into merchants', () => {
+      const w = buildEmptyWorld();
+      const governorId = actorId('governor-office');
+      const capitalId = settlementId('capital');
+      const capitalHex = hex(0, 0);
+      w.grid.set(capitalHex, makeTile('plains'));
+      const capital = createSettlement({
+        id: capitalId,
+        tier: 'large_city',
+        name: 'Capital',
+        anchor: capitalHex,
+        urbanHexes: [capitalHex],
+        catchmentHexes: [],
+      });
+      capital.population.set({ age: '20-24', sex: 'male', class: 'plebeian' }, 100);
+      capital.stockpileOwners.push(governorId);
+      const governor = createActor({
+        id: governorId,
+        kind: 'governor_office',
+        name: 'Governor',
+        homeSettlement: capitalId,
+        treasury: 100_000,
+      });
+      w.settlements.set(capitalId, capital);
+      w.actors.set(governorId, governor);
+      const cId = caravanId('tax-test');
+      const caravan = createCaravan({
+        id: cId,
+        ownerActor: governorId,
+        position: capitalHex,
+        destination: capitalHex,
+        crew: [{ kind: 'merchant', count: 1, weapons: 0, armor: 0 }],
+        animals: { mule: 1 },
+        vehicles: {},
+      });
+      caravan.cargo.set(resourceId('food.grain'), 12);
+      w.caravans.set(cId, caravan);
+
+      tick({ world: w, rng: createRng('tax-deliver') });
+
+      expect(w.caravans.has(cId)).toBe(false);
+      expect(governor.stockpile.get(resourceId('food.grain'))).toBeGreaterThan(11.9);
+    });
+
     it('paces harvest shipment dispatch instead of spawning every owed caravan at once', () => {
       const w = buildEmptyWorld();
       const governorId = actorId('governor-office');
@@ -1609,22 +2345,104 @@ describe('tick (per-day loop)', () => {
       w.day = 273;
       const first = tick({ world: w, rng: createRng('tax-burst-1') });
       const firstShipments = eventsOfType(first.events, 'tax_shipment_dispatched');
-      // The core pacing property: a single tick must not dispatch all 20
-      // owed shipments at once. The exact daily cap is an internal
-      // detail; assert pacing as "strictly fewer than 20 on day 1, ≥1
-      // dispatched."
-      expect(firstShipments.length).toBeGreaterThanOrEqual(1);
-      expect(firstShipments.length).toBeLessThan(20);
+      // Dispatch is paced by convoy, not by raw assessment. The first
+      // harvest day should release two district convoys, each carrying up
+      // to eight same-resource assessments, instead of one caravan per
+      // owner.
+      expect(firstShipments.length).toBe(2);
+      expect(firstShipments.reduce((sum, e) => sum + e.grainModii, 0)).toBe(1_600);
 
-      // Across multiple ticks the rest of the queue should eventually
-      // flush. Run enough ticks for any reasonable daily cap to clear
-      // a 20-deep queue and check the cumulative count covers everything.
-      let totalDispatched = firstShipments.length;
-      for (let k = 0; k < 30 && totalDispatched < 20; k++) {
+      // Across multiple ticks the queued assessment cargo should flush
+      // without requiring one caravan per assessment.
+      let totalConvoys = firstShipments.length;
+      let totalGrain = firstShipments.reduce((sum, e) => sum + e.grainModii, 0);
+      for (let k = 0; k < 10 && totalGrain < 2_000; k++) {
         const r = tick({ world: w, rng: createRng(`tax-burst-${k + 2}`) });
-        totalDispatched += eventsOfType(r.events, 'tax_shipment_dispatched').length;
+        const shipments = eventsOfType(r.events, 'tax_shipment_dispatched');
+        totalConvoys += shipments.length;
+        totalGrain += shipments.reduce((sum, e) => sum + e.grainModii, 0);
       }
-      expect(totalDispatched).toBeGreaterThanOrEqual(20);
+      expect(totalGrain).toBe(2_000);
+      expect(totalConvoys).toBe(3);
+    });
+
+    it('holds queued tax assessments when active tax convoys already saturate the road', () => {
+      const w = buildEmptyWorld();
+      const governorId = actorId('governor-office');
+      const capitalId = settlementId('capital');
+      const capitalHex = hex(0, 0);
+      for (let q = -5; q <= 25; q++) {
+        for (let r = -2; r <= 2; r++) {
+          w.grid.set(hex(q, r), makeTile('plains'));
+        }
+      }
+      const capital = createSettlement({
+        id: capitalId,
+        tier: 'large_city',
+        name: 'Capital',
+        anchor: capitalHex,
+        urbanHexes: [capitalHex],
+        catchmentHexes: [],
+      });
+      capital.stockpileOwners.push(governorId);
+      const governor = createActor({
+        id: governorId,
+        kind: 'governor_office',
+        name: 'Governor',
+        homeSettlement: capitalId,
+        treasury: 100_000,
+      });
+      w.settlements.set(capitalId, capital);
+      w.actors.set(governorId, governor);
+
+      for (let i = 0; i < 24; i++) {
+        const cId = caravanId(`tax-existing-${i}`);
+        w.caravans.set(
+          cId,
+          createCaravan({
+            id: cId,
+            ownerActor: governorId,
+            position: hex(25, 2),
+            destination: hex(999, 999),
+            crew: [{ kind: 'merchant', count: 1, weapons: 0, armor: 0 }],
+            animals: { mule: 1 },
+            vehicles: {},
+          }),
+        );
+      }
+
+      for (let i = 0; i < 10; i++) {
+        const sId = settlementId(`queued-tax-village-${i}`);
+        const ownerId = actorId(`queued-tax-owner-${i}`);
+        const anchor = hex(i + 1, 0);
+        const s = createSettlement({
+          id: sId,
+          tier: 'village',
+          name: `Queued Tax Village ${i}`,
+          anchor,
+          urbanHexes: [anchor],
+          catchmentHexes: [],
+        });
+        s.population.set({ age: '20-24', sex: 'male', class: 'plebeian' }, 100);
+        s.stockpileOwners.push(ownerId);
+        s.market.recentInflows.set(resourceId('food.grain'), 1_000);
+        const owner = createActor({
+          id: ownerId,
+          kind: 'patrician_family',
+          name: `Queued Tax Owner ${i}`,
+          homeSettlement: sId,
+          treasury: 1_000,
+        });
+        owner.stockpile.set(resourceId('food.grain'), 1_000);
+        w.settlements.set(sId, s);
+        w.actors.set(ownerId, owner);
+      }
+
+      w.day = 273;
+      const r = tick({ world: w, rng: createRng('tax-active-cap') });
+      const shipments = eventsOfType(r.events, 'tax_shipment_dispatched');
+      expect(shipments).toEqual([]);
+      expect([...w.caravans.keys()].filter((id) => String(id).startsWith('tax-')).length).toBe(24);
     });
   });
 });

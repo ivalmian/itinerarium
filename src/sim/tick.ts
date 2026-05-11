@@ -33,7 +33,8 @@
 
 import { allBuildings, getBuilding } from './buildings/catalog.js';
 import { tickCaravanMovement } from './caravan/movement.js';
-import { planCaravanRoute } from './caravan/ai.js';
+import { MAX_ACTIVE_WORLD_CARAVANS } from './caravan/limits.js';
+import { approximatePath, expectedRisk, planCaravanRoute } from './caravan/ai.js';
 import { createCamp, decideCampAction, recruit, type BanditCamp } from './bandit/camp.js';
 import { createActor } from './politics/actor.js';
 import { createCharacter, generateFullName } from './politics/character.js';
@@ -63,6 +64,7 @@ import { tickPatrol, type Patrol } from './conflict/patrol.js';
 import { resolveRaid, type WallLevel } from './conflict/raid.js';
 import {
   dailyCrewRationKg,
+  createCaravan,
   totalCrewCount,
   totalCarryKg,
   totalCargoWeightKg,
@@ -78,6 +80,7 @@ import {
   buildSettlementSchedules,
   institutionalProcurementResourcesForBuilding,
   laborCostPerWorkerDay,
+  serviceMarketResources,
 } from './market/scheduleBuilder.js';
 import {
   applyEndemicMortality,
@@ -116,6 +119,7 @@ import {
   hexEquals,
   hexKey,
   hexesWithinRange,
+  parseHexKey,
   type Hex,
 } from './world/hex.js';
 import {
@@ -208,6 +212,13 @@ export type TickEvent =
       readonly side: 'bought' | 'sold';
       readonly resource: ResourceId;
       readonly quantity: number;
+      readonly coin: number;
+    }
+  | {
+      readonly type: 'caravan_profit_remitted';
+      readonly caravan: CaravanId;
+      readonly ownerActor: ActorId;
+      readonly settlement: SettlementId;
       readonly coin: number;
     }
   | {
@@ -320,6 +331,12 @@ export type TickEvent =
   | {
       readonly type: 'edge_hub_spawned';
       readonly newCaravans: number;
+    }
+  | {
+      readonly type: 'merchant_caravan_dispatched';
+      readonly caravan: CaravanId;
+      readonly settlement: SettlementId;
+      readonly ownerActor: ActorId;
     }
   | {
       readonly type: 'tax_shipment_dispatched';
@@ -570,7 +587,26 @@ const productionPhase = (
           const ownerActor = world.actors.get(b.ownerActor);
           if (ownerActor === undefined) continue;
           if (b.capacity <= 0) continue;
+          if (mineRecipeHasMismatchedDeposit(world, b, recipe)) continue;
           const laborForOwner = laborAvailableFromPoolsForOwner(laborPools, ownerActor.kind);
+          const depositCapacity = mineDepositCapacityForRecipe(world, b, recipe);
+          if (depositCapacity <= 0) {
+            if (finalPass) {
+              events.push({
+                type: 'recipe_blocked',
+                settlement: settlement.id,
+                recipe: recipe.id,
+                reason: 'missing_deposit',
+              });
+            }
+            continue;
+          }
+          const inventoryCapacity = productionOutputInventoryCapacityForRecipe(
+            ownerActor,
+            recipe,
+            buildings,
+          );
+          if (inventoryCapacity <= 0) continue;
           const wageAffordableCapacity = wageAffordableCapacityForRecipe(
             world,
             settlement,
@@ -594,7 +630,12 @@ const productionPhase = (
             recipe,
             building: {
               id: b.buildingId,
-              capacityRemaining: Math.min(b.capacity, wageAffordableCapacity),
+              capacityRemaining: Math.min(
+                b.capacity,
+                wageAffordableCapacity,
+                depositCapacity,
+                inventoryCapacity,
+              ),
             },
             ownerActor: b.ownerActor,
             laborAvailable: laborForOwner,
@@ -622,6 +663,7 @@ const productionPhase = (
               increaseStockpile(ownerActor, resId, qty);
               recordInflow(settlement, resId, qty);
             }
+            depleteMineDeposit(world, b, recipe, result);
             // Decrement the labor pool we estimated locally so subsequent
             // recipes in this phase don't double-count workers.
             const paidWorkerDays = consumeLaborFromPoolsForOwner(
@@ -953,6 +995,69 @@ const RECIPE_TOPO_INDEX: ReadonlyMap<RecipeId, number> = (() => {
   return m;
 })();
 
+const MINE_BUILDING_ID = buildingId('mine');
+
+const minedResourceForRecipe = (recipe: RecipeDef): ResourceId | undefined => {
+  if (recipe.building !== MINE_BUILDING_ID) return undefined;
+  for (const resource of recipe.outputs.keys()) {
+    if (getResource(resource).category === 'mineral') return resource;
+  }
+  return undefined;
+};
+
+const mineDepositCapacityForRecipe = (
+  world: WorldState,
+  building: SettlementBuilding,
+  recipe: RecipeDef,
+): number => {
+  const minedResource = minedResourceForRecipe(recipe);
+  if (minedResource === undefined) return Infinity;
+  const deposit = world.grid.get(building.hex)?.deposit;
+  if (
+    deposit === undefined ||
+    deposit.resource !== minedResource ||
+    !Number.isFinite(deposit.remaining) ||
+    deposit.remaining <= 0
+  ) {
+    return 0;
+  }
+  const outputPerRun = recipe.outputs.get(minedResource) ?? 0;
+  if (outputPerRun <= 0) return 0;
+  return Math.max(0, deposit.remaining / outputPerRun);
+};
+
+const mineRecipeHasMismatchedDeposit = (
+  world: WorldState,
+  building: SettlementBuilding,
+  recipe: RecipeDef,
+): boolean => {
+  const minedResource = minedResourceForRecipe(recipe);
+  if (minedResource === undefined) return false;
+  const deposit = world.grid.get(building.hex)?.deposit;
+  return deposit !== undefined && deposit.remaining > 0 && deposit.resource !== minedResource;
+};
+
+const depleteMineDeposit = (
+  world: WorldState,
+  building: SettlementBuilding,
+  recipe: RecipeDef,
+  result: RecipeRunResult,
+): void => {
+  const minedResource = minedResourceForRecipe(recipe);
+  if (minedResource === undefined) return;
+  const outputQty = result.outputsProduced.get(minedResource) ?? 0;
+  if (outputQty <= 0) return;
+  const tile = world.grid.get(building.hex);
+  const deposit = tile?.deposit;
+  if (tile === undefined || deposit === undefined || deposit.resource !== minedResource) return;
+  const remaining = deposit.remaining - outputQty;
+  if (remaining <= 1e-9) {
+    delete tile.deposit;
+  } else {
+    tile.deposit = { resource: minedResource, remaining };
+  }
+};
+
 const recipeSeasonalMultiplier = (recipe: RecipeDef, season: Season): number => {
   if (recipe.seasonalMultiplier === undefined) return 1;
   return recipe.seasonalMultiplier[season] ?? 0;
@@ -984,11 +1089,7 @@ const laborDaysForRecipe = (recipe: RecipeDef): number => {
   return total;
 };
 
-const productionPriority = (
-  settlement: Settlement,
-  recipe: RecipeDef,
-  season: Season,
-): number => {
+const productionPriority = (settlement: Settlement, recipe: RecipeDef, season: Season): number => {
   const seasonMul = recipeSeasonalMultiplier(recipe, season);
   if (seasonMul <= 0) return Number.NEGATIVE_INFINITY;
   const outputValue = resourceMapValue(settlement, recipe.outputs);
@@ -1014,6 +1115,56 @@ const productionOrderForSettlement = (
     return (RECIPE_TOPO_INDEX.get(a.id) ?? 0) - (RECIPE_TOPO_INDEX.get(b.id) ?? 0);
   });
   return out;
+};
+
+const DEFAULT_PRODUCTION_OUTPUT_STOCK_TARGET_DAYS = 30;
+const PRODUCTION_OUTPUT_STOCK_TARGET_DAYS_BY_RESOURCE: ReadonlyMap<string, number> = new Map([
+  ['food.grain', 180],
+  ['food.legumes', 120],
+  ['food.flour', 14],
+  ['food.salted_fish', 180],
+  ['food.salted_meat', 180],
+  // Military/capital goods are procurement-buffer outputs, not broad
+  // household inventory. Keep their speculative stock target tight so
+  // scarce iron flows to tools unless barracks/cart buyers are active.
+  ['goods.weapons', 0.05],
+  ['goods.armor', 0.02],
+  ['goods.shields', 0.05],
+  ['goods.cart', 0.1],
+]);
+
+const productionOutputStockTargetDays = (resource: ResourceId): number => {
+  const explicit = PRODUCTION_OUTPUT_STOCK_TARGET_DAYS_BY_RESOURCE.get(String(resource));
+  if (explicit !== undefined) return explicit;
+  const perishableDays = getResource(resource).perishableDays;
+  if (perishableDays !== undefined && perishableDays > 0) return perishableDays;
+  return DEFAULT_PRODUCTION_OUTPUT_STOCK_TARGET_DAYS;
+};
+
+const productionOutputInventoryCapacityForRecipe = (
+  ownerActor: Actor,
+  recipe: RecipeDef,
+  buildingsForRecipe: readonly SettlementBuilding[],
+): number => {
+  let capacity = Infinity;
+  const ownerInstalledCapacity = buildingsForRecipe.reduce(
+    (sum, building) =>
+      sum + (building.ownerActor === ownerActor.id ? Math.max(0, building.capacity) : 0),
+    0,
+  );
+  if (ownerInstalledCapacity <= 0) return 0;
+
+  for (const [resource, qtyPerRun] of recipe.outputs) {
+    if (qtyPerRun <= 0 || isServiceResource(resource)) continue;
+    const targetStock =
+      ownerInstalledCapacity * qtyPerRun * productionOutputStockTargetDays(resource);
+    const currentStock = ownerActor.stockpile.get(resource) ?? 0;
+    const gap = targetStock - currentStock;
+    if (gap <= 0) return 0;
+    capacity = Math.min(capacity, gap / qtyPerRun);
+  }
+
+  return Number.isFinite(capacity) ? Math.max(0, capacity) : Infinity;
 };
 
 const decreaseStockpile = (actor: Actor, resource: ResourceId, qty: Quantity): void => {
@@ -1182,23 +1333,21 @@ const adultPopulation = (s: Settlement): number => s.population.totalAdults();
 const GRAIN_RESOURCE = resourceId('food.grain');
 const FOOD_PRIORITY: readonly ResourceId[] = [
   resourceId('food.bread'),
-  resourceId('food.flour'),
   GRAIN_RESOURCE,
   resourceId('food.legumes'),
+  resourceId('food.flour'),
   resourceId('food.cheese'),
   resourceId('food.salted_meat'),
   resourceId('food.salted_fish'),
 ];
-const NON_GRAIN_FOOD_PRIORITY: readonly ResourceId[] = FOOD_PRIORITY.filter(
-  (r) => String(r) !== String(GRAIN_RESOURCE),
-);
 
 /**
- * Fallback ration purchases cover edible non-grain stock that did not clear
- * in the main market. This keeps flour/bread/legumes usable during shortages
- * without making them free: a local household/civic/estate actor buys the
- * ration, consumes it immediately, and the seller receives coin unless the
- * same actor owns the ration stock.
+ * Fallback ration purchases cover edible stock that did not clear in the
+ * main market. This keeps a mixed staple basket from underfeeding people
+ * when only grain is locally available, while still letting bread/legumes/
+ * flour/cheese/meat cover shortages. A local household/civic/estate actor
+ * buys the ration, consumes it immediately, and the seller receives coin
+ * unless the same actor owns the ration stock.
  */
 interface FallbackRationMarket {
   quantity: number;
@@ -1214,7 +1363,7 @@ const buyFallbackRationsFromOwner = (
 ): number => {
   if (wantModii <= 0) return 0;
   let remaining = wantModii;
-  for (const id of NON_GRAIN_FOOD_PRIORITY) {
+  for (const id of FOOD_PRIORITY) {
     if (remaining <= 0) break;
     const have = seller.stockpile.get(id) ?? 0;
     if (have <= 0) continue;
@@ -1290,13 +1439,32 @@ const fallbackRationBuyers = (
       if (!out.some((a) => a.id === buyer.id)) out.push(buyer);
     }
   }
-  if (candidates.some((a) => a.id === seller.id)) {
+  if (
+    candidates.some((a) => a.id === seller.id) &&
+    sellerCanSelfProvisionRations(settlement, seller)
+  ) {
     out.push(seller);
-  } else {
-    const fallback = candidates[0];
-    if (fallback !== undefined && !out.some((a) => a.id === fallback.id)) out.push(fallback);
   }
   return out;
+};
+
+const sellerCanSelfProvisionRations = (settlement: Settlement, seller: Actor): boolean => {
+  switch (seller.kind) {
+    case 'common_household':
+    case 'hamlet_household':
+    case 'free_village':
+    case 'city_corporation':
+    case 'governor_office':
+    case 'player':
+      return true;
+    case 'patrician_family':
+      return (
+        settlement.population.adultEquivalentByClass('patrician') > 0 ||
+        settlement.population.adultEquivalentByClass('slave') > 0
+      );
+    default:
+      return false;
+  }
 };
 
 const fallbackRationUnitPrice = (settlement: Settlement, resource: ResourceId): number => {
@@ -1437,7 +1605,7 @@ const movementPhase = (
   }
 
   for (const [cId, c] of world.caravans) {
-    const before = { q: c.position.q, r: c.position.r };
+    let previousHex = { q: c.position.q, r: c.position.r };
     const result = tickCaravanMovement({ caravan: c, grid: world.grid, season, today });
     for (const e of result.events) {
       if (e.type === 'arrived') {
@@ -1456,9 +1624,10 @@ const movementPhase = (
       events.push({
         type: 'caravan_moved',
         caravan: cId,
-        from: before,
+        from: previousHex,
         to: { q: moved.q, r: moved.r },
       });
+      previousHex = { q: moved.q, r: moved.r };
       addRoadWear(world, moved, wearPerHex);
     }
   }
@@ -1488,7 +1657,7 @@ const WEAR_PER_CREW = 0.05;
 const WEAR_PER_NEWS_CARRIER = 0.2;
 const WEAR_PER_PATROL_SOLDIER = 0.5;
 const WEAR_DECAY_PER_DAY = 1.0;
-const DIRT_ROAD_DECAY_PER_DAY = 3.0;
+const DIRT_ROAD_DECAY_PER_DAY = 1.5;
 const DIRT_UPGRADE_THRESHOLD = 100;
 const DIRT_DOWNGRADE_THRESHOLD = 20;
 const MAX_ROAD_WEAR = 200;
@@ -1874,6 +2043,7 @@ const roadMaintenancePhase = (world: WorldState, events: TickEvent[]): void => {
 // --- Storage spoilage (docs/15 §C10) -------------------------------------
 
 const SPOILAGE_RATE_PER_DAY = 0.002; // 0.2% per day above cap
+const NATURAL_SPOILAGE_MAX_DAYS = 14;
 /** Grace period: bootstrap stockpiles get a year to be consumed naturally
  *  before spoilage kicks in. Without this the procgen-seeded bootstrap
  *  (90 days of grain in a 30k city = 161k modii vs. one granary's 5k)
@@ -1908,6 +2078,7 @@ const isPerishable = (resource: ResourceId): boolean => {
  * falls). The system self-regulates instead of imploding.
  */
 const storageSpoilagePhase = (world: WorldState, events: TickEvent[]): void => {
+  naturalShortPerishableSpoilagePhase(world, events);
   if (world.day < SPOILAGE_GRACE_DAYS) return;
   for (const settlement of world.settlements.values()) {
     if (settlement.population.total() === 0) continue;
@@ -1986,6 +2157,50 @@ const storageSpoilagePhase = (world: WorldState, events: TickEvent[]): void => {
   }
 };
 
+const naturalShortPerishableSpoilagePhase = (world: WorldState, events: TickEvent[]): void => {
+  for (const settlement of world.settlements.values()) {
+    if (settlement.population.total() === 0) continue;
+    const totalByResource = new Map<ResourceId, number>();
+    const ownersWithStock = new Map<ResourceId, Actor[]>();
+
+    for (const oId of settlement.stockpileOwners) {
+      const actor = world.actors.get(oId);
+      if (actor === undefined) continue;
+      for (const [resource, qty] of actor.stockpile) {
+        if (qty <= 0) continue;
+        const fraction = naturalSpoilageFractionForResource(resource);
+        if (fraction <= 0) continue;
+        totalByResource.set(resource, (totalByResource.get(resource) ?? 0) + qty);
+        let owners = ownersWithStock.get(resource);
+        if (owners === undefined) {
+          owners = [];
+          ownersWithStock.set(resource, owners);
+        }
+        owners.push(actor);
+      }
+    }
+
+    for (const [resource, total] of totalByResource) {
+      const fraction = naturalSpoilageFractionForResource(resource);
+      const spoil = total * fraction;
+      if (spoil <= 1e-9) continue;
+      drainSpoilageProportional(ownersWithStock.get(resource) ?? [], resource, spoil);
+      events.push({
+        type: 'storage_spoilage',
+        settlement: settlement.id,
+        resource,
+        spoiled: spoil,
+      });
+    }
+  }
+};
+
+const naturalSpoilageFractionForResource = (resource: ResourceId): number => {
+  const days = getResource(resource).perishableDays;
+  if (days === undefined || days <= 0 || days > NATURAL_SPOILAGE_MAX_DAYS) return 0;
+  return 1 - Math.exp(-1 / days);
+};
+
 const drainSpoilageProportional = (
   owners: readonly Actor[],
   resource: ResourceId,
@@ -2006,6 +2221,11 @@ const drainSpoilageProportional = (
   }
 };
 
+// --- Caravan spawn pressure ------------------------------------------------
+
+const remainingWorldCaravanSlots = (world: WorldState, plannedSpawns = 0): number =>
+  Math.max(0, MAX_ACTIVE_WORLD_CARAVANS - world.caravans.size - plannedSpawns);
+
 // --- Tax shipment phase (docs/11 §"Taxes" + codex review #2) -------------
 
 const DEFAULT_TAX_RATES: TaxRatesPercent = {
@@ -2014,7 +2234,9 @@ const DEFAULT_TAX_RATES: TaxRatesPercent = {
   coinTaxPctOfWealth: 1, // 1% monthly coin assessment
 };
 
-const MAX_TAX_SHIPMENTS_DISPATCHED_PER_DAY = 8;
+const MAX_TAX_SHIPMENT_CARAVANS_DISPATCHED_PER_DAY = 2;
+const MAX_ACTIVE_TAX_SHIPMENT_CARAVANS = 24;
+const MAX_TAX_ASSESSMENTS_PER_CARAVAN = 8;
 const pendingTaxAssessmentsByWorld: WeakMap<WorldState, TaxAssessment[]> = new WeakMap();
 
 const compareTaxAssessments = (a: TaxAssessment, b: TaxAssessment): number => {
@@ -2027,6 +2249,14 @@ const compareTaxAssessments = (a: TaxAssessment, b: TaxAssessment): number => {
   return a.quantityOwed - b.quantityOwed;
 };
 
+const activeTaxShipmentCaravanCount = (world: WorldState): number => {
+  let count = 0;
+  for (const caravan of world.caravans.values()) {
+    if (String(caravan.id).startsWith('tax-')) count += 1;
+  }
+  return count;
+};
+
 const pendingTaxQueueForWorld = (world: WorldState): TaxAssessment[] => {
   let queue = pendingTaxAssessmentsByWorld.get(world);
   if (queue === undefined) {
@@ -2034,6 +2264,50 @@ const pendingTaxQueueForWorld = (world: WorldState): TaxAssessment[] => {
     pendingTaxAssessmentsByWorld.set(world, queue);
   }
   return queue;
+};
+
+const drainTaxAssessment = (world: WorldState, assessment: TaxAssessment): number => {
+  const owner = world.actors.get(assessment.fromOwnerActor);
+  if (owner === undefined) return 0;
+  const have = owner.stockpile.get(assessment.resource) ?? 0;
+  const drain = Math.min(have, assessment.quantityOwed);
+  if (drain <= 0) return 0;
+  decreaseStockpile(owner, assessment.resource, drain);
+  return drain;
+};
+
+const takeTaxDispatchBatch = (
+  world: WorldState,
+  pending: TaxAssessment[],
+): { readonly assessment: TaxAssessment; readonly fromSettlement: Settlement } | null => {
+  while (pending.length > 0) {
+    const seed = pending.shift() as TaxAssessment;
+    const fromSettlement = world.settlements.get(seed.fromSettlement);
+    if (fromSettlement === undefined) continue;
+    const firstDrain = drainTaxAssessment(world, seed);
+    if (firstDrain <= 0) continue;
+
+    let total = firstDrain;
+    let included = 1;
+    for (let i = 0; i < pending.length && included < MAX_TAX_ASSESSMENTS_PER_CARAVAN; ) {
+      const candidate = pending[i] as TaxAssessment;
+      if (candidate.resource !== seed.resource) {
+        i += 1;
+        continue;
+      }
+      pending.splice(i, 1);
+      const drain = drainTaxAssessment(world, candidate);
+      if (drain <= 0) continue;
+      total += drain;
+      included += 1;
+    }
+
+    return {
+      assessment: { ...seed, quantityOwed: total },
+      fromSettlement,
+    };
+  }
+  return null;
 };
 
 const taxShipmentPhase = (world: WorldState, today: Day, rng: Rng, events: TickEvent[]): void => {
@@ -2101,31 +2375,30 @@ const taxShipmentPhase = (world: WorldState, today: Day, rng: Rng, events: TickE
     pending.push(...assessments.slice().sort(compareTaxAssessments));
   }
 
-  // Spawn a bounded number of tax-shipment caravans per day and keep the
-  // rest queued. Harvest assessments can touch hundreds of settlements; a
-  // province dispatches wagons over weeks, not as a single discontinuous
-  // caravan burst.
+  // Spawn a bounded number of batched tax-shipment caravans per day and keep
+  // the rest queued. Harvest assessments can touch hundreds of settlements;
+  // a province dispatches district convoys over weeks, not one caravan per
+  // owner/settlement in a single discontinuous burst.
   let dispatched = 0;
-  while (pending.length > 0 && dispatched < MAX_TAX_SHIPMENTS_DISPATCHED_PER_DAY) {
-    const a = pending.shift() as TaxAssessment;
-    const fromS = world.settlements.get(a.fromSettlement);
-    if (fromS === undefined) continue;
-    const owner = world.actors.get(a.fromOwnerActor);
-    if (owner === undefined) continue;
-    const have = owner.stockpile.get(a.resource) ?? 0;
-    const drain = Math.min(have, a.quantityOwed);
-    if (drain <= 0) continue;
-    const remaining = have - drain;
-    if (remaining > 1e-9) owner.stockpile.set(a.resource, remaining);
-    else owner.stockpile.delete(a.resource);
+  const activeTaxShipments = activeTaxShipmentCaravanCount(world);
+  while (
+    pending.length > 0 &&
+    dispatched < MAX_TAX_SHIPMENT_CARAVANS_DISPATCHED_PER_DAY &&
+    activeTaxShipments + dispatched < MAX_ACTIVE_TAX_SHIPMENT_CARAVANS &&
+    remainingWorldCaravanSlots(world, dispatched) > 0
+  ) {
+    const batch = takeTaxDispatchBatch(world, pending);
+    if (batch === null) break;
+    const a = batch.assessment;
+    const fromS = batch.fromSettlement;
 
     const cId = makeCaravanIdLocal(
-      `tax-${today}-${String(a.fromSettlement)}-${String(a.fromOwnerActor)}-${String(a.resource)}`,
+      `tax-${today}-${String(a.fromSettlement)}-${String(a.fromOwnerActor)}-${String(a.resource)}-${dispatched}`,
     );
     if (world.caravans.has(cId)) continue; // dedupe within a tick
     const caravan = createTaxShipmentCaravan({
       id: cId,
-      assessment: { ...a, quantityOwed: drain },
+      assessment: a,
       fromHex: fromS.anchor,
       toHex: capital.anchor,
       governorActor: governor.id,
@@ -2137,13 +2410,55 @@ const taxShipmentPhase = (world: WorldState, today: Day, rng: Rng, events: TickE
       type: 'tax_shipment_dispatched',
       fromSettlement: a.fromSettlement,
       toSettlement: capital.id,
-      grainModii: a.resource === resourceId('food.grain') ? drain : 0,
-      coin: a.resource === resourceId('goods.coin') ? drain : 0,
+      grainModii: a.resource === resourceId('food.grain') ? a.quantityOwed : 0,
+      coin: a.resource === resourceId('goods.coin') ? a.quantityOwed : 0,
     });
   }
 };
 
 // --- Edge-hub phase (docs/06 + docs/08) -----------------------------------
+
+const EDGE_HUB_IMPORT_CARAVAN_PREFIX = 'import-';
+const EDGE_HUB_EXPORT_CARAVAN_PREFIX = 'export-';
+const OFF_MAP_HOUSE_OWNER_PREFIX = 'off-map-house-';
+const EDGE_HUB_MAX_ACTIVE_IMPORT_CARAVANS = 32;
+const EDGE_HUB_MAX_ACTIVE_EXPORT_CARAVANS = 16;
+
+const isEdgeHubImportCaravan = (caravan: Caravan): boolean => {
+  return (
+    String(caravan.id).startsWith(EDGE_HUB_IMPORT_CARAVAN_PREFIX) &&
+    String(caravan.ownerActor).startsWith(OFF_MAP_HOUSE_OWNER_PREFIX)
+  );
+};
+
+const edgeHubHomeGateForCaravan = (
+  caravan: Caravan,
+  edgeHexKeys: ReadonlySet<string>,
+): Hex | null => {
+  const owner = String(caravan.ownerActor);
+  if (!owner.startsWith(OFF_MAP_HOUSE_OWNER_PREFIX)) return null;
+  const key = owner.slice(OFF_MAP_HOUSE_OWNER_PREFIX.length);
+  let h: Hex;
+  try {
+    h = parseHexKey(key);
+  } catch {
+    return null;
+  }
+  return edgeHexKeys.has(hexKey(h)) ? h : null;
+};
+
+const activeEdgeHubCaravanCounts = (
+  world: WorldState,
+): { readonly imports: number; readonly exports: number } => {
+  let imports = 0;
+  let exports = 0;
+  for (const caravan of world.caravans.values()) {
+    const id = String(caravan.id);
+    if (id.startsWith(EDGE_HUB_IMPORT_CARAVAN_PREFIX)) imports += 1;
+    else if (id.startsWith(EDGE_HUB_EXPORT_CARAVAN_PREFIX)) exports += 1;
+  }
+  return { imports, exports };
+};
 
 /**
  * Per-day off-map trade: spawn import + export caravans at edge hexes
@@ -2165,7 +2480,11 @@ const edgeHubPhase = (
   if (edgeHexes.length === 0) return;
 
   // City + capital settlements as import targets / export sources.
-  const cityImportTargets: { settlementId: SettlementId; hex: Hex }[] = [];
+  const cityImportTargets: {
+    settlementId: SettlementId;
+    hex: Hex;
+    localPrices: ReadonlyMap<ResourceId, number>;
+  }[] = [];
   const cityExportSources: {
     settlementId: SettlementId;
     hex: Hex;
@@ -2175,7 +2494,11 @@ const edgeHubPhase = (
   }[] = [];
   for (const s of world.settlements.values()) {
     if (s.tier !== 'small_city' && s.tier !== 'large_city') continue;
-    cityImportTargets.push({ settlementId: s.id, hex: s.anchor });
+    cityImportTargets.push({
+      settlementId: s.id,
+      hex: s.anchor,
+      localPrices: s.market.lastClearingPrice,
+    });
     // Export source: pick the wealthiest stockpile owner anchored at the
     // city; use their stockpile as availableForExport.
     let owner: Actor | undefined;
@@ -2199,6 +2522,9 @@ const edgeHubPhase = (
   }
   if (cityImportTargets.length === 0 && cityExportSources.length === 0) return;
 
+  const activeEdgeCaravans = activeEdgeHubCaravanCounts(world);
+  const worldRoom = remainingWorldCaravanSlots(world);
+  if (worldRoom <= 0) return;
   const result = tickEdgeHubs({
     config: {
       edgeHexes,
@@ -2208,9 +2534,13 @@ const edgeHubPhase = (
       // as a paced long-haul flow instead of random-looking perimeter bursts.
       baseImportSpawnProbPerDay: 0.05,
       baseExportSpawnProbPerDay: 0.03,
+      activeImportCaravans: activeEdgeCaravans.imports,
+      activeExportCaravans: activeEdgeCaravans.exports,
       maxImportSpawnsPerDay: 2,
       maxExportSpawnsPerDay: 1,
-      maxTotalSpawnsPerDay: 3,
+      maxTotalSpawnsPerDay: Math.min(3, worldRoom),
+      maxActiveImportCaravans: EDGE_HUB_MAX_ACTIVE_IMPORT_CARAVANS,
+      maxActiveExportCaravans: EDGE_HUB_MAX_ACTIVE_EXPORT_CARAVANS,
       importPalette: DEFAULT_IMPORT_PALETTE,
     },
     today,
@@ -2417,6 +2747,123 @@ const roadResetPhase = (world: WorldState, events: TickEvent[]): void => {
  * clearMarket. Trades transfer goods from sellers to buyer actors or direct
  * consumption, and coin in the other direction, treasury-capped.
  */
+const DEFAULT_MARKET_MAX_PRICE = 10_000;
+const SCARCITY_PRICE_MULTIPLIER = 12;
+const STRATEGIC_INPUT_SCARCITY_PRICE_MULTIPLIER = 40;
+const MIN_SCARCITY_PRICE_CEILING = 5;
+const MAX_LOCAL_FALLBACK_REFERENCE_PRICE = 50;
+
+const STRATEGIC_PRODUCER_INPUTS: ReadonlySet<string> = new Set([
+  'mineral.iron_ore',
+  'material.charcoal',
+  'metal.iron',
+  'goods.tools',
+]);
+
+const scarcityPriceMultiplierForResource = (resource: ResourceId): number =>
+  STRATEGIC_PRODUCER_INPUTS.has(String(resource))
+    ? STRATEGIC_INPUT_SCARCITY_PRICE_MULTIPLIER
+    : SCARCITY_PRICE_MULTIPLIER;
+
+const fallbackScarcityReferencePrice = (resource: ResourceId): number => {
+  const def = getResource(resource);
+  const kg = Math.max(0.001, def.weightKgPerUnit);
+  let coinPerKg: number;
+  switch (def.category) {
+    case 'food':
+      coinPerKg = 1;
+      break;
+    case 'material':
+      coinPerKg = def.tier === 0 ? 0.02 : 0.5;
+      break;
+    case 'mineral':
+      coinPerKg = 0.2;
+      break;
+    case 'metal':
+      coinPerKg = 2;
+      break;
+    case 'livestock':
+      coinPerKg = 0.05;
+      break;
+    case 'goods':
+      coinPerKg = 10;
+      break;
+    case 'exotic':
+      coinPerKg = 50;
+      break;
+    case 'people':
+      coinPerKg = 10;
+      break;
+    case 'service':
+      coinPerKg = 0;
+      break;
+  }
+  if (coinPerKg <= 0) return 0;
+  return Math.min(MAX_LOCAL_FALLBACK_REFERENCE_PRICE, kg * coinPerKg);
+};
+
+const marketMaxPriceForResource = (
+  resource: ResourceId,
+  supplySources: readonly { readonly reservationPrice: number }[],
+  recentLocalPrices: ReadonlyMap<ResourceId, number>,
+): number => {
+  const globalReference = DEFAULT_GLOBAL_PRICES.get(resource);
+  let reference =
+    globalReference !== undefined && Number.isFinite(globalReference) && globalReference > 0
+      ? globalReference
+      : Number.POSITIVE_INFINITY;
+
+  if (!Number.isFinite(reference)) {
+    for (const source of supplySources) {
+      const price = source.reservationPrice;
+      if (Number.isFinite(price) && price > 0 && price < reference) reference = price;
+    }
+  }
+
+  if (!Number.isFinite(reference)) {
+    const observed = recentLocalPrices.get(resource);
+    if (
+      observed !== undefined &&
+      Number.isFinite(observed) &&
+      observed > 0 &&
+      observed < DEFAULT_MARKET_MAX_PRICE
+    ) {
+      reference = observed;
+    }
+  }
+
+  const fallback = fallbackScarcityReferencePrice(resource);
+  if (globalReference === undefined && fallback > 0) {
+    reference = Number.isFinite(reference) ? Math.min(reference, fallback) : fallback;
+  }
+
+  if (!Number.isFinite(reference)) return DEFAULT_MARKET_MAX_PRICE;
+  const ceiling = Math.max(
+    MIN_SCARCITY_PRICE_CEILING,
+    reference * scarcityPriceMultiplierForResource(resource),
+  );
+  return Math.min(DEFAULT_MARKET_MAX_PRICE, ceiling);
+};
+
+const MIN_SHORTAGE_SIGNAL_KG = 0.25;
+
+const isMeaningfulShortageSignal = (resource: ResourceId, unmetQuantity: number): boolean => {
+  if (!Number.isFinite(unmetQuantity) || unmetQuantity <= 0) return false;
+  const kgPerUnit = Math.max(0.001, getResource(resource).weightKgPerUnit);
+  return unmetQuantity * kgPerUnit >= MIN_SHORTAGE_SIGNAL_KG;
+};
+
+const lowestFiniteAsk = (
+  supplySources: readonly { readonly reservationPrice: number }[],
+): number | null => {
+  let best = Number.POSITIVE_INFINITY;
+  for (const source of supplySources) {
+    const price = source.reservationPrice;
+    if (Number.isFinite(price) && price > 0 && price < best) best = price;
+  }
+  return Number.isFinite(best) ? best : null;
+};
+
 const tradePhase = (
   world: WorldState,
   season: Season,
@@ -2460,8 +2907,10 @@ const tradePhase = (
       }
     }
     const demandCandidateResources = demandCandidateResourcesForSettlement(settlement);
+    const priceMemoryResources = settlement.market.lastClearingPrice;
     const localTradable = tradable.filter(
-      (r) => presentResources.has(r) || demandCandidateResources.has(r),
+      (r) =>
+        presentResources.has(r) || demandCandidateResources.has(r) || priceMemoryResources.has(r),
     );
     if (localTradable.length === 0) continue;
 
@@ -2511,15 +2960,22 @@ const tradePhase = (
       season,
       ownerKindByActor,
       actorTreasuryByActor: new Map(owners.map((a) => [a.id, a.treasury] as const)),
+      grid: world.grid,
     });
 
     for (const [resId, pair] of schedules.schedulesByResource) {
-      if (pair.demand.sources.length === 0 && pair.supply.sources.length === 0) continue;
-      const result = clearMarket(pair.demand, pair.supply, { maxPrice: 10000 });
+      if (pair.demand.sources.length === 0 && pair.supply.sources.length === 0) {
+        settlement.market.lastClearingPrice.delete(resId);
+        continue;
+      }
+      const result = clearMarket(pair.demand, pair.supply, {
+        maxPrice: marketMaxPriceForResource(resId, pair.supply.sources, seededPrices),
+      });
       if (result.totalTraded <= 0) {
         if (
           pair.demand.sources.length > 0 &&
           result.unmetDemandAtClearingPrice > 0 &&
+          isMeaningfulShortageSignal(resId, result.unmetDemandAtClearingPrice) &&
           Number.isFinite(result.clearingPrice) &&
           result.clearingPrice > 0
         ) {
@@ -2531,6 +2987,11 @@ const tradePhase = (
             price: result.clearingPrice,
             unmetDemand: result.unmetDemandAtClearingPrice,
           });
+        } else if (pair.supply.sources.length > 0) {
+          const ask = lowestFiniteAsk(pair.supply.sources);
+          if (ask !== null) recordClearingPrice(settlement, resId, ask);
+        } else {
+          settlement.market.lastClearingPrice.delete(resId);
         }
         continue;
       }
@@ -2553,7 +3014,8 @@ const tradePhase = (
         if (qty <= 1e-9) continue;
 
         const coin = buyerPaysSeller ? Math.min(qty * trade.price, buyer.treasury) : 0;
-        decreaseStockpile(seller, resId, qty);
+        const serviceTrade = isServiceResource(resId);
+        if (!serviceTrade) decreaseStockpile(seller, resId, qty);
         if (buyer !== undefined) {
           if (buyerPaysSeller) {
             if (coin > 0) {
@@ -2561,7 +3023,7 @@ const tradePhase = (
               seller.treasury += coin;
             }
           }
-          if (demandSource?.buyerDisposition === 'stockpile') {
+          if (demandSource?.buyerDisposition === 'stockpile' && !serviceTrade) {
             increaseStockpile(buyer, resId, qty);
           }
         } else {
@@ -2573,15 +3035,18 @@ const tradePhase = (
         if (demandSource?.buyerDisposition !== 'stockpile') {
           recordOutflow(settlement, resId, qty);
         }
-        if (String(resId) === String(GRAIN_RESOURCE) && demandSource?.curve === 'subsistence') {
+        if (demandSource?.curve === 'subsistence') {
           const access = subsistenceAccess.get(settlement);
-          if (access !== undefined) access.fulfilledModii += qty;
+          if (access !== undefined)
+            access.fulfilledModii += qty * grainEquivalentModiiPerUnit(resId);
         }
         actualTraded += qty;
       }
       if (actualTraded <= 1e-9) {
+        const unmetDemand = Math.max(result.unmetDemandAtClearingPrice, result.totalTraded);
         if (
           pair.demand.sources.length > 0 &&
+          isMeaningfulShortageSignal(resId, unmetDemand) &&
           Number.isFinite(result.clearingPrice) &&
           result.clearingPrice > 0
         ) {
@@ -2591,8 +3056,13 @@ const tradePhase = (
             settlement: settlement.id,
             resource: resId,
             price: result.clearingPrice,
-            unmetDemand: Math.max(result.unmetDemandAtClearingPrice, result.totalTraded),
+            unmetDemand,
           });
+        } else if (pair.supply.sources.length > 0) {
+          const ask = lowestFiniteAsk(pair.supply.sources);
+          if (ask !== null) recordClearingPrice(settlement, resId, ask);
+        } else {
+          settlement.market.lastClearingPrice.delete(resId);
         }
         continue;
       }
@@ -2630,6 +3100,8 @@ const ownerKindByActorForWorld = (world: WorldState): ReadonlyMap<ActorId, Actor
 const POPULATION_DEMAND_RESOURCES: readonly ResourceId[] = Object.freeze(
   [
     'food.grain',
+    'food.bread',
+    'food.legumes',
     'mineral.salt',
     'material.wood',
     'food.wine',
@@ -2650,6 +3122,23 @@ const POPULATION_DEMAND_RESOURCES: readonly ResourceId[] = Object.freeze(
     'exotic.dyes',
   ].map(resourceId),
 );
+
+const CAPITAL_RESERVE_DEMAND_RESOURCES: readonly ResourceId[] = Object.freeze(
+  [
+    'material.lumber',
+    'material.cut_stone',
+    'material.brick_tile',
+    'material.stone',
+    'material.amphora',
+    'material.pottery',
+    'material.linen_fiber',
+    'goods.tools',
+    'livestock.equines',
+    'goods.cart',
+  ].map(resourceId),
+);
+
+const SERVICE_MARKET_RESOURCES: readonly ResourceId[] = serviceMarketResources();
 
 const RECIPE_INPUT_RESOURCES_BY_BUILDING: ReadonlyMap<string, readonly ResourceId[]> = (() => {
   const tmp = new Map<string, Map<string, ResourceId>>();
@@ -2677,6 +3166,10 @@ const demandCandidateResourcesForSettlement = (settlement: Settlement): Readonly
   if (settlement.population.total() > 0) {
     for (const r of POPULATION_DEMAND_RESOURCES) out.add(r);
   }
+  if (settlement.stockpileOwners.length > 0) {
+    for (const r of CAPITAL_RESERVE_DEMAND_RESOURCES) out.add(r);
+    for (const r of SERVICE_MARKET_RESOURCES) out.add(r);
+  }
   for (const building of settlement.buildings) {
     if (building.capacity <= 0) continue;
     const inputs = RECIPE_INPUT_RESOURCES_BY_BUILDING.get(String(building.buildingId));
@@ -2692,9 +3185,9 @@ const demandCandidateResourcesForSettlement = (settlement: Settlement): Readonly
 
 /**
  * The full set of resources cleared each tick. Built once at module load
- * from resources that appear in recipes, population demand, or off-map
- * global trade. We exclude `service.*` (institutional capacity, not cargo)
- * and `people.*` (handled by separate slave/migrant flows).
+ * from resources that appear in recipes, population demand, local services,
+ * or off-map global trade. We exclude `people.*` because slave/migrant flows
+ * are handled by separate population/cargo systems.
  */
 const TRADABLE_RESOURCES: readonly ResourceId[] = (() => {
   const seen = new Set<string>();
@@ -2702,7 +3195,7 @@ const TRADABLE_RESOURCES: readonly ResourceId[] = (() => {
   const add = (id: ResourceId): void => {
     const k = String(id);
     if (seen.has(k)) return;
-    if (k.startsWith('service.') || k.startsWith('people.')) return;
+    if (k.startsWith('people.')) return;
     seen.add(k);
     out.push(id);
   };
@@ -2711,6 +3204,8 @@ const TRADABLE_RESOURCES: readonly ResourceId[] = (() => {
     for (const id of r.outputs.keys()) add(id);
   }
   for (const id of POPULATION_DEMAND_RESOURCES) add(id);
+  for (const id of CAPITAL_RESERVE_DEMAND_RESOURCES) add(id);
+  for (const id of SERVICE_MARKET_RESOURCES) add(id);
   for (const id of DEFAULT_GLOBAL_PRICES.keys()) add(id);
   for (const resources of RECIPE_INPUT_RESOURCES_BY_BUILDING.values()) {
     for (const id of resources) add(id);
@@ -2725,20 +3220,26 @@ const TRADABLE_RESOURCES: readonly ResourceId[] = (() => {
 
 /**
  * Petty merchants and villager pickup carts that walk between nearby
- * settlements (≤3 hexes) every day, arbitraging local price spreads with
- * small loads. Per docs/06 §"Local trade between nearby settlements" and
- * docs/08 §"Per-settlement markets, regional smoothing".
+ * settlements every day, arbitraging local price spreads with small loads.
+ * Household goods use the classic ≤3-hex petty radius. Workshop and bulky
+ * industrial inputs use ≤6-hex cartage so mine/charcoal/bloomery/smithy
+ * clusters can feed each other without promoting every sack of grain to
+ * regional teleportation. Per docs/06 §"Local trade between nearby
+ * settlements" and docs/08 §"Per-settlement markets, regional smoothing".
  *
- * For each unordered settlement pair (A, B) within 3 hexes whose anchors are
- * both on passable terrain in the current season:
+ * For each unordered settlement pair (A, B) within the resource's local
+ * cartage radius whose anchors are both on passable terrain in the current
+ * season:
  *   - For each tradable resource R for which BOTH settlements have observed
  *     a clearing price:
  *       - Add a transport-cost surcharge per the docs/06 distance table.
  *       - If the spread (after transport cost) is positive, pick the cheaper
  *         settlement as seller and the dearer as buyer.
  *       - Find any seller-side actor with stock>0 and any buyer-side actor
- *         with treasury>0; move ≤MAX_PETTY_LOAD_KG worth of R from seller
- *         to buyer at the midpoint price (split the spread).
+ *         with treasury>0; move a resource-appropriate load from seller to
+ *         buyer at the midpoint price (split the spread). Household goods use
+ *         basket loads; industrial inputs use cartage loads so mine/charcoal/
+ *         bloomery clusters can actually feed each other.
  *       - The petty merchant takes a 5% cut on the spread; in v1.5 we just
  *         absorb it (no separate merchant household ledger; tracked as a
  *         follow-up).
@@ -2749,8 +3250,8 @@ const TRADABLE_RESOURCES: readonly ResourceId[] = (() => {
  * current `stockpileOwners` order (the same order all other phases use).
  *
  * Performance: a hex-keyed spatial index of settlement anchors is built once
- * per phase; each settlement enumerates only its 3-radius hex neighborhood
- * (~37 hexes) instead of comparing against all N settlements (an O(N²) walk
+ * per phase; each settlement enumerates only its bounded local-cartage
+ * neighborhood instead of comparing against all N settlements (an O(N²) walk
  * is unacceptable at the future-state ~8000-settlement scale).
  *
  * Same-hex (distance 0) is supported with zero transport cost — that is the
@@ -2786,8 +3287,9 @@ const localTradePhase = (
 
   for (const a of world.settlements.values()) {
     if (!isAnchorPassable(a)) continue;
-    // Enumerate every hex within 3 of A's anchor and look up settlements
-    // anchored there. This is O(37 * pairsPerHex) per A, vs O(N) naive.
+    // Enumerate every hex within the widest local-cartage range of A's anchor
+    // and look up settlements anchored there. This is O(local neighborhood) per
+    // A, vs O(N) naive.
     for (const neighborHex of hexesWithinRange(a.anchor, LOCAL_TRADE_MAX_HEX_DISTANCE)) {
       const bucket = settlementsByAnchorHex.get(hexKey(neighborHex));
       if (bucket === undefined) continue;
@@ -2800,8 +3302,10 @@ const localTradePhase = (
         // Per docs/06 §"Distance and cost", the table is in coin/kg, not
         // coin/unit. tryLocalTrade scales by the resource's weightKgPerUnit
         // before comparing prices.
-        const transportCostPerKg = TRANSPORT_COST_BY_DISTANCE[dist] ?? 0;
+        const transportCostPerKg = TRANSPORT_COST_BY_DISTANCE[dist];
+        if (transportCostPerKg === undefined) continue;
         for (const resId of LOCAL_TRADE_RESOURCES) {
+          if (dist > localTradeMaxHexDistanceForResource(resId)) continue;
           tryLocalTrade(world, a, b, resId, transportCostPerKg, events);
         }
       }
@@ -2910,7 +3414,7 @@ const tryLocalTrade = (
 
   const sellerStock = sellerActor.stockpile.get(resId) ?? 0;
   if (sellerStock <= 0) return;
-  const maxByLoad = MAX_PETTY_LOAD_KG / weightKgPerUnit;
+  const maxByLoad = localTradeLoadKgForResource(resId) / weightKgPerUnit;
   const maxByTreasury = buyerActor.treasury / midPrice;
   const qty = Math.min(maxByLoad, sellerStock, maxByTreasury);
   if (qty <= 1e-9) return;
@@ -2958,16 +3462,68 @@ const pickBuyerActor = (world: WorldState, settlement: Settlement): Actor | null
   return null;
 };
 
-/** Maximum hex distance for petty trade (docs/06 §"Distance and cost"). */
-const LOCAL_TRADE_MAX_HEX_DISTANCE = 3;
+/** Maximum hex distance for all local trade categories (docs/06 §"Distance and cost"). */
+const LOCAL_TRADE_MAX_HEX_DISTANCE = 6;
+const HOUSEHOLD_LOCAL_TRADE_MAX_HEX_DISTANCE = 3;
+const INDUSTRIAL_LOCAL_TRADE_MAX_HEX_DISTANCE = 6;
 
 /**
- * Per-pair, per-day, per-resource cap. ~50 kg is a single villager's basket
- * or one-mule load. Larger flows are long-haul caravan work; keeping this
- * small prevents petty arbitrage from draining subsistence liquidity.
+ * Per-pair, per-day, per-resource caps. Household goods use a single
+ * villager/donkey basket. Strategic workshop goods use a pickup-wagon sized
+ * lot, and bulky industrial inputs use local cartage because mine/charcoal/
+ * bloomery clusters are deliberately local and need ton-scale material
+ * movement before long-haul caravans get involved.
  * docs/06 §"Local trade between nearby settlements".
  */
-const MAX_PETTY_LOAD_KG = 50;
+const MAX_HOUSEHOLD_PETTY_LOAD_KG = 50;
+const MAX_WORKSHOP_CARTAGE_LOAD_KG = 500;
+const MAX_INDUSTRIAL_CARTAGE_LOAD_KG = 3_000;
+
+const WORKSHOP_CARTAGE_RESOURCES: ReadonlySet<string> = new Set([
+  'goods.tools',
+  'goods.weapons',
+  'goods.armor',
+  'goods.shields',
+  'goods.cart',
+]);
+
+const INDUSTRIAL_CARTAGE_RESOURCES: ReadonlySet<string> = new Set([
+  'material.charcoal',
+  'material.wood',
+  'material.lumber',
+  'material.clay',
+  'material.stone',
+  'material.cut_stone',
+  'material.brick_tile',
+]);
+
+const localTradeLoadKgForResource = (resource: ResourceId): number => {
+  const def = getResource(resource);
+  if (def.category === 'mineral' || def.category === 'metal') {
+    return MAX_INDUSTRIAL_CARTAGE_LOAD_KG;
+  }
+  if (WORKSHOP_CARTAGE_RESOURCES.has(String(resource))) {
+    return MAX_WORKSHOP_CARTAGE_LOAD_KG;
+  }
+  if (INDUSTRIAL_CARTAGE_RESOURCES.has(String(resource))) {
+    return MAX_INDUSTRIAL_CARTAGE_LOAD_KG;
+  }
+  return MAX_HOUSEHOLD_PETTY_LOAD_KG;
+};
+
+const localTradeMaxHexDistanceForResource = (resource: ResourceId): number => {
+  const def = getResource(resource);
+  if (def.category === 'mineral' || def.category === 'metal') {
+    return INDUSTRIAL_LOCAL_TRADE_MAX_HEX_DISTANCE;
+  }
+  if (WORKSHOP_CARTAGE_RESOURCES.has(String(resource))) {
+    return INDUSTRIAL_LOCAL_TRADE_MAX_HEX_DISTANCE;
+  }
+  if (INDUSTRIAL_CARTAGE_RESOURCES.has(String(resource))) {
+    return INDUSTRIAL_LOCAL_TRADE_MAX_HEX_DISTANCE;
+  }
+  return HOUSEHOLD_LOCAL_TRADE_MAX_HEX_DISTANCE;
+};
 
 /**
  * Petty-merchant cut on the spread. v1.5 just absorbs this (no separate
@@ -2985,6 +3541,9 @@ const TRANSPORT_COST_BY_DISTANCE: Readonly<Record<number, number>> = {
   1: 0.005,
   2: 0.01,
   3: 0.02,
+  4: 0.035,
+  5: 0.055,
+  6: 0.08,
 };
 
 /**
@@ -3005,6 +3564,17 @@ const LOCAL_TRADE_RESOURCES: readonly ResourceId[] = [
   resourceId('goods.clothing'),
   resourceId('goods.furniture'),
   resourceId('goods.tools'),
+  resourceId('goods.weapons'),
+  resourceId('goods.armor'),
+  resourceId('goods.shields'),
+  resourceId('goods.cart'),
+  resourceId('mineral.iron_ore'),
+  resourceId('mineral.copper_ore'),
+  resourceId('mineral.tin_ore'),
+  resourceId('mineral.lead_ore'),
+  resourceId('mineral.silver_ore'),
+  resourceId('mineral.gold_ore'),
+  resourceId('mineral.salt'),
   resourceId('food.olives'),
   resourceId('food.grapes'),
   resourceId('material.pottery'),
@@ -3016,6 +3586,12 @@ const LOCAL_TRADE_RESOURCES: readonly ResourceId[] = [
   resourceId('material.lumber'),
   resourceId('material.clay'),
   resourceId('metal.iron'),
+  resourceId('metal.copper'),
+  resourceId('metal.tin'),
+  resourceId('metal.bronze'),
+  resourceId('metal.lead'),
+  resourceId('metal.silver'),
+  resourceId('metal.gold'),
   resourceId('exotic.spices'),
   resourceId('exotic.silk'),
   resourceId('exotic.incense'),
@@ -3113,6 +3689,11 @@ const politicsPhase = (world: WorldState, rng: Rng, today: Day, events: TickEven
   // the v1 baseline issue (see docs/06 §"Caravan lifecycle in the tick
   // loop").
   caravanReplanPhase(world, rng.derive('caravan-replan'), today, events);
+  // Merchant houses and patrician families replace lost trading caravans
+  // slowly when the standing fleet falls below the province's settlement
+  // count. This keeps trade alive over long burn-ins without injecting
+  // discontinuous random fleets.
+  merchantCaravanAssemblyPhase(world, rng.derive('merchant-caravan-assembly'), today, events);
   // Bandit emergence + decisions + raid resolution. Without this loop,
   // the seeded bandit camps are inert decorations — see docs/12
   // §"Bandit emergence in the tick loop".
@@ -3130,9 +3711,9 @@ const politicsPhase = (world: WorldState, rng: Rng, today: Day, events: TickEven
   // ingest the events accumulated by THIS tick so the counters stay in
   // sync with the production phase that ran a few microseconds ago.
   ingestLaborBlockedEvents(events);
-  // Monthly hook (every 30 days): nudge ~0.66% of workers from over-supplied
-  // to under-supplied roles. Picking 30 (not exactly month-length) so the
-  // cadence is independent of calendar bookkeeping.
+  // Monthly hook (every 30 days): nudge workers from over-supplied to
+  // under-supplied/profitable roles. Picking 30 (not exactly month-length)
+  // so the cadence is independent of calendar bookkeeping.
   if ((today + 1) % 30 === 0) {
     workerReallocationPhase(world, today, events);
   }
@@ -3201,6 +3782,59 @@ const ingestLaborBlockedEvents = (events: readonly TickEvent[]): void => {
   }
 };
 
+const mergeLaborDemand = (
+  target: Map<JobId, number>,
+  source: ReadonlyMap<JobId, number> | undefined,
+): void => {
+  if (source === undefined) return;
+  for (const [job, score] of source) {
+    if (score <= 0) continue;
+    target.set(job, (target.get(job) ?? 0) + score);
+  }
+};
+
+const economicLaborDemandForSettlement = (
+  world: WorldState,
+  settlement: Settlement,
+  season: Season,
+): Map<JobId, number> => {
+  const out = new Map<JobId, number>();
+  const buildingsByKind = buildingsByKindForSettlement(settlement);
+
+  for (const recipe of allRecipes()) {
+    const buildings = buildingsByKind.get(recipe.building);
+    if (buildings === undefined || buildings.length === 0) continue;
+    const priority = productionPriority(settlement, recipe, season);
+    if (!Number.isFinite(priority) || priority <= 0) continue;
+
+    let runnableCapacity = 0;
+    for (const building of buildings) {
+      if (building.capacity <= 0) continue;
+      if (mineRecipeHasMismatchedDeposit(world, building, recipe)) continue;
+      runnableCapacity += Math.max(0, building.capacity);
+    }
+    if (runnableCapacity <= 0) continue;
+
+    const score = priority * runnableCapacity;
+    for (const [job, workerDaysPerRun] of recipe.labor) {
+      if (workerDaysPerRun <= 0) continue;
+      out.set(job, (out.get(job) ?? 0) + score * workerDaysPerRun);
+    }
+  }
+
+  return out;
+};
+
+const combinedLaborDemandForSettlement = (
+  world: WorldState,
+  settlement: Settlement,
+  season: Season,
+): Map<JobId, number> => {
+  const out = economicLaborDemandForSettlement(world, settlement, season);
+  mergeLaborDemand(out, recentLaborBlockedByJob.get(settlement));
+  return out;
+};
+
 /**
  * In-tick lookup table: SettlementId → Settlement. Refreshed by
  * `tick()` at the top of every day so subsystem code (e.g.
@@ -3219,86 +3853,110 @@ const recipeIdToDef: ReadonlyMap<RecipeId, ReturnType<typeof allRecipes>[number]
   return m;
 })();
 
-/** Per-month per-settlement reallocation rate (docs/04: ~0.66%/month). */
-const REALLOCATION_RATE = 0.0066;
+/** Per-month per-settlement reallocation rate (docs/04: ~8%/month). */
+const REALLOCATION_RATE = 0.08;
 
 /**
- * Move ~0.66% of workers per month from over-supplied roles to under-supplied
+ * Move ~8% of workers per month from over-supplied roles to under-supplied
  * roles. Algorithm:
  *
  *   1. The set of "demanded" roles = roles whose recipes were blocked by
  *      labor over the last ~30 days (from `recentLaborBlockedByJob`).
- *      Pick the role with the highest blocked count as the target.
- *   2. The set of "over-supplied" roles = the role with the largest current
- *      allocation that is NOT in the demanded set. (We always have an
- *      'idle' bucket from procgen if there are no productive over-suppliers,
- *      and idle is a perfect "give me your spare workers" source.)
- *   3. Move floor(fromCount × REALLOCATION_RATE) workers, with a floor of 1
- *      so something happens when fractions are tiny but workers exist.
+ *      Split this month's reallocation budget across those roles by blocked
+ *      count so a single noisy bottleneck does not starve other shortages.
+ *      Price-profitable recipes also add demand, so partial bottlenecks
+ *      move labor even when a recipe can still run at a small fraction.
+ *   2. The donor role is the allocation with the lowest demand-per-worker,
+ *      tie-broken by largest headcount. This lets a town move surplus miners
+ *      into smelting after ore piles up and iron/tool prices rise.
+ *   3. Move floor(totalWorkers × REALLOCATION_RATE) workers per month, with a
+ *      floor of 1 so something happens when fractions are tiny but workers
+ *      exist.
  *
  * Emits a `workers_reallocated` TickEvent per move so burn-in telemetry can
  * see the system at work.
  */
 const workerReallocationPhase = (world: WorldState, _today: Day, events: TickEvent[]): void => {
+  const season = dayOfYearToSeason(_today);
   for (const settlement of world.settlements.values()) {
     if (settlement.jobAllocations.size === 0) continue;
 
-    const demanded = recentLaborBlockedByJob.get(settlement);
-    if (demanded === undefined || demanded.size === 0) {
+    const demanded = combinedLaborDemandForSettlement(world, settlement, season);
+    if (demanded.size === 0) {
       // Nothing demanded this month; reset and continue.
       recentLaborBlockedByJob.delete(settlement);
       continue;
     }
 
-    // Pick the most-demanded job (deterministic tie-break by job-id).
+    const totalWorkers = [...settlement.jobAllocations.values()].reduce(
+      (sum, n) => sum + Math.max(0, n),
+      0,
+    );
+    if (totalWorkers <= 0) {
+      recentLaborBlockedByJob.delete(settlement);
+      continue;
+    }
+
+    const totalDemand = [...demanded.values()].reduce((sum, n) => sum + Math.max(0, n), 0);
+    if (totalDemand <= 0) {
+      recentLaborBlockedByJob.delete(settlement);
+      continue;
+    }
+
     const orderedDemand = [...demanded.entries()].sort((a, b) => {
       if (b[1] !== a[1]) return b[1] - a[1];
       return String(a[0]) < String(b[0]) ? -1 : String(a[0]) > String(b[0]) ? 1 : 0;
     });
-    const targetJob = orderedDemand[0]?.[0];
-    if (targetJob === undefined) {
-      recentLaborBlockedByJob.delete(settlement);
-      continue;
+    let remainingBudget = Math.max(1, Math.floor(totalWorkers * REALLOCATION_RATE));
+
+    for (const [targetJob, demandCount] of orderedDemand) {
+      if (remainingBudget <= 0) break;
+      const targetShare = Math.max(0, demandCount) / totalDemand;
+      const targetBudget = Math.min(
+        remainingBudget,
+        Math.max(1, Math.floor(totalWorkers * REALLOCATION_RATE * targetShare)),
+      );
+      if (targetBudget <= 0) continue;
+
+      // Pick the donor: lowest demand per current worker, then largest allocation.
+      let donorJob: JobId | null = null;
+      let donorCount = 0;
+      const allocOrdered = [...settlement.jobAllocations.entries()].sort((a, b) => {
+        const demandA = demanded.get(a[0]) ?? 0;
+        const demandB = demanded.get(b[0]) ?? 0;
+        const intensityA = demandA / Math.max(1, a[1]);
+        const intensityB = demandB / Math.max(1, b[1]);
+        if (intensityA !== intensityB) return intensityA - intensityB;
+        if (b[1] !== a[1]) return b[1] - a[1];
+        return String(a[0]) < String(b[0]) ? -1 : String(a[0]) > String(b[0]) ? 1 : 0;
+      });
+      for (const [j, n] of allocOrdered) {
+        if (j === targetJob) continue;
+        if (n <= 0) continue;
+        donorJob = j;
+        donorCount = n;
+        break;
+      }
+      if (donorJob === null || donorCount <= 0) break;
+
+      const actualMove = Math.min(targetBudget, donorCount, remainingBudget);
+      if (actualMove <= 0) continue;
+
+      settlement.jobAllocations.set(donorJob, donorCount - actualMove);
+      settlement.jobAllocations.set(
+        targetJob,
+        (settlement.jobAllocations.get(targetJob) ?? 0) + actualMove,
+      );
+      remainingBudget -= actualMove;
+
+      events.push({
+        type: 'workers_reallocated',
+        settlement: settlement.id,
+        fromJob: donorJob,
+        toJob: targetJob,
+        count: actualMove,
+      });
     }
-
-    // Pick the donor: the largest non-target allocation.
-    let donorJob: JobId | null = null;
-    let donorCount = 0;
-    const allocOrdered = [...settlement.jobAllocations.entries()].sort((a, b) => {
-      if (b[1] !== a[1]) return b[1] - a[1];
-      return String(a[0]) < String(b[0]) ? -1 : String(a[0]) > String(b[0]) ? 1 : 0;
-    });
-    for (const [j, n] of allocOrdered) {
-      if (j === targetJob) continue;
-      if (n <= 0) continue;
-      donorJob = j;
-      donorCount = n;
-      break;
-    }
-    if (donorJob === null || donorCount <= 0) {
-      recentLaborBlockedByJob.delete(settlement);
-      continue;
-    }
-
-    // Move at least 1 worker, at most floor(donorCount × rate) — but never
-    // more than the donor's whole bucket.
-    const moveExact = donorCount * REALLOCATION_RATE;
-    const move = Math.max(1, Math.floor(moveExact));
-    const actualMove = Math.min(move, donorCount);
-
-    settlement.jobAllocations.set(donorJob, donorCount - actualMove);
-    settlement.jobAllocations.set(
-      targetJob,
-      (settlement.jobAllocations.get(targetJob) ?? 0) + actualMove,
-    );
-
-    events.push({
-      type: 'workers_reallocated',
-      settlement: settlement.id,
-      fromJob: donorJob,
-      toJob: targetJob,
-      count: actualMove,
-    });
 
     // Reset the rolling counter for next month's window.
     recentLaborBlockedByJob.delete(settlement);
@@ -3358,6 +4016,9 @@ const caravanHasMarketCargo = (c: Caravan): boolean => {
   return false;
 };
 
+const MERCHANT_CARAVAN_HOME_OPERATING_RESERVE_COIN = 1_000;
+const MERCHANT_CARAVAN_HOME_REMITTANCE_RATE = 0.5;
+
 interface LocalBuyerQuote {
   readonly settlement: Settlement;
   readonly actor: Actor;
@@ -3381,6 +4042,39 @@ const localSellerQuotes = (
     const price = settlement.market.lastClearingPrice.get(resource);
     if (price === undefined || !Number.isFinite(price) || price <= 0) continue;
     for (const ownerId of settlement.stockpileOwners) {
+      const actor = world.actors.get(ownerId);
+      if (actor === undefined) continue;
+      const stock = actor.stockpile.get(resource) ?? 0;
+      if (stock <= 0) continue;
+      quotes.push({ settlement, actor, price, stock });
+    }
+  }
+  quotes.sort((a, b) => {
+    if (a.price !== b.price) return a.price - b.price;
+    if (b.stock !== a.stock) return b.stock - a.stock;
+    return String(a.actor.id).localeCompare(String(b.actor.id));
+  });
+  return quotes;
+};
+
+const localRationSellerQuotes = (
+  world: WorldState,
+  settlements: readonly Settlement[],
+  resource: ResourceId,
+  buyerOwnerActor: ActorId,
+): LocalSellerQuote[] => {
+  const quotes: LocalSellerQuote[] = [];
+  const seen = new Set<string>();
+  for (const settlement of settlements) {
+    const price = fallbackRationUnitPrice(settlement, resource);
+    if (!Number.isFinite(price) || price <= 0) continue;
+    const ownerIds = new Set<ActorId>(settlement.stockpileOwners);
+    const buyerOwner = world.actors.get(buyerOwnerActor);
+    if (buyerOwner?.homeSettlement === settlement.id) ownerIds.add(buyerOwnerActor);
+    for (const ownerId of ownerIds) {
+      const key = `${String(settlement.id)}|${String(ownerId)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       const actor = world.actors.get(ownerId);
       if (actor === undefined) continue;
       const stock = actor.stockpile.get(resource) ?? 0;
@@ -3543,7 +4237,12 @@ const buyCaravanRationsAtLocalMarkets = (
     const resource = resourceId(resourceKey);
     const weightKgPerUnit = getResource(resource).weightKgPerUnit;
     if (weightKgPerUnit <= 0) continue;
-    for (const seller of localSellerQuotes(world, settlements, resource)) {
+    for (const seller of localRationSellerQuotes(
+      world,
+      settlements,
+      resource,
+      caravan.ownerActor,
+    )) {
       quotes.push({
         resource,
         seller,
@@ -3592,6 +4291,92 @@ const buyCaravanRationsAtLocalMarkets = (
   return boughtKg;
 };
 
+const estimateLocalRationPurchaseKg = (
+  world: WorldState,
+  caravan: Caravan,
+  settlements: readonly Settlement[],
+  treasuryBudget: number,
+): number => {
+  const quotes: Array<{
+    readonly resource: ResourceId;
+    readonly seller: LocalSellerQuote;
+    readonly weightKgPerUnit: number;
+    readonly pricePerKg: number;
+  }> = [];
+  for (const resourceKey of CARAVAN_RATION_RESOURCES) {
+    const resource = resourceId(resourceKey);
+    const weightKgPerUnit = getResource(resource).weightKgPerUnit;
+    if (weightKgPerUnit <= 0) continue;
+    for (const seller of localRationSellerQuotes(
+      world,
+      settlements,
+      resource,
+      caravan.ownerActor,
+    )) {
+      quotes.push({
+        resource,
+        seller,
+        weightKgPerUnit,
+        pricePerKg: seller.price / weightKgPerUnit,
+      });
+    }
+  }
+  quotes.sort((a, b) => {
+    if (a.pricePerKg !== b.pricePerKg) return a.pricePerKg - b.pricePerKg;
+    return String(a.resource).localeCompare(String(b.resource));
+  });
+
+  let purchasableKg = 0;
+  let remainingCapacityKg = Math.max(0, totalCarryKg(caravan) - totalCargoWeightKg(caravan));
+  let remainingTreasury = Math.max(0, treasuryBudget);
+  for (const quote of quotes) {
+    if (remainingCapacityKg <= 1e-9) break;
+    const sameOwner = quote.seller.actor.id === caravan.ownerActor;
+    const maxByCapacity = remainingCapacityKg / quote.weightKgPerUnit;
+    const maxByTreasury = sameOwner ? quote.seller.stock : remainingTreasury / quote.seller.price;
+    const qty = Math.min(quote.seller.stock, maxByCapacity, maxByTreasury);
+    if (qty <= 1e-9) continue;
+    const kg = qty * quote.weightKgPerUnit;
+    purchasableKg += kg;
+    remainingCapacityKg -= kg;
+    if (!sameOwner) remainingTreasury -= qty * quote.seller.price;
+  }
+  return purchasableKg;
+};
+
+const remitStandingCaravanProfitAtHome = (
+  world: WorldState,
+  caravan: Caravan,
+  settlements: readonly Settlement[],
+  events: TickEvent[],
+): number => {
+  if (!isStandingMerchantCaravan(caravan)) return 0;
+  const owner = world.actors.get(caravan.ownerActor);
+  if (owner === undefined || owner.homeSettlement === undefined) return 0;
+  const home = settlements.find((settlement) => settlement.id === owner.homeSettlement);
+  if (home === undefined) return 0;
+
+  const reserveCoin = Math.max(
+    MERCHANT_CARAVAN_HOME_OPERATING_RESERVE_COIN,
+    caravanMissingRationReserveKg(caravan),
+  );
+  const surplus = caravan.treasury - reserveCoin;
+  if (surplus <= 1e-9) return 0;
+
+  const coin = surplus * MERCHANT_CARAVAN_HOME_REMITTANCE_RATE;
+  if (coin <= 1e-9) return 0;
+  caravan.treasury -= coin;
+  owner.treasury += coin;
+  events.push({
+    type: 'caravan_profit_remitted',
+    caravan: caravan.id,
+    ownerActor: owner.id,
+    settlement: home.id,
+    coin,
+  });
+  return coin;
+};
+
 const increaseCaravanCargo = (caravan: Caravan, resource: ResourceId, qty: Quantity): void => {
   if (qty <= 0) return;
   caravan.cargo.set(resource, (caravan.cargo.get(resource) ?? 0) + qty);
@@ -3604,6 +4389,7 @@ const completeOffMapExportIfArrived = (
   edgeHexKeys: ReadonlySet<string>,
   events: TickEvent[],
 ): boolean => {
+  if (String(caravan.id).startsWith('tax-')) return false;
   if (caravan.destination === null) return false;
   if (!hexEquals(caravan.position, caravan.destination)) return false;
   if (!edgeHexKeys.has(hexKey(caravan.position))) return false;
@@ -3632,6 +4418,297 @@ const completeOffMapExportIfArrived = (
   return false;
 };
 
+const completeOffMapImportReturnIfArrived = (
+  world: WorldState,
+  caravanId: CaravanId,
+  caravan: Caravan,
+  edgeHexKeys: ReadonlySet<string>,
+): boolean => {
+  if (!isEdgeHubImportCaravan(caravan)) return false;
+  if (caravan.destination === null) return false;
+  const homeGate = edgeHubHomeGateForCaravan(caravan, edgeHexKeys);
+  if (homeGate === null) return false;
+  if (!hexEquals(caravan.position, homeGate) || !hexEquals(caravan.destination, homeGate)) {
+    return false;
+  }
+  world.caravans.delete(caravanId);
+  return true;
+};
+
+const completeTaxShipmentIfArrived = (
+  world: WorldState,
+  caravanId: CaravanId,
+  caravan: Caravan,
+  settlements: readonly Settlement[],
+): boolean => {
+  if (!String(caravan.id).startsWith('tax-')) return false;
+  if (caravan.destination === null) return false;
+  if (!hexEquals(caravan.position, caravan.destination)) return false;
+
+  const owner = world.actors.get(caravan.ownerActor);
+  if (owner !== undefined) {
+    for (const [resource, qty] of caravan.cargo) {
+      increaseStockpile(owner, resource, qty);
+      const settlement = settlements[0];
+      if (settlement !== undefined) recordInflow(settlement, resource, qty);
+    }
+  }
+  world.caravans.delete(caravanId);
+  return true;
+};
+
+const importConsignmentFactor = (
+  world: WorldState,
+  settlements: readonly Settlement[],
+  caravan: Caravan,
+): { readonly settlement: Settlement; readonly actor: Actor } | null => {
+  let fallback: { settlement: Settlement; actor: Actor } | null = null;
+  for (const settlement of settlements) {
+    for (const ownerId of settlement.stockpileOwners) {
+      if (ownerId === caravan.ownerActor) continue;
+      const actor = world.actors.get(ownerId);
+      if (actor === undefined) continue;
+      const candidate = { settlement, actor };
+      if (actor.kind === 'city_corporation') return candidate;
+      if (fallback === null || actor.kind === 'patrician_family') fallback = candidate;
+    }
+  }
+  return fallback;
+};
+
+const consignOffMapImportCargo = (
+  world: WorldState,
+  caravan: Caravan,
+  settlements: readonly Settlement[],
+): number => {
+  const factor = importConsignmentFactor(world, settlements, caravan);
+  if (factor === null) return 0;
+
+  let consigned = 0;
+  for (const [resource, currentQty] of Array.from(caravan.cargo.entries())) {
+    const qty = caravanSellableQuantity(caravan, resource, currentQty);
+    if (qty <= 1e-9) continue;
+    const remaining = currentQty - qty;
+    if (remaining > 1e-9) caravan.cargo.set(resource, remaining);
+    else caravan.cargo.delete(resource);
+    increaseStockpile(factor.actor, resource, qty);
+    recordInflow(factor.settlement, resource, qty);
+    consigned += qty;
+  }
+  return consigned;
+};
+
+// --- Merchant caravan assembly --------------------------------------------
+
+const MERCHANT_CARAVAN_ASSEMBLY_INTERVAL_DAYS = 7;
+const MERCHANT_CARAVAN_MAX_DISPATCHED_PER_INTERVAL = 2;
+const MERCHANT_CARAVAN_TARGET_PER_SETTLEMENT = 0.25;
+const MERCHANT_CARAVAN_TARGET_MIN = 4;
+const MERCHANT_CARAVAN_TARGET_MAX = 80;
+const MERCHANT_CARAVAN_OWNER_CAP = 3;
+const MERCHANT_CARAVAN_MIN_OPERATING_TREASURY = 100;
+const MERCHANT_CARAVAN_EQUINES_RESOURCE = resourceId('livestock.equines');
+const MERCHANT_CARAVAN_CART_RESOURCE = resourceId('goods.cart');
+const EQUINE_ANIMALS_PER_HERD_UNIT = 6;
+const MERCHANT_CARAVAN_MAX_LIGHT_CARTS = 1;
+const MERCHANT_CARAVAN_MIN_STARTER_RATION_DAYS = 7;
+const MERCHANT_CARAVAN_MIN_PACK_ANIMALS = 6;
+const MERCHANT_CARAVAN_PREFERRED_EQUINE_UNITS = 2;
+
+const isStandingMerchantCaravan = (caravan: Caravan): boolean => {
+  const id = String(caravan.id);
+  return (
+    !id.startsWith(EDGE_HUB_IMPORT_CARAVAN_PREFIX) &&
+    !id.startsWith(EDGE_HUB_EXPORT_CARAVAN_PREFIX) &&
+    !id.startsWith('tax-')
+  );
+};
+
+const merchantCaravanTarget = (world: WorldState): number => {
+  const raw = Math.floor(world.settlements.size * MERCHANT_CARAVAN_TARGET_PER_SETTLEMENT);
+  return Math.max(MERCHANT_CARAVAN_TARGET_MIN, Math.min(MERCHANT_CARAVAN_TARGET_MAX, raw));
+};
+
+const standingMerchantCaravanCountByOwner = (world: WorldState): Map<ActorId, number> => {
+  const out = new Map<ActorId, number>();
+  for (const caravan of world.caravans.values()) {
+    if (!isStandingMerchantCaravan(caravan)) continue;
+    out.set(caravan.ownerActor, (out.get(caravan.ownerActor) ?? 0) + 1);
+  }
+  return out;
+};
+
+const eligibleMerchantCaravanOwners = (
+  world: WorldState,
+  activeByOwner: ReadonlyMap<ActorId, number>,
+): { readonly actor: Actor; readonly settlement: Settlement }[] => {
+  const out: { actor: Actor; settlement: Settlement }[] = [];
+  for (const actor of world.actors.values()) {
+    if (
+      actor.kind !== 'patrician_family' &&
+      actor.kind !== 'caravan_owner' &&
+      actor.kind !== 'off_map_house'
+    ) {
+      continue;
+    }
+    if ((activeByOwner.get(actor.id) ?? 0) >= MERCHANT_CARAVAN_OWNER_CAP) continue;
+    if (actor.treasury < MERCHANT_CARAVAN_MIN_OPERATING_TREASURY) continue;
+    if (actor.homeSettlement === undefined) continue;
+    const settlement = world.settlements.get(actor.homeSettlement);
+    if (settlement === undefined) continue;
+    out.push({ actor, settlement });
+  }
+  out.sort((a, b) => {
+    if (b.actor.treasury !== a.actor.treasury) return b.actor.treasury - a.actor.treasury;
+    return String(a.actor.id).localeCompare(String(b.actor.id));
+  });
+  return out;
+};
+
+const buyOwnerAssemblyStockAtLocalMarket = (
+  world: WorldState,
+  buyer: Actor,
+  settlement: Settlement,
+  resource: ResourceId,
+  targetQty: number,
+): number => {
+  let remaining = Math.max(0, targetQty - (buyer.stockpile.get(resource) ?? 0));
+  if (remaining <= 1e-9) return 0;
+  let bought = 0;
+  for (const seller of localSellerQuotes(world, [settlement], resource)) {
+    if (remaining <= 1e-9) break;
+    if (seller.actor.id === buyer.id) continue;
+    const spendable = Math.max(0, buyer.treasury - MERCHANT_CARAVAN_MIN_OPERATING_TREASURY);
+    if (spendable <= 1e-9) break;
+    const maxByTreasury = spendable / seller.price;
+    const qty = Math.min(remaining, seller.stock, maxByTreasury);
+    if (qty <= 1e-9) continue;
+    const coin = qty * seller.price;
+    decreaseStockpile(seller.actor, resource, qty);
+    increaseStockpile(buyer, resource, qty);
+    buyer.treasury -= coin;
+    seller.actor.treasury += coin;
+    remaining -= qty;
+    bought += qty;
+  }
+  return bought;
+};
+
+const createReplacementMerchantCaravan = (
+  world: WorldState,
+  today: Day,
+  owner: Actor,
+  origin: Settlement,
+  rng: Rng,
+  index: number,
+  events: TickEvent[],
+): Caravan | null => {
+  buyOwnerAssemblyStockAtLocalMarket(
+    world,
+    owner,
+    origin,
+    MERCHANT_CARAVAN_EQUINES_RESOURCE,
+    MERCHANT_CARAVAN_PREFERRED_EQUINE_UNITS,
+  );
+  const availablePackAnimals = Math.floor(
+    (owner.stockpile.get(MERCHANT_CARAVAN_EQUINES_RESOURCE) ?? 0) * EQUINE_ANIMALS_PER_HERD_UNIT,
+  );
+  if (availablePackAnimals < MERCHANT_CARAVAN_MIN_PACK_ANIMALS) return null;
+  let muleCount = rng.int(8, 14);
+  let donkeyCount = rng.int(0, 3);
+  while (muleCount + donkeyCount > availablePackAnimals) {
+    if (donkeyCount > 0) donkeyCount -= 1;
+    else muleCount -= 1;
+  }
+  if (muleCount < MERCHANT_CARAVAN_MIN_PACK_ANIMALS) return null;
+  const equineUnitsNeeded = (muleCount + donkeyCount) / EQUINE_ANIMALS_PER_HERD_UNIT;
+  const lightCartCount = Math.min(
+    MERCHANT_CARAVAN_MAX_LIGHT_CARTS,
+    Math.floor(owner.stockpile.get(MERCHANT_CARAVAN_CART_RESOURCE) ?? 0),
+  );
+  const operatingTreasury = Math.min(owner.treasury, rng.int(250, 750));
+  if (operatingTreasury < MERCHANT_CARAVAN_MIN_OPERATING_TREASURY) return null;
+  const tag = Math.floor(rng.next() * 1_000_000_000);
+  const caravan = createCaravan({
+    id: makeCaravanIdLocal(`merchant-${today}-${index}-${String(owner.id)}-${tag}`),
+    ownerActor: owner.id,
+    position: { q: origin.anchor.q, r: origin.anchor.r },
+    destination: { q: origin.anchor.q, r: origin.anchor.r },
+    crew: [
+      { kind: 'merchant', count: 1, weapons: 0.1, armor: 0.05 },
+      { kind: 'drover', count: rng.int(3, 5), weapons: 0.1, armor: 0.05 },
+      { kind: 'caravan_guard', count: rng.int(4, 6), weapons: 0.7, armor: 0.45 },
+    ],
+    animals: { mule: muleCount, donkey: donkeyCount },
+    vehicles:
+      lightCartCount > 0 ? { pack_saddle: 1, light_cart: lightCartCount } : { pack_saddle: 1 },
+    treasury: operatingTreasury,
+  });
+  if (!world.grid.has(caravan.position)) return null;
+  const minStarterRationKg = dailyCrewRationKg(caravan) * MERCHANT_CARAVAN_MIN_STARTER_RATION_DAYS;
+  if (
+    estimateLocalRationPurchaseKg(world, caravan, [origin], operatingTreasury) < minStarterRationKg
+  ) {
+    return null;
+  }
+  decreaseStockpile(owner, MERCHANT_CARAVAN_EQUINES_RESOURCE, equineUnitsNeeded);
+  if (lightCartCount > 0) {
+    decreaseStockpile(owner, MERCHANT_CARAVAN_CART_RESOURCE, lightCartCount);
+  }
+  owner.treasury -= operatingTreasury;
+  buyCaravanRationsAtLocalMarkets(world, caravan, [origin], events);
+  return caravan;
+};
+
+const merchantCaravanAssemblyPhase = (
+  world: WorldState,
+  rng: Rng,
+  today: Day,
+  events: TickEvent[],
+): void => {
+  if (today % MERCHANT_CARAVAN_ASSEMBLY_INTERVAL_DAYS !== 0) return;
+  const worldRoom = remainingWorldCaravanSlots(world);
+  if (worldRoom <= 0) return;
+  const activeByOwner = standingMerchantCaravanCountByOwner(world);
+  const active = Array.from(activeByOwner.values()).reduce((sum, n) => sum + n, 0);
+  const target = merchantCaravanTarget(world);
+  if (active >= target) return;
+
+  const eligible = rng.shuffle(eligibleMerchantCaravanOwners(world, activeByOwner));
+  if (eligible.length === 0) return;
+  const toDispatch = Math.min(
+    MERCHANT_CARAVAN_MAX_DISPATCHED_PER_INTERVAL,
+    target - active,
+    worldRoom,
+  );
+  let dispatched = 0;
+  for (let i = 0; i < eligible.length && dispatched < toDispatch; i++) {
+    const slot = eligible[i];
+    if (slot === undefined) continue;
+    const currentForOwner = activeByOwner.get(slot.actor.id) ?? 0;
+    if (currentForOwner >= MERCHANT_CARAVAN_OWNER_CAP) continue;
+    const caravan = createReplacementMerchantCaravan(
+      world,
+      today,
+      slot.actor,
+      slot.settlement,
+      rng.derive(`dispatch-${i}`),
+      dispatched,
+      events,
+    );
+    if (caravan === null) continue;
+    world.caravans.set(caravan.id, caravan);
+    activeByOwner.set(slot.actor.id, currentForOwner + 1);
+    dispatched += 1;
+    events.push({
+      type: 'merchant_caravan_dispatched',
+      caravan: caravan.id,
+      settlement: slot.settlement.id,
+      ownerActor: slot.actor.id,
+    });
+  }
+};
+
 const knownBanditDensityForCaravans = (world: WorldState): Map<string, number> => {
   const out = new Map<string, number>();
   if (world.banditCamps === undefined) return out;
@@ -3647,35 +4724,104 @@ const knownBanditDensityForCaravans = (world: WorldState): Map<string, number> =
   return out;
 };
 
+const LOW_RISK_SCOUT_WINDOW = 0.015;
+const LOW_RATION_RISK_PENALTY_HEXES = 24;
+const SCOUT_NEAR_DISTANCE_WINDOW_HEXES = 6;
+
+const fallbackScoutCandidate = (
+  from: Hex,
+  candidates: readonly {
+    readonly id: SettlementId;
+    readonly hex: Hex;
+    readonly tier: Settlement['tier'];
+  }[],
+  knownBanditDensity: ReadonlyMap<string, number>,
+  rationDays: number,
+  rng: Rng,
+):
+  | {
+      readonly id: SettlementId;
+      readonly hex: Hex;
+      readonly tier: Settlement['tier'];
+    }
+  | undefined => {
+  const scored = candidates
+    .filter((candidate) => !hexEquals(candidate.hex, from))
+    .map((candidate) => {
+      const distance = hexDistance(from, candidate.hex);
+      const risk =
+        knownBanditDensity.size === 0
+          ? 0
+          : expectedRisk(knownBanditDensity, approximatePath(from, candidate.hex));
+      return { candidate, distance, risk };
+    });
+  if (scored.length === 0) return undefined;
+
+  if (rationDays < 7) {
+    scored.sort((a, b) => {
+      const scoreA = a.distance + a.risk * LOW_RATION_RISK_PENALTY_HEXES;
+      const scoreB = b.distance + b.risk * LOW_RATION_RISK_PENALTY_HEXES;
+      if (scoreA !== scoreB) return scoreA - scoreB;
+      if (a.distance !== b.distance) return a.distance - b.distance;
+      if (a.risk !== b.risk) return a.risk - b.risk;
+      return String(a.candidate.id).localeCompare(String(b.candidate.id));
+    });
+    return scored[0]?.candidate;
+  }
+
+  let minRisk = Infinity;
+  for (const item of scored) minRisk = Math.min(minRisk, item.risk);
+  const lowRisk = scored.filter((item) => item.risk <= minRisk + LOW_RISK_SCOUT_WINDOW);
+  let nearest = Infinity;
+  for (const item of lowRisk) nearest = Math.min(nearest, item.distance);
+  const reasonable = lowRisk
+    .filter((item) => item.distance <= nearest + SCOUT_NEAR_DISTANCE_WINDOW_HEXES)
+    .sort((a, b) => {
+      if (a.distance !== b.distance) return a.distance - b.distance;
+      if (a.risk !== b.risk) return a.risk - b.risk;
+      return String(a.candidate.id).localeCompare(String(b.candidate.id));
+    });
+  return rng.pick(reasonable).candidate;
+};
+
+const routeOffMapImportHomeIfDelivered = (
+  world: WorldState,
+  caravan: Caravan,
+  settlements: readonly Settlement[],
+  edgeHexKeys: ReadonlySet<string>,
+): boolean => {
+  if (!isEdgeHubImportCaravan(caravan)) return false;
+  const homeGate = edgeHubHomeGateForCaravan(caravan, edgeHexKeys);
+  if (homeGate === null) return false;
+
+  // If local buyers could not absorb the cargo with immediate cash, consign
+  // the remainder to a local factor. The goods are still physically present
+  // in a city stockpile, but the off-map convoy does not become permanent
+  // provincial rolling storage.
+  consignOffMapImportCargo(world, caravan, settlements);
+
+  if (caravanHasMarketCargo(caravan)) {
+    caravan.destination = { q: caravan.position.q, r: caravan.position.r };
+    return true;
+  }
+
+  caravan.destination = { q: homeGate.q, r: homeGate.r };
+  caravan.goalStack = [{ type: 'return_home', home: { q: homeGate.q, r: homeGate.r } }];
+  return true;
+};
+
 const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[]): void => {
   const settlementIndex = settlementAnchorIndexForWorld(world);
   const candidates = settlementIndex.candidates;
   const edgeHexKeys = new Set(computeEdgeHexes(world.grid).map(hexKey));
   const knownBanditDensity = knownBanditDensityForCaravans(world);
 
-  const nearestDifferentCandidate = (from: Hex): (typeof candidates)[number] | undefined => {
-    let best: (typeof candidates)[number] | undefined;
-    let bestDistance = Number.POSITIVE_INFINITY;
-    for (const candidate of candidates) {
-      if (hexEquals(candidate.hex, from)) continue;
-      const distance = hexDistance(from, candidate.hex);
-      if (
-        distance < bestDistance ||
-        (distance === bestDistance &&
-          (best === undefined || String(candidate.id).localeCompare(String(best.id)) < 0))
-      ) {
-        best = candidate;
-        bestDistance = distance;
-      }
-    }
-    return best;
-  };
-
   // Build a city-anchor lookup once per phase for goal-completion checks.
   const settlementAnchorByCity = new Map<SettlementId, Hex>();
   for (const s of world.settlements.values()) settlementAnchorByCity.set(s.id, s.anchor);
 
   for (const [cId, c] of Array.from(world.caravans.entries())) {
+    if (completeOffMapImportReturnIfArrived(world, cId, c, edgeHexKeys)) continue;
     if (completeOffMapExportIfArrived(world, cId, c, edgeHexKeys, events)) continue;
 
     // Per docs/15 §C18: if this caravan has a goalStack, advance it
@@ -3700,13 +4846,17 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
     if (c.destination === null) continue;
     if (!hexEquals(c.position, c.destination)) continue; // not yet arrived
 
+    const localBucket = settlementIndex.byAnchorHex.get(hexKey(c.position));
+    if (completeTaxShipmentIfArrived(world, cId, c, localBucket === undefined ? [] : localBucket)) {
+      continue;
+    }
+
     // 1. Record observed local prices into caravan's price book. The
     // priceBook key is the hex (the merchant remembers "this is what
     // bread cost in town X"); when multiple settlements share a hex we
     // average their clearing prices for each resource so the order in
     // which settlements were inserted into world.settlements does not
     // change what the caravan remembers.
-    const localBucket = settlementIndex.byAnchorHex.get(hexKey(c.position));
     if (localBucket !== undefined && localBucket.length > 0) {
       const sumByResource = new Map<ResourceId, { sum: number; count: number }>();
       for (const local of localBucket) {
@@ -3731,6 +4881,8 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
       }
       sellCaravanCargoAtLocalMarkets(world, c, localBucket, events);
       buyCaravanRationsAtLocalMarkets(world, c, localBucket, events);
+      if (routeOffMapImportHomeIfDelivered(world, c, localBucket, edgeHexKeys)) continue;
+      remitStandingCaravanProfitAtHome(world, c, localBucket, events);
     }
 
     // Per docs/15 §C17: deposit observations into the local guild's
@@ -3775,23 +4927,28 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
       const rationDays = caravanRationDays(c);
       if (boughtUnits <= 1e-9 && !caravanHasMarketCargo(c)) {
         const rngHere = rng.derive(`${String(cId)}-fallback`);
-        const nearest = rationDays < 7 ? nearestDifferentCandidate(c.position) : undefined;
-        if (nearest !== undefined) {
-          c.destination = { q: nearest.hex.q, r: nearest.hex.r };
-        } else {
-          const filtered = candidates.filter((s) => !hexEquals(s.hex, c.position));
-          if (filtered.length <= 0) continue;
-          const pick = rngHere.pick(filtered);
-          c.destination = { q: pick.hex.q, r: pick.hex.r };
-        }
+        const fallback = fallbackScoutCandidate(
+          c.position,
+          candidates,
+          knownBanditDensity,
+          rationDays,
+          rngHere,
+        );
+        if (fallback === undefined) continue;
+        c.destination = { q: fallback.hex.q, r: fallback.hex.r };
         continue;
       }
       if (rationDays + 1e-9 < plan.estimatedDays) {
-        const nearest = nearestDifferentCandidate(c.position);
-        if (nearest !== undefined) {
-          c.destination = { q: nearest.hex.q, r: nearest.hex.r };
-          continue;
-        }
+        const fallback = fallbackScoutCandidate(
+          c.position,
+          candidates,
+          knownBanditDensity,
+          0,
+          rng.derive(`${String(cId)}-ration-fallback`),
+        );
+        if (fallback === undefined) continue;
+        c.destination = { q: fallback.hex.q, r: fallback.hex.r };
+        continue;
       }
       // Set new destination. Cargo isn't restocked here (that's a market
       // operation handled above); the planner's expected profit reflects
@@ -3805,16 +4962,15 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
       // what unspecialized merchants did historically: travel to gossip
       // and find out where prices are good.
       const rationDays = caravanRationDays(c);
-      const nearest = rationDays < 7 ? nearestDifferentCandidate(c.position) : undefined;
-      if (nearest !== undefined) {
-        c.destination = { q: nearest.hex.q, r: nearest.hex.r };
-      } else {
-        const rngHere = rng.derive(`${String(cId)}-fallback`);
-        const filtered = candidates.filter((s) => !hexEquals(s.hex, c.position));
-        if (filtered.length <= 0) continue;
-        const pick = rngHere.pick(filtered);
-        c.destination = { q: pick.hex.q, r: pick.hex.r };
-      }
+      const fallback = fallbackScoutCandidate(
+        c.position,
+        candidates,
+        knownBanditDensity,
+        rationDays,
+        rng.derive(`${String(cId)}-fallback`),
+      );
+      if (fallback === undefined) continue;
+      c.destination = { q: fallback.hex.q, r: fallback.hex.r };
     }
   }
 };
@@ -3836,22 +4992,19 @@ const lastSuccessfulRaidDay: Map<BanditCampId, Day> = new Map();
 const recruitDriveMultiplier: Map<BanditCampId, number> = new Map();
 
 const RECRUIT_RANGE_HEXES = 50;
-// Recruitment rates: tuned ~5× the v1 starting numbers because the original
-// constants left typical villages contributing < 0.01 recruits/day each
-// (i.e. one new bandit every ~100+ village-days), which kept camps tiny and
-// the bandit population invisible in the viewer over months of real
-// playtime. The new rates give a normal 200-adult village ~1 recruit every
-// 30–50 days; a famine-stricken (`isPoor`) village contributes one every
-// 3–5 days. Still slow at the per-day scale but visible over a season.
-const BASE_RECRUIT_FRAC_PER_DAY = 0.0025;
-const POOR_VILLAGE_RECRUIT_BOOST = 4;
+// Recruitment is a low background trickle in normal years and a visible
+// pressure valve during food stress. Earlier viewer-tuned values pushed
+// every seeded camp to insurgency scale within two years, which converted
+// trade into a guaranteed kill-zone instead of an economic risk premium.
+const BASE_RECRUIT_FRAC_PER_DAY = 0.0005;
+const POOR_VILLAGE_RECRUIT_BOOST = 3;
 /**
- * Per-camp soft cap. Beyond this size a camp is no longer recruiting (it's
- * conspicuous, food logistics break down, and historically warlord bands
- * fragmented at this scale). Recruits go to the next-nearest camp under
- * the cap, or the recruitment skips for that day.
+ * Per-camp soft cap. Beyond this size a camp is too conspicuous and
+ * logistically brittle to keep absorbing opportunistic recruits. True
+ * 500+ insurgency scale should come from future war/demobilization events,
+ * not the peaceful baseline recruitment loop.
  */
-const CAMP_RECRUIT_CAP = 500;
+const CAMP_RECRUIT_CAP = 120;
 
 const banditPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[]): void => {
   // Don't early-exit when banditCamps is empty: recruitFromIdle below is
@@ -4431,12 +5584,11 @@ const recruitFromIdle = (world: WorldState, rng: Rng, _today: Day, events: TickE
     if (settlement.population.total() === 0) continue;
     const adults = adultPopulation(settlement);
     if (adults <= 0) continue;
-    // Pressure pool ≈ adults × jobless fraction. Default 8% of adults are
-    // "idle-ish" enough to be recruited; 25% in food-shortfall villages.
-    // Bumped from 5%/20% in tandem with BASE_RECRUIT_FRAC_PER_DAY so the
-    // bandit population is observable in the viewer.
+    // Pressure pool ≈ adults × jobless fraction. Normal settlements leak only
+    // a few socially marginal adults toward banditry; food stress widens that
+    // pool sharply without making every village a bandit factory.
     const isPoor = (faminePressure.get(settlement)?.consecutiveShortageDays ?? 0) >= 1;
-    const pressureFraction = isPoor ? 0.25 : 0.08;
+    const pressureFraction = isPoor ? 0.15 : 0.03;
     const pressurePool = adults * pressureFraction;
     if (pressurePool <= 0) continue;
 
@@ -4456,7 +5608,7 @@ const recruitFromIdle = (world: WorldState, rng: Rng, _today: Day, events: TickE
     // vs founding". Without this, once the seeded camps are eliminated
     // the bandit count stays at zero forever (unrealistic).
     if (nearest === null && pressurePool >= 5) {
-      const foundProb = isPoor ? 0.005 : 0.001; // poor villages found camps faster
+      const foundProb = isPoor ? 0.002 : 0.0002; // poor villages found camps faster
       const noise2 = rng.derive(`found-${String(settlement.id)}-roll`).next();
       if (noise2 < foundProb) {
         const founded = foundNewCamp(
@@ -5259,13 +6411,13 @@ const investmentPhase = (world: WorldState, _today: Day, events: TickEvent[]): v
     const owner = pickInvestor(world, settlement);
     if (owner === undefined) continue;
 
-    const candidates = scoreInvestmentCandidates(settlement, owner);
+    const candidates = scoreInvestmentCandidates(world, settlement, owner);
     if (candidates.length === 0) continue;
     const best = candidates[0] as ScoredInvestment;
     if (best.profitPerDay <= 0) continue;
     if (best.profitPerDay / Math.max(1, best.coinCost) < INVESTMENT_ROI_THRESHOLD) continue;
 
-    const placement = pickBuildingHex(world, settlement, best.buildingId);
+    const placement = pickBuildingHex(world, settlement, best.buildingId, best.preferredDeposit);
     if (placement === null) continue;
 
     const def = getBuilding(best.buildingId);
@@ -5314,6 +6466,7 @@ interface ScoredInvestment {
   readonly buildingId: BuildingId;
   readonly profitPerDay: number;
   readonly coinCost: number;
+  readonly preferredDeposit?: ResourceId;
 }
 
 /** ROI threshold (profit per coin per day). 0.005 ≈ ~180% APR — a
@@ -5342,15 +6495,25 @@ const pickInvestor = (world: WorldState, settlement: Settlement): Actor | undefi
   return best;
 };
 
-const scoreInvestmentCandidates = (settlement: Settlement, owner: Actor): ScoredInvestment[] => {
+const scoreInvestmentCandidates = (
+  world: WorldState,
+  settlement: Settlement,
+  owner: Actor,
+): ScoredInvestment[] => {
   const out: ScoredInvestment[] = [];
   // Local existing buildings by type — for "saturation" check.
   const existingByType = new Map<BuildingId, number>();
   for (const b of settlement.buildings) {
     existingByType.set(b.buildingId, (existingByType.get(b.buildingId) ?? 0) + 1);
   }
+  for (const b of settlement.pendingBuildings) {
+    existingByType.set(b.buildingId, (existingByType.get(b.buildingId) ?? 0) + 1);
+  }
 
   for (const recipe of allRecipes()) {
+    const preferredDeposit = investmentResourceGate(world, settlement, owner, recipe);
+    if (preferredDeposit === null) continue;
+
     // Compute revenue at last clearing prices.
     let revenue = 0;
     let revenueValid = true;
@@ -5398,7 +6561,12 @@ const scoreInvestmentCandidates = (settlement: Settlement, owner: Actor): Scored
     const existingCount = existingByType.get(recipe.building) ?? 0;
     if (existingCount >= MAX_BUILDINGS_OF_TYPE) continue;
 
-    out.push({ buildingId: recipe.building, profitPerDay, coinCost });
+    out.push({
+      buildingId: recipe.building,
+      profitPerDay,
+      coinCost,
+      ...(preferredDeposit !== undefined ? { preferredDeposit } : {}),
+    });
   }
 
   // Sort by profit / coinCost (descending).
@@ -5409,6 +6577,107 @@ const scoreInvestmentCandidates = (settlement: Settlement, owner: Actor): Scored
 };
 
 const MAX_BUILDINGS_OF_TYPE = 6;
+
+const ORE_RESOURCE_SUFFIX = '_ore';
+
+const recipeOreInputs = (recipe: RecipeDef): readonly ResourceId[] =>
+  Array.from(recipe.inputs.keys()).filter((resource) => {
+    return (
+      getResource(resource).category === 'mineral' && String(resource).endsWith(ORE_RESOURCE_SUFFIX)
+    );
+  });
+
+const settlementBuildHexes = (settlement: Settlement): readonly Hex[] => [
+  ...settlement.catchmentHexes,
+  ...settlement.urbanHexes,
+];
+
+const occupiedHexesForBuilding = (settlement: Settlement, buildingId: BuildingId): Set<string> => {
+  const occupied = new Set<string>();
+  for (const b of settlement.buildings) {
+    if (b.buildingId === buildingId) occupied.add(hexKey(b.hex));
+  }
+  for (const b of settlement.pendingBuildings) {
+    if (b.buildingId === buildingId) occupied.add(hexKey(b.hex));
+  }
+  return occupied;
+};
+
+const findFreeDepositHexForResource = (
+  world: WorldState,
+  settlement: Settlement,
+  resource: ResourceId,
+): Hex | null => {
+  const occupied = occupiedHexesForBuilding(settlement, MINE_BUILDING_ID);
+  for (const h of settlementBuildHexes(settlement)) {
+    if (occupied.has(hexKey(h))) continue;
+    const tile = world.grid.get(h);
+    const deposit = tile?.deposit;
+    if (deposit === undefined || deposit.remaining <= 0 || deposit.resource !== resource) continue;
+    return h;
+  }
+  return null;
+};
+
+const settlementHasDepositBackedMine = (
+  world: WorldState,
+  settlement: Settlement,
+  resource: ResourceId,
+): boolean => {
+  for (const b of settlement.buildings) {
+    if (b.buildingId !== MINE_BUILDING_ID) continue;
+    const deposit = world.grid.get(b.hex)?.deposit;
+    if (deposit !== undefined && deposit.remaining > 0 && deposit.resource === resource)
+      return true;
+  }
+  for (const b of settlement.pendingBuildings) {
+    if (b.buildingId !== MINE_BUILDING_ID) continue;
+    const deposit = world.grid.get(b.hex)?.deposit;
+    if (deposit !== undefined && deposit.remaining > 0 && deposit.resource === resource)
+      return true;
+  }
+  return false;
+};
+
+const localStockForResource = (
+  world: WorldState,
+  settlement: Settlement,
+  resource: ResourceId,
+): number => {
+  let total = 0;
+  for (const ownerId of settlement.stockpileOwners) {
+    total += world.actors.get(ownerId)?.stockpile.get(resource) ?? 0;
+  }
+  return total;
+};
+
+/**
+ * Investment is capital allocation, not magic spawning. Mines require a
+ * matching local deposit; ore refineries require either local ore stock or a
+ * deposit-backed mine already present/under construction.
+ */
+const investmentResourceGate = (
+  world: WorldState,
+  settlement: Settlement,
+  owner: Actor,
+  recipe: RecipeDef,
+): ResourceId | null | undefined => {
+  const minedResource = minedResourceForRecipe(recipe);
+  if (minedResource !== undefined) {
+    return findFreeDepositHexForResource(world, settlement, minedResource) === null
+      ? null
+      : minedResource;
+  }
+
+  for (const ore of recipeOreInputs(recipe)) {
+    const needed = recipe.inputs.get(ore) ?? 0;
+    const ownerHasOre = (owner.stockpile.get(ore) ?? 0) >= needed;
+    const localHasOre = localStockForResource(world, settlement, ore) >= needed;
+    const mineCanFeedOre = settlementHasDepositBackedMine(world, settlement, ore);
+    if (!ownerHasOre && !localHasOre && !mineCanFeedOre) return null;
+  }
+  return undefined;
+};
 
 /**
  * Worker-days required to construct a building. Heuristic by building cost:
@@ -5480,42 +6749,61 @@ const isPassableForBuilding = (world: WorldState, hex: Hex): boolean => {
   return true;
 };
 
+const isBuildableForBuilding = (
+  world: WorldState,
+  hex: Hex,
+  buildingId: BuildingId,
+  preferredDeposit?: ResourceId,
+): boolean => {
+  const t = world.grid.get(hex);
+  if (t === undefined) return false;
+  if (buildingId === MINE_BUILDING_ID) {
+    const deposit = t.deposit;
+    return (
+      deposit !== undefined &&
+      deposit.remaining > 0 &&
+      (preferredDeposit === undefined || deposit.resource === preferredDeposit) &&
+      t.terrain !== 'lake'
+    );
+  }
+  return isPassableForBuilding(world, hex);
+};
+
 const pickBuildingHex = (
   world: WorldState,
   settlement: Settlement,
   buildingId: BuildingId,
+  preferredDeposit?: ResourceId,
 ): Hex | null => {
-  const occupied = new Set<string>();
-  for (const b of settlement.buildings) {
-    if (b.buildingId === buildingId) {
-      occupied.add(`${b.hex.q},${b.hex.r}`);
-    }
-  }
+  const occupied = occupiedHexesForBuilding(settlement, buildingId);
   // Per the user's note: workshops (mill, smithy, kiln, etc.) belong inside
   // the village/city. Land-use buildings (farm, mine, forester) need
   // catchment land. Filter both for passable terrain.
   const isLandUse = LAND_USE_BUILDINGS.has(String(buildingId));
+  if (buildingId === MINE_BUILDING_ID && preferredDeposit !== undefined) {
+    return findFreeDepositHexForResource(world, settlement, preferredDeposit);
+  }
   if (isLandUse) {
     for (const c of settlement.catchmentHexes) {
-      if (occupied.has(`${c.q},${c.r}`)) continue;
-      if (!isPassableForBuilding(world, c)) continue;
+      if (occupied.has(hexKey(c))) continue;
+      if (!isBuildableForBuilding(world, c, buildingId, preferredDeposit)) continue;
       return c;
     }
     // Fallback: urban hex (rare — only when catchment is fully claimed).
     for (const u of settlement.urbanHexes) {
-      if (occupied.has(`${u.q},${u.r}`)) continue;
-      if (!isPassableForBuilding(world, u)) continue;
+      if (occupied.has(hexKey(u))) continue;
+      if (!isBuildableForBuilding(world, u, buildingId, preferredDeposit)) continue;
       return u;
     }
   } else {
     for (const u of settlement.urbanHexes) {
-      if (occupied.has(`${u.q},${u.r}`)) continue;
-      if (!isPassableForBuilding(world, u)) continue;
+      if (occupied.has(hexKey(u))) continue;
+      if (!isBuildableForBuilding(world, u, buildingId, preferredDeposit)) continue;
       return u;
     }
     for (const c of settlement.catchmentHexes) {
-      if (occupied.has(`${c.q},${c.r}`)) continue;
-      if (!isPassableForBuilding(world, c)) continue;
+      if (occupied.has(hexKey(c))) continue;
+      if (!isBuildableForBuilding(world, c, buildingId, preferredDeposit)) continue;
       return c;
     }
   }
