@@ -96,8 +96,10 @@ import {
   recordClearingPrice,
   recordInflow,
   recordOutflow,
+  removeBuilding,
   shouldRecomputeCatchment,
   type PendingBuilding,
+  type PendingDemolition,
   type Settlement,
 } from './world/settlement.js';
 import { dayOfYearToSeason, isPassable, type Season } from './world/terrain.js';
@@ -315,6 +317,12 @@ export type TickEvent =
       readonly daysToBuild: number;
     }
   | {
+      readonly type: 'building_demolished';
+      readonly settlement: SettlementId;
+      readonly building: BuildingId;
+      readonly ownerActor: ActorId;
+    }
+  | {
       readonly type: 'workers_reallocated';
       readonly settlement: SettlementId;
       readonly fromJob: JobId;
@@ -383,6 +391,10 @@ export const tick = (inputs: TickInputs): TickResult => {
   // settlement's pendingBuildings. Per docs/15 §C8 — construction takes
   // real time and labor; new buildings don't appear instantly.
   constructionPhase(world, today, events);
+  // Demolition phase: buildings on released catchment hexes get torn
+  // down over time, refunding ~50% of materials to the owner. Per
+  // docs/15 §C8 demolition.
+  demolitionPhase(world, today, events);
 
   // --- Phase 2: Consumption ------------------------------------------------
   consumptionPhase(world, today, events, stats);
@@ -977,6 +989,68 @@ const addRoadWear = (world: WorldState, h: Hex, amount: number): void => {
   // Roman roads neither accrue wear nor decay (engineered + maintained).
   if (tile.road === 'roman') return;
   tile.roadWear = (tile.roadWear ?? 0) + amount;
+};
+
+// --- Demolition phase (docs/15 §C8 demolition) ---------------------------
+
+/**
+ * Drain mason+carpenter worker-days toward each settlement's
+ * pendingDemolitions. When workerDaysRemaining hits 0, removeBuilding
+ * the entry, refund 50% of the original constructionCost to the
+ * owner's stockpile, and emit a `building_demolished` event.
+ */
+const demolitionPhase = (world: WorldState, _today: Day, events: TickEvent[]): void => {
+  for (const settlement of world.settlements.values()) {
+    if (settlement.pendingDemolitions.length === 0) continue;
+    let masonBudget = settlement.jobAllocations.get(jobId('mason')) ?? 0;
+    let carpenterBudget = settlement.jobAllocations.get(jobId('carpenter')) ?? 0;
+    let budget = masonBudget + carpenterBudget;
+    if (budget <= 0) continue;
+
+    const completed: number[] = [];
+    for (let i = 0; i < settlement.pendingDemolitions.length && budget > 0; i++) {
+      const pd = settlement.pendingDemolitions[i] as PendingDemolition;
+      const apply = Math.min(budget, pd.workerDaysRemaining);
+      pd.workerDaysRemaining -= apply;
+      budget -= apply;
+      if (pd.workerDaysRemaining <= 0) completed.push(i);
+    }
+    void masonBudget;
+    void carpenterBudget;
+
+    for (let j = completed.length - 1; j >= 0; j--) {
+      const idx = completed[j] as number;
+      const pd = settlement.pendingDemolitions[idx] as PendingDemolition;
+      settlement.pendingDemolitions.splice(idx, 1);
+      // Remove the building if still present.
+      const stillPresent = settlement.buildings.some(
+        (b) => b.buildingId === pd.buildingId && hexEquals(b.hex, pd.hex),
+      );
+      if (stillPresent) {
+        try {
+          removeBuilding(settlement, pd.hex, pd.buildingId);
+        } catch {
+          // Already gone (raced); ignore.
+        }
+      }
+      // Refund 50% of materials.
+      const def = getBuilding(pd.buildingId);
+      const owner = world.actors.get(pd.ownerActor);
+      if (owner !== undefined) {
+        for (const [r, qty] of def.constructionCost) {
+          const refund = qty * 0.5;
+          if (refund <= 0) continue;
+          owner.stockpile.set(r, (owner.stockpile.get(r) ?? 0) + refund);
+        }
+      }
+      events.push({
+        type: 'building_demolished',
+        settlement: settlement.id,
+        building: pd.buildingId,
+        ownerActor: pd.ownerActor,
+      });
+    }
+  }
 };
 
 // --- GoalStack helpers (docs/15 §C18) ------------------------------------

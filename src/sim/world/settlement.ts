@@ -110,6 +110,14 @@ export interface Settlement {
    * building is materialized via addBuilding and the entry is removed.
    */
   readonly pendingBuildings: PendingBuilding[];
+  /**
+   * Buildings being torn down (per docs/15 §C8 demolition). Drained by
+   * the demolition phase from the same mason+carpenter pools as
+   * construction. ~15% of construction time. On completion: half the
+   * materials credit back to the owner's stockpile; the building is
+   * removed from `buildings`.
+   */
+  readonly pendingDemolitions: PendingDemolition[];
 }
 
 export interface PendingBuilding {
@@ -128,6 +136,14 @@ export interface PendingBuilding {
    */
   masonDaysRemaining?: number;
   carpenterDaysRemaining?: number;
+}
+
+export interface PendingDemolition {
+  readonly buildingId: BuildingId;
+  readonly hex: Hex;
+  readonly ownerActor: ActorId;
+  readonly beganOnDay: Day;
+  workerDaysRemaining: number;
 }
 
 export interface CreateSettlementInput {
@@ -192,6 +208,7 @@ export const createSettlement = (input: CreateSettlementInput): Settlement => {
     population: emptyPool(),
     buildings: [],
     pendingBuildings: [],
+    pendingDemolitions: [],
     factions: input.factions ? [...input.factions] : [],
     stockpileOwners: input.stockpileOwners ? [...input.stockpileOwners] : [],
     market: {
@@ -541,6 +558,33 @@ export const recomputeCatchment = (input: {
   // Apply hex-ownership changes.
   for (const h of released) setHexOwner(grid, h, null);
   for (const h of claimed) setHexOwner(grid, h, ownerActorForClaimed);
+
+  // Per docs/15 §C8 demolition: any building physically located on a
+  // released hex starts being torn down. The buildings stay in
+  // settlement.buildings until pendingDemolitions completes.
+  if (releasedKeys.size > 0) {
+    for (const b of settlement.buildings) {
+      const k = hexKey(b.hex);
+      if (!releasedKeys.has(k)) continue;
+      // Skip if already queued.
+      const already = settlement.pendingDemolitions.some(
+        (d) => d.buildingId === b.buildingId && hexEquals(d.hex, b.hex),
+      );
+      if (already) continue;
+      settlement.pendingDemolitions.push({
+        buildingId: b.buildingId,
+        hex: cloneHex(b.hex),
+        ownerActor: b.ownerActor,
+        beganOnDay: today,
+        // Demolition takes ~15% of construction time. Use a fixed
+        // small-but-nonzero value here; the tick layer's
+        // constructionWorkerDays helper isn't reachable from this
+        // module (would create a buildings → settlement cycle).
+        // The tick layer can adjust via the field.
+        workerDaysRemaining: 15,
+      });
+    }
+  }
 
   settlement.catchmentBaselinePop = currentPop;
   settlement.catchmentDayLastChanged = today;
