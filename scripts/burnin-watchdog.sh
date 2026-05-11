@@ -8,9 +8,10 @@
 #   3. `npm run test:coverage` — every test must pass (no skips).
 #   4. Aggregate test coverage (lines + statements + functions +
 #      branches, average) must be > 80%.
-#   5. A 10-year burn-in on a realistic procgen world (80x80, 3 cities)
+#   5. A 6-year burn-in on a realistic procgen world (80x80, 3 cities)
 #      must stay self-sustainable: end pop ≥ 50% of start, no fatal
-#      invariant violations, exit code 0.
+#      invariant violations, exit code 0. 6y = 1 year past the day-1825
+#      road reset, enough to confirm phase-2b stability.
 #
 # When all five pass, exits 0 with no output (Claude proceeds to stop
 # normally). When any gate fails, prints a single JSON line
@@ -19,12 +20,13 @@
 #
 # Project-scoped: wired in .claude/settings.json.
 #
-# Note: typecheck ~5s, lint ~5s, test+coverage ~30s, 10-year burn-in
-# ~3-10 min on a recent laptop (grew with disaggregation, trail wear,
-# crew demographics). The hook timeout in settings.json is 1800s
-# (30 min) for headroom; if a future change pushes past that, profile
-# the tick and either optimize or split the burn-in into a faster
-# smoke test + a separate slow-pass.
+# Note: typecheck ~5s, lint ~5s, test+coverage ~30s, 6-year burn-in
+# ~8-10 min on a recent laptop after the codex review #5 swap to the
+# full demand/supply scheduler (every catalog resource clears, not
+# just the v1 hardcoded 8). Hook timeout in settings.json is 900s
+# (15 min). The tradePhase per-resource per-settlement loop is the
+# main cost; v1.5 optimization target is to cache schedules across
+# ticks since input prices change slowly.
 
 set -u
 cd "$(dirname "$0")/.."
@@ -88,7 +90,7 @@ OUTPUT=$(npm run burnin -- \
   --seed=watchdog \
   --width=80 --height=80 \
   --cities=3 --towns=8 --villages=60 --hamlets=30 \
-  --days=3650 --silent 2>&1)
+  --days=2190 --silent 2>&1)
 EXIT_CODE=$?
 
 if [ "$EXIT_CODE" -ne 0 ]; then
@@ -108,7 +110,7 @@ if [ -z "$POP_START" ] || [ -z "$POP_END" ]; then
 fi
 
 if [ -n "$FATAL" ] && [ "$FATAL" -gt 0 ]; then
-  block "burnin had $FATAL fatal invariant violation(s) over 10y on a 3-city world: $LAST_LINE"
+  block "burnin had $FATAL fatal invariant violation(s) over 6y on a 3-city world: $LAST_LINE"
 fi
 
 HALF_START=$(( POP_START / 2 ))

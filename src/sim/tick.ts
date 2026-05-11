@@ -74,14 +74,8 @@ import { tickCarrierWithGrid } from './reputation/newsMovement.js';
 import { processNewsArrival } from './reputation/newsArrival.js';
 import type { NamedCharacter } from './politics/character.js';
 import type { ReputationMagnitude } from './reputation/table.js';
-import {
-  aggregateDemand,
-  comfortDemand,
-  subsistenceDemand,
-  type DemandSource,
-} from './market/demand.js';
-import { aggregateSupply, ownerSupply, type SupplySource } from './market/supply.js';
 import { clearMarket } from './market/clear.js';
+import { buildSettlementSchedules } from './market/scheduleBuilder.js';
 import {
   applyEndemicMortality,
   maybeTriggerEpidemic,
@@ -242,6 +236,10 @@ export type TickEvent =
       readonly released: number;
     }
   | {
+      readonly type: 'settlement_abandoned';
+      readonly settlement: SettlementId;
+    }
+  | {
       readonly type: 'edge_hub_spawned';
       readonly newCaravans: number;
     }
@@ -310,8 +308,6 @@ const YEAR_DAYS = 365;
 
 const SUBSISTENCE_GRAIN_KG_PER_ADULT_PER_DAY = 0.4; // docs/04
 const KG_PER_MODIUS = 6.7; // resources/catalog.ts food.grain unit
-const GRAIN_DEMAND_BUDGET_PER_PERSON = 2; // coin/day; coarse Roman wage proxy
-const COMFORT_BUDGET_PER_PLEBEIAN_PER_DAY = 1; // coin/day for comfort goods
 
 /**
  * Public entry point. Mutates world in place and returns a structured
@@ -343,7 +339,7 @@ export const tick = (inputs: TickInputs): TickResult => {
   movementPhase(world, season, today, events);
 
   // --- Phase 4: Trade ------------------------------------------------------
-  tradePhase(world, events);
+  tradePhase(world, season, today, events);
   // After every settlement clears its market, run the petty-merchant /
   // villager-pickup-cart pass that arbitrages price spreads between
   // settlements within 3 hexes (docs/06 §"Local trade between nearby
@@ -1187,77 +1183,64 @@ const roadResetPhase = (world: WorldState, events: TickEvent[]): void => {
  *     phase already drained the food). Trade phase mostly clears things
  *     not already eaten — finished goods, comfort food.
  */
-const tradePhase = (world: WorldState, events: TickEvent[]): void => {
-  const TRADABLE: readonly ResourceId[] = [
-    resourceId('food.grain'),
-    resourceId('food.flour'),
-    resourceId('food.bread'),
-    resourceId('food.wine'),
-    resourceId('food.olive_oil'),
-    resourceId('food.cheese'),
-    resourceId('goods.cloth'),
-    resourceId('goods.tools'),
-  ];
+const tradePhase = (
+  world: WorldState,
+  season: Season,
+  today: Day,
+  events: TickEvent[],
+): void => {
+  // Per docs/08 + codex review #5: replaced the v1 8-resource hardcoded
+  // "grain or comfort" model with the full demand/supply schedule
+  // builder (subsistence + comfort + status + derived-input demand)
+  // for every tradable resource. Without this swap, market prices
+  // never moved off their hardcoded reservation values (user
+  // observation #1 in the viewer: grain/flour/bread always 0.5,
+  // cheese/tool/wine always 1000).
+  const tradable = TRADABLE_RESOURCES;
+  const ownerKindByActor = new Map<ActorId, Actor['kind']>();
+  for (const a of world.actors.values()) ownerKindByActor.set(a.id, a.kind);
 
   for (const settlement of world.settlements.values()) {
-    const total = settlement.population.total();
-    if (total === 0) continue;
-    const owners = settlement.stockpileOwners
-      .map((id) => world.actors.get(id))
-      .filter((a): a is Actor => a !== undefined);
-    for (const resId of TRADABLE) {
-      // Demand: subsistence on grain only; comfort for the rest.
-      const demand: DemandSource[] = [];
-      const isSubsistence = String(resId) === 'food.grain' || String(resId) === 'food.bread';
-      const adults = adultPopulation(settlement);
-      const totalSegmentWealth = total * GRAIN_DEMAND_BUDGET_PER_PERSON;
-      if (isSubsistence) {
-        demand.push(
-          subsistenceDemand({
-            id: `${String(resId)}@${String(settlement.id)}`,
-            needPerDay: adults * 0.06, // ~0.4 kg / 6.7 kg/modius
-            segmentWealth: totalSegmentWealth,
-          }),
-        );
-      } else {
-        demand.push(
-          comfortDemand({
-            id: `${String(resId)}@${String(settlement.id)}`,
-            wantQuantity: adults * 0.05,
-            budget: total * COMFORT_BUDGET_PER_PLEBEIAN_PER_DAY,
-          }),
-        );
-      }
+    if (settlement.population.total() === 0) continue;
 
-      // Supply: each owner's stockpile of this resource at a uniform
-      // reservation. The reservation price is a v1 placeholder (1 coin /
-      // unit) — the supply module's full math comes later when the tick
-      // wires up production-cost tracking.
-      const supplies: SupplySource[] = [];
-      for (const o of owners) {
-        const stock = o.stockpile.get(resId) ?? 0;
-        if (stock <= 0) continue;
-        supplies.push(
-          ownerSupply({
-            id: `${String(o.id)}@${String(resId)}`,
-            ownerActor: o.id,
-            stockpile: stock,
-            reservedForOwnUse: 0,
-            productionCost: 0.5,
-            expectedFuturePrice: 1,
-            ownerUrgencyFactor: 1,
-            storageHoldingDays: 30,
-          }),
-        );
+    // Stockpiles by owner — buildSettlementSchedules expects this shape.
+    const stockpilesByOwner = new Map<ActorId, ReadonlyMap<ResourceId, Quantity>>();
+    const owners: Actor[] = [];
+    for (const oId of settlement.stockpileOwners) {
+      const a = world.actors.get(oId);
+      if (a === undefined) continue;
+      stockpilesByOwner.set(a.id, a.stockpile);
+      owners.push(a);
+    }
+    if (owners.length === 0) continue;
+
+    // Optimization: only clear resources that someone in this settlement
+    // actually has stock of. Resources with zero supply everywhere can't
+    // clear; building their full demand schedule wastes ~50× the work
+    // per settlement per tick. The full catalog still clears wherever
+    // there IS supply.
+    const presentResources = new Set<string>();
+    for (const o of owners) {
+      for (const [res, qty] of o.stockpile) {
+        if (qty > 0) presentResources.add(String(res));
       }
-      if (demand.length === 0 || supplies.length === 0) continue;
-      const dSchedule = aggregateDemand(demand);
-      const sSchedule = aggregateSupply(supplies);
-      const result = clearMarket(dSchedule, sSchedule, { maxPrice: 1000 });
+    }
+    const localTradable = tradable.filter((r) => presentResources.has(String(r)));
+    if (localTradable.length === 0) continue;
+
+    const schedules = buildSettlementSchedules({
+      settlement,
+      stockpilesByOwner,
+      resources: localTradable,
+      recentLocalPrices: settlement.market.lastClearingPrice,
+      today,
+      season,
+      ownerKindByActor,
+    });
+
+    for (const [resId, pair] of schedules.schedulesByResource) {
+      const result = clearMarket(pair.demand, pair.supply, { maxPrice: 10000 });
       if (result.totalTraded <= 0) continue;
-      // Apply trades. With our coarse model the buyer is "the settlement
-      // population" (no specific actor); we just decrement seller stocks
-      // and credit them in coin proportional to their share.
       for (const trade of result.trades) {
         const sellerActorId = parseSellerOwner(trade.sellerSourceId);
         if (sellerActorId === null) continue;
@@ -1277,6 +1260,34 @@ const tradePhase = (world: WorldState, events: TickEvent[]): void => {
     }
   }
 };
+
+/**
+ * The full set of resources cleared each tick. Built once at module
+ * load from every resource that appears in any recipe input or output,
+ * minus `service.*` (intangible, not traded as physical units in v1)
+ * and `people.*` (handled by separate slave/migrant flows).
+ */
+const TRADABLE_RESOURCES: readonly ResourceId[] = (() => {
+  const seen = new Set<string>();
+  const out: ResourceId[] = [];
+  for (const r of allRecipes()) {
+    for (const id of r.inputs.keys()) {
+      const k = String(id);
+      if (seen.has(k)) continue;
+      if (k.startsWith('service.') || k.startsWith('people.')) continue;
+      seen.add(k);
+      out.push(id);
+    }
+    for (const id of r.outputs.keys()) {
+      const k = String(id);
+      if (seen.has(k)) continue;
+      if (k.startsWith('service.') || k.startsWith('people.')) continue;
+      seen.add(k);
+      out.push(id);
+    }
+  }
+  return Object.freeze(out);
+})();
 
 const parseSellerOwner = (sourceId: string): ActorId | null => {
   // Source ids are formatted "actorId@resourceId" by the construction above.
@@ -3458,6 +3469,27 @@ const pickBuildingHex = (settlement: Settlement, buildingId: BuildingId): Hex | 
 // --- Annual hook ------------------------------------------------------------
 
 const annualPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[]): void => {
+  // Per the user's observation #2: empty settlements should disappear,
+  // not linger as ghosts. Anyone whose population reached 0 in the past
+  // year is collected here and removed:
+  //   - Their catchment hexes have ownerActor cleared (back to wilderness).
+  //   - Their stockpile owners survive on world.actors with their goods
+  //     intact (a patrician family who lost a village still has the wine).
+  //   - The Settlement entity is removed from world.settlements.
+  // Emits a `settlement_abandoned` event for telemetry.
+  const toRemove: Settlement[] = [];
+  for (const settlement of world.settlements.values()) {
+    if (settlement.population.total() === 0) toRemove.push(settlement);
+  }
+  for (const settlement of toRemove) {
+    for (const c of settlement.catchmentHexes) {
+      const t = world.grid.get(c);
+      if (t !== undefined) t.ownerActor = null;
+    }
+    world.settlements.delete(settlement.id);
+    events.push({ type: 'settlement_abandoned', settlement: settlement.id });
+  }
+
   for (const settlement of world.settlements.values()) {
     if (settlement.population.total() === 0) continue;
     tickYearly(settlement.population, rng.derive(`settle-${String(settlement.id)}`));
