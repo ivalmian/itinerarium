@@ -207,85 +207,59 @@ deleted once the corresponding current-scope TODO lands.
 (Comments about the old charcoal/iron/timber hacks have already
 been removed by the C2 work.)
 
-## C10 — Storage capacity discipline (landed, post-production sweep)
+## C10 — Storage capacity discipline [TODO — broken impl reverted]
 
-**Pre-v1.5 hack:** stockpiles grew without bound; the `granary`/
-`warehouse`/`cistern` buildings were decorative.
+**Current state:** stockpiles grow without bound; the `granary` /
+`warehouse` / `cistern` buildings are decorative.
 
-**v1.5 — landed:**
-1. Each building catalog entry now carries a
-   `storageCapacity: ReadonlyMap<ResourceId, Quantity>` field.
-   Storage buildings carry the bulk of the capacity:
-   - `granary`: +5000 modii of `food.grain` (≈ 33 t — a sturdy
-     Roman provincial granary).
-   - `warehouse`: +10 000 kg "generic" pool, expressed as a
-     wildcard slot (any non-grain tradable can occupy it).
-   - `cistern`: +50 000 kg of water (water resource not yet in the
-     catalog, so this is dormant until C12 lands).
-   All other buildings carry a small implicit ~100 kg pool for
-   in-process work (per-resource for tradables they actively touch,
-   tracked as the wildcard pool to avoid thousands of dead Map
-   entries).
-2. A per-capita household baseline of ~50 kg mixed is added on top
-   so buildingless hamlets don't reject every delivery.
-3. After the production phase each tick,
-   `storageCapacityPhase` walks every (settlement, owner, resource)
-   and, if the owner's stockpile of a resource exceeds the
-   settlement's allocated capacity for that resource, the excess is
-   force-sold at the spoilage floor (0.5 × the resource's baseline
-   global price). The seller's treasury credits the proceeds; the
-   resource is removed from the world (we don't model who eats it).
-   A `storage_overflow` TickEvent records the rejected delta.
-4. `seedWorld` is allowed to seed past the cap (no clamp at procgen
-   — the bootstrap explicitly over-provisions). Only the tick loop
-   enforces the cap.
+**Design (locked, reverted impl from a sub-agent attempt):** each
+building catalog entry should carry a `storageCapacity:
+ReadonlyMap<ResourceId, Quantity>` (per-resource caps) plus a
+`wildcardCapacityKg` for in-process pools. Storage buildings carry
+the bulk:
+- `granary`: +5000 modii of `food.grain` (≈ 33 t — a sturdy Roman
+  provincial granary).
+- `warehouse`: +10000 kg generic pool (wildcard).
+- `cistern`: water (deferred — water resource not in catalog).
 
-**Acceptance:** at year 6 burn-in, no settlement holds >2× the
-realistic capacity of any one resource — bursting harvests visibly
-cap, and the `storage_overflow` event log shows the rejected
-deliveries flowing back to the market.
+A per-capita household baseline of ~50 kg mixed for buildingless
+hamlets. After production each tick, a `storageCapacityPhase`
+force-sells excess at spoilage floor (0.5 × baseline price). New
+`storage_overflow` event for telemetry.
 
-**Cross-refs:** `docs/05-settlements.md` §"Storage capacity",
-`docs/02-resources.md` (unit weights),
-`src/sim/buildings/catalog.ts`,
-`src/sim/world/settlement.ts` (`computeStorageCapacity`),
-`src/sim/tick.ts` (`storageCapacityPhase`).
+**Why reverted:** prior sub-agent's runtime implementation
+collapsed the burn-in (pop crashed by day 150-180). Suspect causes:
+spoilage floor too low; cap too aggressive; ordering bug between
+storage check and trade phase. Re-attempt with smaller caps,
+higher spoilage floor, integration tests for "cap kicks in but
+production keeps running" scenarios.
 
-## C11 — Roman-road maintenance cost (landed, quarterly drain)
+**Cross-refs:** `docs/05-settlements.md` §"Storage capacity"
+(planned), `docs/02-resources.md` (unit weights),
+`src/sim/buildings/catalog.ts` (planned `storageCapacity` field).
 
-**Pre-v1.5 hack:** Roman roads neither accrued wear nor decayed —
-they were effectively immortal regardless of whether the governor
-existed at all.
+## C11 — Roman-road maintenance cost [TODO — broken impl reverted]
 
-**v1.5 — landed:** every Roman-road hex now consumes a small
-quarterly resource flow from the governor's office:
-- 0.1 coin per hex per quarter (≈ 0.4 coin/hex/year, affordable
-  for a 20–50k-coin governor with ~hundreds of Roman hexes).
-- 0.01 cut_stone per hex per quarter (~0.04/hex/year — the
-  governor maintains a small repair stockpile).
+**Current state:** Roman roads neither accrue wear nor decay —
+they're effectively immortal regardless of governor solvency.
 
-`roadMaintenancePhase` runs quarterly (every 91 days). For each
-Roman hex, it tries to drain the per-hex cost from the
-`governor_office` actor's treasury + cut_stone stockpile. If the
-governor can pay, the hex resets `romanQuartersUnmaintained = 0`
-(via deletion of the optional field). If they can't, the field
-increments. Once a hex has missed 4 consecutive quarters
-(≈ 1 year unmaintained), it downgrades to `road = 'dirt'` and a
-`road_unmaintained` TickEvent fires — from then on it accrues +
-decays wear like any other dirt road.
+**Design (locked, reverted impl from a sub-agent attempt):** every
+Roman-road hex consumes a small quarterly resource flow from the
+governor's office (0.1 coin + 0.01 cut_stone per hex per quarter).
+A `roadMaintenancePhase` runs every 91 days. If the governor can't
+pay, the hex's `romanQuartersUnmaintained` counter increments;
+after 4 consecutive missed quarters the hex downgrades to `dirt`
+and joins the normal trail-wear lifecycle. `road_unmaintained`
+event for telemetry.
 
-When the governor partially recovers (treasury back up), payment
-resumes; mid-quarter resets clear the missed-quarter counter.
-
-**Acceptance:** in the standard 6y burn-in the governor's
-treasury keeps up easily (~0.4 coin/hex/year × ~50–200 Roman
-hexes ≈ 20–80 coin/year, vs. the seeded 20–50k coin treasury).
-In a deliberately-drained burn-in, the network visibly degrades
-within 1–2 years.
+**Why reverted:** sub-agent attempted alongside C10 in one
+worktree; runtime broke the burn-in. The C11 logic is probably
+sound on its own — re-attempt as a separate single-purpose change
+once C10 is sorted.
 
 **Cross-refs:** `docs/06-caravans.md` §"Trail wear",
-`src/sim/tick.ts` (`roadMaintenancePhase`),
-`src/sim/world/terrain.ts` (`romanQuartersUnmaintained` field).
+`src/sim/tick.ts` (planned `roadMaintenancePhase`),
+`src/sim/world/terrain.ts` (planned `romanQuartersUnmaintained` field).
 
 ## C12 — Promote raw milk to a tracked resource [TODO]
 
