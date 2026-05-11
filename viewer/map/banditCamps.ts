@@ -1,15 +1,18 @@
 /**
- * Bandit camp glyphs — small black X marks on the wilderness hex.
- *
- * docs/16-viewer §"Bandit camp rendering": camps that move via `move_camp`
- * animate the same way as caravans. For now we just snap to the new hex on
- * each tick — interpolation can land later if the visual jump is jarring.
+ * Bandit camp glyphs — painterly-vector tent + campfire + skull totem,
+ * rasterized from viewer/art/units/bandit_camp.svg at startup. Camps that
+ * move via `move_camp` snap to the new hex each tick (interpolation can
+ * land later if the visual jump is jarring).
  */
 
-import { Container, FederatedPointerEvent, Graphics } from 'pixi.js';
+import { Container, FederatedPointerEvent, Graphics, Sprite } from 'pixi.js';
 import type { BanditCampId } from '../../src/sim/types.js';
 import type { WorldState } from '../../src/procgen/seed.js';
 import { hexToPixel } from './coords.js';
+import type { ArtRegistry } from '../art/index.js';
+
+const SPRITE_PX = 18;
+const HIGHLIGHT_R = 11;
 
 export interface BanditCampsLayer {
   readonly container: Container;
@@ -19,10 +22,12 @@ export interface BanditCampsLayer {
 
 interface Entry {
   readonly id: BanditCampId;
-  readonly graphic: Graphics;
+  readonly sprite: Sprite;
+  readonly halo: Graphics;
 }
 
 export const createBanditCampsLayer = (
+  art: ArtRegistry,
   onSelect: (id: BanditCampId) => void,
 ): BanditCampsLayer => {
   const container = new Container();
@@ -37,26 +42,41 @@ export const createBanditCampsLayer = (
       seen.add(c.id);
       let e = entries.get(c.id);
       if (e === undefined) {
-        const g = new Graphics();
-        g.eventMode = 'static';
-        g.cursor = 'pointer';
-        g.on('pointerdown', (ev: FederatedPointerEvent) => {
+        const halo = new Graphics();
+        halo.eventMode = 'none';
+        halo.visible = false;
+        container.addChild(halo);
+        const sprite = new Sprite(art.unit('bandit_camp'));
+        sprite.anchor.set(0.5, 0.5);
+        sprite.width = SPRITE_PX;
+        sprite.height = SPRITE_PX;
+        sprite.eventMode = 'static';
+        sprite.cursor = 'pointer';
+        sprite.on('pointerdown', (ev: FederatedPointerEvent) => {
           ev.stopPropagation();
           onSelect(c.id);
         });
-        g.hitArea = { contains: (x: number, y: number) => x * x + y * y <= 64 };
-        container.addChild(g);
-        e = { id: c.id, graphic: g };
+        sprite.hitArea = { contains: (x: number, y: number) => x * x + y * y <= 64 };
+        container.addChild(sprite);
+        e = { id: c.id, sprite, halo };
         entries.set(c.id, e);
       }
       const px = hexToPixel(c.hex, hexSize);
-      drawX(e.graphic, c.id === highlightedId);
-      e.graphic.position.set(px.x, px.y);
+      e.sprite.position.set(px.x, px.y);
+      e.halo.position.set(px.x, px.y);
+      const isHi = c.id === highlightedId;
+      e.halo.visible = isHi;
+      if (isHi) {
+        e.halo.clear();
+        e.halo.circle(0, 0, HIGHLIGHT_R).stroke({ color: 0xffffff, width: 1.5, alpha: 0.95 });
+      }
     }
     for (const [id, e] of entries) {
       if (!seen.has(id)) {
-        container.removeChild(e.graphic);
-        e.graphic.destroy();
+        container.removeChild(e.sprite);
+        container.removeChild(e.halo);
+        e.sprite.destroy();
+        e.halo.destroy();
         entries.delete(id);
       }
     }
@@ -67,15 +87,4 @@ export const createBanditCampsLayer = (
   };
 
   return { container, sync, setHighlight };
-};
-
-const drawX = (g: Graphics, highlighted: boolean): void => {
-  g.clear();
-  const size = 5;
-  const color = highlighted ? 0xffffff : 0x000000;
-  g.moveTo(-size, -size).lineTo(size, size).stroke({ color, width: 2 });
-  g.moveTo(-size, size).lineTo(size, -size).stroke({ color, width: 2 });
-  if (highlighted) {
-    g.circle(0, 0, size + 2).stroke({ color: 0xffffff, width: 1 });
-  }
 };

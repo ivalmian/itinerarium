@@ -36,6 +36,7 @@ import { createCaravansLayer, type CaravansLayer } from './map/caravans.js';
 import { createBanditCampsLayer, type BanditCampsLayer } from './map/banditCamps.js';
 import { applyOverlay } from './map/overlays.js';
 import { DEFAULT_HEX_SIZE, hexToPixel, pixelToHex } from './map/coords.js';
+import { loadArt, type ArtRegistry } from './art/index.js';
 
 import {
   createViewerState,
@@ -137,6 +138,7 @@ const buildLayers = (
   world: WorldState,
   hexSize: number,
   state: ViewerState,
+  art: ArtRegistry,
 ): BuildResult => {
   const worldRoot = new Container();
   worldRoot.label = 'world';
@@ -167,10 +169,10 @@ const buildLayers = (
 
   // Sub-hex building markers — between roads and settlement glyphs so the
   // settlement's own "house cluster" silhouette visually anchors them.
-  const buildingsLayer = createBuildingsLayer();
+  const buildingsLayer = createBuildingsLayer(art);
   worldRoot.addChild(buildingsLayer.container);
 
-  const settlementsLayer = createSettlementsLayer((id) => {
+  const settlementsLayer = createSettlementsLayer(art, (id) => {
     setSelection(state, { kind: 'settlement', id });
   });
   worldRoot.addChild(settlementsLayer.container);
@@ -180,7 +182,7 @@ const buildLayers = (
   });
   worldRoot.addChild(caravansLayer.container);
 
-  const banditCampsLayer = createBanditCampsLayer((id) => {
+  const banditCampsLayer = createBanditCampsLayer(art, (id) => {
     setSelection(state, { kind: 'bandit_camp', id });
   });
   worldRoot.addChild(banditCampsLayer.container);
@@ -315,7 +317,11 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
   mapHost.appendChild(app.canvas);
 
   const hexSize = DEFAULT_HEX_SIZE;
-  let layers = buildLayers(app, world, hexSize, state);
+  // SVG art registry: rasterize every painterly-vector asset under
+  // viewer/art/ to a Pixi Texture before building any layer. Done once
+  // at boot; layer factories consume the registry by reference.
+  const art = await loadArt();
+  let layers = buildLayers(app, world, hexSize, state, art);
 
   let sidebar: Sidebar;
   const onPlayPause = (): void => {
@@ -338,7 +344,7 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     layers.worldRoot.destroy({ children: true });
     const fresh = buildWorld(merged, state);
     world = fresh.world;
-    layers = buildLayers(app, world, hexSize, state);
+    layers = buildLayers(app, world, hexSize, state, art);
     sidebar.eventLog.clear();
     clearHistory(history);
     setSelection(state, { kind: 'none' });

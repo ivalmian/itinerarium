@@ -1,3 +1,5 @@
+/// <reference types="vite/client" />
+
 /**
  * SVG art registry. Loads every painterly-vector SVG under viewer/art/
  * at viewer startup, rasterizes each into a PixiJS Texture, and exposes
