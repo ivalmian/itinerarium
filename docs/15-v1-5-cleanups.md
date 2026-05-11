@@ -207,59 +207,64 @@ deleted once the corresponding current-scope TODO lands.
 (Comments about the old charcoal/iron/timber hacks have already
 been removed by the C2 work.)
 
-## C10 — Storage capacity discipline [TODO — broken impl reverted]
+## C10 — Storage capacity discipline (landed, gentle perishable spoilage)
 
-**Current state:** stockpiles grow without bound; the `granary` /
-`warehouse` / `cistern` buildings are decorative.
+**v1.5 — landed.** Each building catalog entry carries
+`storageCapacity: ReadonlyMap<ResourceId, Quantity>` (per-resource
+caps) + `wildcardCapacityKg` (generic in-process pool). Granary
++5000 modii grain + 1000 kg wildcard; warehouse +10000 kg
+wildcard; all other buildings carry 50 kg by default. Per-capita
+household baseline of 50 kg/adult covers buildingless hamlets.
 
-**Design (locked, reverted impl from a sub-agent attempt):** each
-building catalog entry should carry a `storageCapacity:
-ReadonlyMap<ResourceId, Quantity>` (per-resource caps) plus a
-`wildcardCapacityKg` for in-process pools. Storage buildings carry
-the bulk:
-- `granary`: +5000 modii of `food.grain` (≈ 33 t — a sturdy Roman
-  provincial granary).
-- `warehouse`: +10000 kg generic pool (wildcard).
-- `cistern`: water (deferred — water resource not in catalog).
+`computeStorageCapacity(settlement)` aggregates caps. New
+`storageSpoilagePhase` runs daily after politicsPhase: for each
+settlement, perishable resources (catalog `perishableDays`
+present) above their per-resource cap (or wildcard pool aggregate)
+spoil at 0.2%/day proportionally across owners. Hard goods (iron,
+tools, cut stone, weapons) NEVER spoil.
 
-A per-capita household baseline of ~50 kg mixed for buildingless
-hamlets. After production each tick, a `storageCapacityPhase`
-force-sells excess at spoilage floor (0.5 × baseline price). New
-`storage_overflow` event for telemetry.
+365-day grace period: bootstrap stockpiles (90 days of grain in
+a 30k city = 161k modii vs. one granary's 5k cap) consume
+naturally before the cap kicks in.
 
-**Why reverted:** prior sub-agent's runtime implementation
-collapsed the burn-in (pop crashed by day 150-180). Suspect causes:
-spoilage floor too low; cap too aggressive; ordering bug between
-storage check and trade phase. Re-attempt with smaller caps,
-higher spoilage floor, integration tests for "cap kicks in but
-production keeps running" scenarios.
+New `storage_spoilage` TickEvent.
+
+**Why we landed gentle perishable-only spoilage:** the prior
+attempt did instant force-sales at floor prices for ALL
+overflowing resources. That cascaded into market collapse +
+85k famine deaths within 2 years. The 0.2%/day perishable-only
+model self-regulates: production naturally backs off because
+output goes nowhere → seller's stockpile stays full → next
+round's clearing prices fall → derived input demand falls.
 
 **Cross-refs:** `docs/05-settlements.md` §"Storage capacity"
-(planned), `docs/02-resources.md` (unit weights),
-`src/sim/buildings/catalog.ts` (planned `storageCapacity` field).
+(planned doc), `docs/02-resources.md` (perishableDays),
+`src/sim/buildings/catalog.ts` (storageCapacity field),
+`src/sim/world/settlement.ts` (`computeStorageCapacity`),
+`src/sim/tick.ts` (`storageSpoilagePhase`).
 
-## C11 — Roman-road maintenance cost [TODO — broken impl reverted]
+## C11 — Roman-road maintenance cost (landed, quarterly drain)
 
-**Current state:** Roman roads neither accrue wear nor decay —
-they're effectively immortal regardless of governor solvency.
+**v1.5 — landed.** HexTile gains an optional
+`romanQuartersUnmaintained: number` counter. Quarterly
+(every 91 days) `roadMaintenancePhase` runs:
 
-**Design (locked, reverted impl from a sub-agent attempt):** every
-Roman-road hex consumes a small quarterly resource flow from the
-governor's office (0.1 coin + 0.01 cut_stone per hex per quarter).
-A `roadMaintenancePhase` runs every 91 days. If the governor can't
-pay, the hex's `romanQuartersUnmaintained` counter increments;
-after 4 consecutive missed quarters the hex downgrades to `dirt`
-and joins the normal trail-wear lifecycle. `road_unmaintained`
-event for telemetry.
+For each Roman-road hex:
+- If governor.treasury ≥ 0.1 coin → drain it, reset counter to 0.
+- Else → increment counter. After 4 consecutive missed quarters
+  (~1 year), the hex demotes to `road = 'dirt'` (with `roadWear`
+  seeded at 100), the counter resets, and a `road_unmaintained`
+  TickEvent fires.
 
-**Why reverted:** sub-agent attempted alongside C10 in one
-worktree; runtime broke the burn-in. The C11 logic is probably
-sound on its own — re-attempt as a separate single-purpose change
-once C10 is sorted.
+Cost calibrated trivial vs. governor wealth: ~50-200 Roman hexes
+× 0.1 coin × 4 qtrs/yr = 20-80 coin/yr against a seeded 20-50k
+treasury. Only matters under deliberate political/economic stress.
+
+The eternal Roman road is now contingent on a paying governor.
 
 **Cross-refs:** `docs/06-caravans.md` §"Trail wear",
-`src/sim/tick.ts` (planned `roadMaintenancePhase`),
-`src/sim/world/terrain.ts` (planned `romanQuartersUnmaintained` field).
+`src/sim/tick.ts` (`roadMaintenancePhase`),
+`src/sim/world/terrain.ts` (`romanQuartersUnmaintained` field).
 
 ## C12 — Promote raw milk to a tracked resource [TODO]
 
