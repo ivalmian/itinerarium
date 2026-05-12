@@ -53,6 +53,7 @@ import type { NewsCarrier } from '../sim/reputation/news.js';
 import type { Caravan } from '../sim/caravan/caravan.js';
 import type { Patrol } from '../sim/conflict/patrol.js';
 import type { BanditCamp } from '../sim/bandit/camp.js';
+import type { BanditParty } from '../sim/bandit/party.js';
 import { createGuild, addGuildMember, type Guild } from '../sim/politics/guild.js';
 import {
   actorId,
@@ -65,6 +66,7 @@ import {
   settlementId,
   type ActorId,
   type BanditCampId,
+  type BanditPartyId,
   type CaravanId,
   type CharacterId,
   type Day,
@@ -100,6 +102,12 @@ export interface WorldState {
    */
   readonly patrols?: Map<string, Patrol>;
   readonly banditCamps?: Map<BanditCampId, BanditCamp>;
+  /**
+   * Per docs/15 §C32: bandit parties — movable units that handle
+   * camp-originated actions (raid, fence, recruit, migrate). Optional
+   * for back-compat with snapshots that pre-date the refactor.
+   */
+  readonly banditParties?: Map<BanditPartyId, BanditParty>;
   readonly newsCarriers?: Map<string, NewsCarrier>;
   /** Merchant guilds (per docs/15 §C17). Keyed by their Actor id. */
   readonly guilds?: Map<ActorId, Guild>;
@@ -1105,6 +1113,7 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
     caravans: new Map<CaravanId, Caravan>(),
     patrols,
     banditCamps,
+    banditParties: new Map<BanditPartyId, BanditParty>(),
     newsCarriers: new Map<string, NewsCarrier>(),
     guilds,
     reputation: createReputationTable(),

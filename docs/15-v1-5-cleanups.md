@@ -1135,6 +1135,92 @@ clears. The planner picks whichever leg is profitable.
 §"Free villages", `src/sim/tick.ts` `villagerCaravanAssemblyPhase`,
 `viewer/art/units/villager_caravan.svg`.
 
+## C32 — Bandit actions through movable parties + missing renderers (landed)
+
+**Motivation:** the viewer rendered caravans and bandit camps but
+**not** patrols, news carriers, or any visible "raid in progress."
+Patrols + news carriers always existed in the sim and ticked daily —
+they just had no map layer. Worse, every bandit action (raid, fence,
+recruit, migrate, bribe) resolved instantaneously at the camp's
+hex — no physically visible raid party walking from the camp to the
+target settlement, no spatial chance for a patrol to intercept en
+route, no hard-times "you can see the raiders coming" warning. Per
+pillar §1 (no hidden hands) all of this needs to be physical.
+
+**v1.5 — landed:**
+
+1. **Generic mover layer** (`viewer/map/movers.ts`) — a factory that
+   takes an art kind + a `getMovers` callback and produces a Pixi
+   `Container` with sprites + faction-colour badges + smooth
+   inter-tick interpolation. Reused by the three new layers below.
+2. **Patrol layer** (`viewer/map/patrols.ts`) — renders
+   `world.patrols` with the `patrol` glyph.
+3. **News-carrier layer** (`viewer/map/newsCarriers.ts`) — renders
+   the in-transit subset of `world.newsCarriers` with the
+   `news_carrier` glyph.
+4. **BanditParty as a real sim entity** — new `BanditParty` type and
+   `world.banditParties` Map. A party is a subset of bandits split
+   off from a camp at action time, walking to a target and back
+   (one-way for `migrate` missions). Per-camp cap = 1 active party
+   at a time (the user's design — keeps the world legible).
+5. **Camp actions now spawn parties, not resolve in-place.** The
+   `applyCampAction` cases that touch another hex (`raid_settlement`,
+   `raid_caravan`, `fence_loot`, `recruit_drive`, `bribe_settlement`,
+   `move_camp`) dispatch a `BanditParty` carrying:
+   - a mission discriminator (where to walk, what to do on arrival),
+   - a roster (mission-dependent share of the camp's bandits — half
+     for a raid, ~25% for a fence escort, ~20% for recruit / bribe,
+     the entire roster for `migrate`),
+   - cargo / treasury pre-loaded for missions that need it (fence
+     trip carries loot; bribe trip carries coin).
+     `lay_low` and `recruit_drive`'s pressure-multiplier side-effects
+     still happen at the camp.
+6. **`banditPartyPhase`** — runs each tick (after `banditPhase`,
+   before `patrolPhase`). Steps each party one hex toward its
+   target (outbound) or home (returning); on hex-overlap with the
+   mission target it resolves the mission (reusing
+   `executeSettlementRaid` / `resolveAmbush` / `executeFenceTransaction`
+   via a temporary synthetic-camp adapter so the existing combat
+   maths stays canonical), then flips to `returning`. On arrival
+   back at home, merges the party's surviving roster + loot + coin
+   back into the home camp. If the home camp was destroyed while
+   the party was out (e.g. patrol wiped it), the party founds a
+   new camp at its current hex.
+7. **Bandit-party viewer layer** (`viewer/map/banditParties.ts`) —
+   renders `world.banditParties` with the existing `bandit_raid`
+   glyph so raid parties, fence trips, and migrating camps are all
+   visible on the map.
+8. **Deterministic party ids**: `bp-<campId>-<today>` (per-camp,
+   per-day) so two runs with the same seed produce identical event
+   sequences (the smoke test's determinism gate still passes).
+
+**Still on the docket** (tasks #34, #35 — separate follow-up):
+
+- Patrol detection + pursuit: 2-hex sight radius; deviate from
+  route toward visible bandits when expected combat advantage is
+  positive; give up after 3 days of pursuit; combat only on
+  hex-overlap; no bribery.
+- Party flee behaviour: if a patrol within 2 hexes is likely to
+  win, party steps one hex away per tick and pauses its mission;
+  resume when no threat in sight.
+- Road-bias for patrol cyclic route seeding.
+
+**Burn-in (3-year watchdog, 80×80, 3 cities):**
+
+|           | pop end | caravans end | famine | settlements end |
+| --------- | ------- | ------------ | ------ | --------------- |
+| pre-§C32  | 151,810 | 50           | 22,176 | 328             |
+| post-§C32 | 156,636 | 81           | 18,323 | 336             |
+
+(Famine still elevated vs the pre-§C30 baseline because trade
+tuning is incomplete — see §C30 + §C31. The bandit refactor is
+about _visibility + pillar #1 compliance_; the tuning gain is a
+side-effect of more caravans surviving + fewer instant raids.)
+
+**Cross-refs:** `docs/12-bandits-and-conflict.md` §"Bandit raid
+parties", `src/sim/bandit/party.ts`, `src/sim/tick.ts`
+`banditPartyPhase` + `spawnBanditParty`, `viewer/map/movers.ts`.
+
 ## C16 — Cascading consequences of price explosion [TODO]
 
 **Current state:** prices are capped at a sane multiple of base

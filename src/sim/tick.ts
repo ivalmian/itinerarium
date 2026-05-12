@@ -37,6 +37,16 @@ import { MAX_ACTIVE_WORLD_CARAVANS } from './caravan/limits.js';
 import { expectedRiskOnApproximatePath, planCaravanRoute } from './caravan/ai.js';
 import { createCamp, decideCampAction, recruit, type BanditCamp } from './bandit/camp.js';
 import {
+  createBanditParty,
+  missionTargetHex,
+  partyAtHome,
+  partyAtMissionTarget,
+  stepAwayFromHex,
+  stepTowardHex,
+  type BanditParty,
+  type BanditPartyMission,
+} from './bandit/party.js';
+import {
   actorStockEntriesAt,
   addStockAt,
   createActor,
@@ -148,6 +158,7 @@ import {
   resourceId,
   type ActorId,
   type BanditCampId,
+  type BanditPartyId,
   type BuildingId,
   type CaravanId,
   type Day,
@@ -386,6 +397,35 @@ export type TickEvent =
       readonly fromActor: ActorId;
       readonly toActor: ActorId;
       readonly coin: number;
+    }
+  | {
+      /**
+       * Per docs/15 §C32: a bandit camp split off a party to walk to a
+       * target. Mission type carries the camp action that drove it.
+       */
+      readonly type: 'bandit_party_dispatched';
+      readonly party: BanditPartyId;
+      readonly fromCamp: BanditCampId;
+      readonly missionType:
+        | 'raid_settlement'
+        | 'raid_caravan'
+        | 'fence_loot'
+        | 'recruit_drive'
+        | 'migrate'
+        | 'bribe_settlement';
+      readonly at: Hex;
+    }
+  | {
+      /**
+       * Per docs/15 §C32: a bandit party finished its mission (success or
+       * failure) and returned to camp. For one-way migrate missions the
+       * party founded a new camp; for round-trip missions it merged back
+       * into the home camp.
+       */
+      readonly type: 'bandit_party_returned';
+      readonly party: BanditPartyId;
+      readonly outcome: 'merged_home' | 'founded_camp' | 'lost';
+      readonly at: Hex;
     }
   | {
       readonly type: 'road_upgraded';
@@ -4587,6 +4627,11 @@ const politicsPhase = (world: WorldState, rng: Rng, today: Day, events: TickEven
   // the seeded bandit camps are inert decorations — see docs/12
   // §"Bandit emergence in the tick loop".
   banditPhase(world, rng.derive('bandit'), today, events);
+  // Per docs/15 §C32: bandit parties (the movable units that handle all
+  // camp-originated actions) walk one hex, resolve mission on arrival,
+  // and walk back. Runs after camp decisions so the same tick's
+  // dispatch can begin moving immediately.
+  banditPartyPhase(world, rng.derive('bandit-party'), today, events);
   // Patrols walk routes and engage bandit camps they encounter. The
   // garrison + city-watch units seeded by procgen do this — without it,
   // bandits face no enforcement and grow unchecked.
@@ -6666,6 +6711,123 @@ const countGuards = (c: Caravan): number => {
   return guards;
 };
 
+/**
+ * Per docs/15 §C32 — does this camp currently have a party out on a
+ * mission? One party at a time per camp (the user's design).
+ */
+const campHasOutgoingParty = (world: WorldState, campId: BanditCampId): boolean => {
+  if (world.banditParties === undefined) return false;
+  for (const party of world.banditParties.values()) {
+    if (party.homeCamp === campId) return true;
+  }
+  return false;
+};
+
+const makeBanditPartyId = (campId: BanditCampId, today: Day): BanditPartyId => {
+  // Per-camp-per-day id — deterministic across runs since each camp can
+  // only have one outgoing party at a time.
+  return `bp-${String(campId)}-${today}` as BanditPartyId;
+};
+
+/**
+ * Per docs/15 §C32: split off a subset of the camp's bandits into a
+ * party. The party fraction is mission-dependent:
+ *   raid_settlement: ~half the camp (capped at 12)
+ *   raid_caravan:    ~half the camp (capped at 12)
+ *   fence_loot:      a small escort (~25%, capped at 4)
+ *   recruit_drive:   a couple of messengers (~20%, capped at 3)
+ *   migrate:         the entire camp roster (one-way trip)
+ *   bribe_settlement: a tiny coin-bag party (~20%, capped at 3)
+ * The camp keeps the rest (at least 1 bandit unless migrating). If the
+ * camp can't spare any bandits the party is not spawned.
+ */
+const splitOffPartyRoster = (
+  camp: BanditCamp,
+  mission: BanditPartyMission,
+): { partyCount: number; campCount: number } => {
+  const total = Math.max(0, Math.floor(camp.banditCount));
+  if (total <= 0) return { partyCount: 0, campCount: 0 };
+  let fraction = 0.5;
+  let cap = 12;
+  let migrate = false;
+  switch (mission.type) {
+    case 'raid_settlement':
+    case 'raid_caravan':
+      fraction = 0.5;
+      cap = 12;
+      break;
+    case 'fence_loot':
+      fraction = 0.25;
+      cap = 4;
+      break;
+    case 'recruit_drive':
+      fraction = 0.2;
+      cap = 3;
+      break;
+    case 'bribe_settlement':
+      fraction = 0.2;
+      cap = 3;
+      break;
+    case 'migrate':
+      migrate = true;
+      break;
+  }
+  if (migrate) return { partyCount: total, campCount: 0 };
+  const ideal = Math.min(cap, Math.max(1, Math.floor(total * fraction)));
+  // Keep at least 1 bandit behind for non-migrate missions.
+  const partyCount = Math.min(ideal, total - 1);
+  return { partyCount: Math.max(0, partyCount), campCount: total - Math.max(0, partyCount) };
+};
+
+const spawnBanditParty = (
+  world: WorldState,
+  campId: BanditCampId,
+  camp: BanditCamp,
+  mission: BanditPartyMission,
+  today: Day,
+  events: TickEvent[],
+  initialCargo?: ReadonlyMap<ResourceId, Quantity>,
+  initialTreasury?: number,
+): BanditParty | null => {
+  if (world.banditParties === undefined) return null;
+  if (campHasOutgoingParty(world, campId)) return null;
+  const split = splitOffPartyRoster(camp, mission);
+  if (split.partyCount <= 0) return null;
+
+  const partyId = makeBanditPartyId(campId, today);
+  const party = createBanditParty({
+    id: partyId,
+    homeCamp: mission.type === 'migrate' ? null : campId,
+    homeHex: camp.hex,
+    ownerActor: camp.ownerActor,
+    position: camp.hex,
+    mission,
+    banditCount: split.partyCount,
+    weaponsPerBandit: camp.weaponsPerBandit,
+    armorPerBandit: camp.armorPerBandit,
+    averageHealth: camp.averageHealth,
+    ...(initialCargo !== undefined ? { cargo: initialCargo } : {}),
+    ...(initialTreasury !== undefined ? { treasury: initialTreasury } : {}),
+  });
+  world.banditParties.set(partyId, party);
+
+  // For non-migrate missions, the camp keeps its remaining bandits +
+  // shrinks its banditCount to reflect those who left.
+  if (mission.type !== 'migrate' && world.banditCamps !== undefined) {
+    const updated: BanditCamp = { ...camp, banditCount: split.campCount };
+    world.banditCamps.set(campId, updated);
+  }
+
+  events.push({
+    type: 'bandit_party_dispatched',
+    party: partyId,
+    fromCamp: campId,
+    missionType: mission.type,
+    at: { q: camp.hex.q, r: camp.hex.r },
+  });
+  return party;
+};
+
 const applyCampAction = (
   world: WorldState,
   campId: BanditCampId,
@@ -6676,134 +6838,139 @@ const applyCampAction = (
   events: TickEvent[],
 ): void => {
   if (world.banditCamps === undefined) return;
+  // Per docs/15 §C32: every camp-originated action that touches another
+  // hex goes through a bandit party. The camp still stays put.
+  if (campHasOutgoingParty(world, campId)) {
+    // The camp's hand is busy already — act `lay_low` this tick.
+    void today;
+    void rng;
+    return;
+  }
   switch (action.type) {
     case 'lay_low':
       return;
-    case 'recruit_drive':
+    case 'recruit_drive': {
       recruitDriveMultiplier.set(campId, 2);
+      // Also spawn a small visible party that walks toward the nearest
+      // friendly-ish village to "spread the word." We use the closest
+      // settlement (tier ≤ village) as the recruiting target hex.
+      const nearVillage = findNearestSettlementByTier(world, camp.hex, ['village', 'hamlet']);
+      if (nearVillage !== null) {
+        spawnBanditParty(
+          world,
+          campId,
+          camp,
+          {
+            type: 'recruit_drive',
+            fromSettlement: nearVillage.id,
+            fromHex: nearVillage.anchor,
+          },
+          today,
+          events,
+        );
+      }
       return;
+    }
     case 'move_camp': {
-      // Walk one hex toward the target.
-      const from = camp.hex;
-      const dq = Math.sign(action.toHex.q - from.q);
-      const dr = Math.sign(action.toHex.r - from.r);
-      const stepHex = { q: from.q + dq, r: from.r + dr };
-      // Only step if the destination tile exists and is wilderness.
-      const tile = world.grid.get(stepHex);
+      // Spawn a one-way migration party with the camp's full roster; on
+      // arrival it founds a new camp at the target hex and the old camp
+      // is deleted.
+      const targetHex = { q: action.toHex.q, r: action.toHex.r };
+      const tile = world.grid.get(targetHex);
       if (tile === undefined) return;
-      const moved: BanditCamp = { ...camp, hex: stepHex };
-      world.banditCamps.set(campId, moved);
+      const party = spawnBanditParty(
+        world,
+        campId,
+        camp,
+        { type: 'migrate', targetHex },
+        today,
+        events,
+      );
+      if (party !== null) {
+        // Camp is leaving — clear it from the registry. The new camp
+        // will be founded by the party on arrival at targetHex.
+        world.banditCamps.delete(campId);
+      }
       return;
     }
     case 'raid_caravan': {
-      const target = findCaravanAtHex(world, action.targetHex);
-      if (target === null) return;
-      const tile = world.grid.get(target.position);
-      if (tile === undefined) return;
-      const result = resolveAmbush({
-        attacker: camp,
-        target,
-        ambushHexTerrain: tile.terrain,
-        rng: rng.derive('ambush'),
-      });
-
-      // Apply caravan casualties: remove crew, animals (animals deferred —
-      // caravan model doesn't separate them yet; v1 just records the loss).
-      let deathsRemaining = result.caravanCasualties.crewDeaths;
-      for (const m of target.crew) {
-        if (deathsRemaining <= 0) break;
-        const take = Math.min(m.count, deathsRemaining);
-        m.count -= take;
-        deathsRemaining -= take;
-      }
-      // Remove zero-count crew entries to keep validation invariants.
-      target.crew = target.crew.filter((m) => m.count > 0);
-      const caravanCrewWiped = totalCrewCount(target) <= 0;
-
-      // Transfer cargo from caravan to camp loot.
-      for (const [resId, qty] of result.cargoTaken) {
-        const have = target.cargo.get(resId) ?? 0;
-        const newQty = have - qty;
-        if (newQty <= 1e-9) target.cargo.delete(resId);
-        else target.cargo.set(resId, newQty);
-        const lootHave = camp.loot.get(resId) ?? 0;
-        camp.loot.set(resId, lootHave + qty);
-      }
-      target.treasury = Math.max(0, target.treasury - result.coinTaken);
-      camp.treasury += result.coinTaken;
-
-      // Apply bandit casualties → new camp record.
-      const banditDeaths = result.banditCasualties.deaths;
-      const remaining = Math.max(0, camp.banditCount - banditDeaths);
-      const updated: BanditCamp = { ...camp, banditCount: remaining };
-      if (remaining <= 0) world.banditCamps.delete(campId);
-      else world.banditCamps.set(campId, updated);
-
-      if (result.outcome === 'attacker_won' || result.outcome === 'caravan_fled') {
-        lastSuccessfulRaidDay.set(campId, today);
-      }
-
-      let cargoLost = 0;
-      for (const qty of result.cargoTaken.values()) cargoLost += qty;
-      if (cargoLost > 0 || result.coinTaken > 0 || result.caravanCasualties.crewDeaths > 0) {
-        events.push({
-          type: 'caravan_robbed',
-          caravan: target.id,
-          by: campId,
-          cargoLost,
-        });
-      }
-
-      // Emit news carriers for fled_escaped survivors on the caravan side.
-      // They walk to the nearest settlement at refugee speed (~20 hex/day)
-      // and on arrival apply reputation deltas via processNewsArrival.
-      // docs/13 §"Battle survivor system": survivors are the ONLY route by
-      // which battle outcomes propagate to the world's reputation slates.
-      spawnNewsFromAmbush(world, today, target, campId, camp, result, cargoLost, events);
-      if (caravanCrewWiped) {
-        world.caravans.delete(target.id);
-        events.push({
-          type: 'caravan_disbanded',
-          caravan: target.id,
-          at: { q: target.position.q, r: target.position.r },
-          reason: 'zero_crew',
-        });
-      }
+      // Per docs/15 §C32: spawn a party that walks toward the caravan's
+      // last-seen hex. The caravan may have moved by the time the party
+      // arrives; the party's executing tick scans for any caravan still
+      // at the target hex.
+      spawnBanditParty(
+        world,
+        campId,
+        camp,
+        {
+          type: 'raid_caravan',
+          targetHex: { q: action.targetHex.q, r: action.targetHex.r },
+        },
+        today,
+        events,
+      );
       return;
     }
     case 'raid_settlement': {
       const target = world.settlements.get(action.targetSettlement);
       if (target === undefined) return;
-      executeSettlementRaid(world, today, campId, camp, target, rng.derive('raid'), events);
+      spawnBanditParty(
+        world,
+        campId,
+        camp,
+        {
+          type: 'raid_settlement',
+          target: target.id,
+          targetHex: target.anchor,
+        },
+        today,
+        events,
+      );
       return;
     }
     case 'fence_loot': {
       const through = world.settlements.get(action.throughSettlement);
       if (through === undefined) return;
-      executeFenceTransaction(world, today, campId, camp, through, events);
+      // Transfer ALL loot to the party — that's what the caravan is
+      // carrying. Coin returns on arrival.
+      const cargo = new Map(camp.loot);
+      camp.loot.clear();
+      spawnBanditParty(
+        world,
+        campId,
+        camp,
+        {
+          type: 'fence_loot',
+          through: through.id,
+          throughHex: through.anchor,
+        },
+        today,
+        events,
+        cargo,
+      );
       return;
     }
     case 'bribe_settlement': {
       const target = world.settlements.get(action.settlement);
       if (target === undefined) return;
-      // Find a stockpile-owning actor to receive the bribe.
-      let receiver: Actor | undefined;
-      for (const oId of target.stockpileOwners) {
-        const a = world.actors.get(oId);
-        if (a !== undefined && (a.kind === 'city_corporation' || a.kind === 'governor_office')) {
-          receiver = a;
-          break;
-        }
-      }
       const amount = Math.min(camp.treasury, action.amount);
       if (amount <= 0) return;
       camp.treasury -= amount;
-      if (receiver !== undefined) receiver.treasury += amount;
-      // Reputation: receiver becomes friendlier to bandit camp owner.
-      if (receiver !== undefined) {
-        world.reputation.apply(camp.ownerActor, receiver.id, 0.05);
-        world.reputation.apply(receiver.id, camp.ownerActor, 0.1);
-      }
+      spawnBanditParty(
+        world,
+        campId,
+        camp,
+        {
+          type: 'bribe_settlement',
+          settlement: target.id,
+          settlementHex: target.anchor,
+          amount,
+        },
+        today,
+        events,
+        undefined,
+        amount,
+      );
       return;
     }
   }
@@ -7112,6 +7279,371 @@ const findCaravanAtHex = (world: WorldState, hex: Hex): Caravan | null => {
     if (hexEquals(c.position, hex)) return c;
   }
   return null;
+};
+
+// --- Bandit party movement + mission resolution (docs/15 §C32) ----------
+
+const findNearestSettlementByTier = (
+  world: WorldState,
+  from: Hex,
+  tiers: readonly Settlement['tier'][],
+): Settlement | null => {
+  let best: Settlement | null = null;
+  let bestD = Infinity;
+  for (const s of world.settlements.values()) {
+    if (!tiers.includes(s.tier)) continue;
+    const d = hexDistance(from, s.anchor);
+    if (d < bestD) {
+      bestD = d;
+      best = s;
+    }
+  }
+  return best;
+};
+
+/**
+ * Build a synthetic BanditCamp record from a party so that existing
+ * combat / fence resolution code (which is written against BanditCamp
+ * structurally) can be called with a party as the attacker. The
+ * returned record points at FRESH mutable Maps so we can extract the
+ * side-effects (loot taken, treasury earned) back into the party.
+ */
+const partyAsSyntheticCamp = (party: BanditParty): BanditCamp => ({
+  id: party.homeCamp ?? (`synthetic-${String(party.id)}` as BanditCampId),
+  name: `Party ${String(party.id)}`,
+  hex: party.position,
+  ownerActor: party.ownerActor,
+  banditCount: party.banditCount,
+  hangersOnCount: 0,
+  loot: new Map(party.cargo),
+  treasury: party.treasury,
+  weaponsPerBandit: party.weaponsPerBandit,
+  armorPerBandit: party.armorPerBandit,
+  averageHealth: party.averageHealth,
+});
+
+/** When a returning party arrives home, fold its stats back into the camp. */
+const mergePartyIntoCamp = (camp: BanditCamp, party: BanditParty): BanditCamp => {
+  const mergedLoot = new Map(camp.loot);
+  for (const [r, q] of party.cargo) {
+    mergedLoot.set(r, (mergedLoot.get(r) ?? 0) + q);
+  }
+  return {
+    ...camp,
+    banditCount: camp.banditCount + party.banditCount,
+    loot: mergedLoot,
+    treasury: camp.treasury + party.treasury,
+  };
+};
+
+/** Found a new camp from a party that has no home (migrate / orphaned). */
+const foundCampFromParty = (
+  world: WorldState,
+  party: BanditParty,
+  today: Day,
+): BanditCampId | null => {
+  if (world.banditCamps === undefined) return null;
+  const aId = `actor-emergent-party-${String(party.id)}-${today}` as ActorId;
+  if (!world.actors.has(aId)) {
+    world.actors.set(
+      aId,
+      createActor({
+        id: aId,
+        kind: 'bandit_camp',
+        name: `Band of ${String(party.id)}`,
+        treasury: 0,
+      }),
+    );
+  }
+  const cId = `camp-from-party-${String(party.id)}-${today}` as BanditCampId;
+  const camp = createCamp({
+    id: cId,
+    name: `Band at (${party.position.q},${party.position.r})`,
+    hex: party.position,
+    ownerActor: aId,
+    banditCount: party.banditCount,
+    hangersOnCount: 0,
+    weaponsPerBandit: party.weaponsPerBandit,
+    armorPerBandit: party.armorPerBandit,
+    averageHealth: party.averageHealth,
+    loot: party.cargo,
+    treasury: party.treasury,
+  });
+  world.banditCamps.set(cId, camp);
+  return cId;
+};
+
+/**
+ * Per docs/15 §C32: resolve whatever the party came here to do. Returns
+ * `true` if the party should now switch to `returning` (round-trip
+ * missions) or `done` (one-way migrate).
+ */
+const resolvePartyMissionAtTarget = (
+  world: WorldState,
+  partyId: BanditPartyId,
+  party: BanditParty,
+  today: Day,
+  rng: Rng,
+  events: TickEvent[],
+): void => {
+  void partyId;
+  const homeCampId = party.homeCamp;
+  const homeCamp = homeCampId !== null ? world.banditCamps?.get(homeCampId) : undefined;
+  switch (party.mission.type) {
+    case 'raid_settlement': {
+      const target = world.settlements.get(party.mission.target);
+      if (
+        target === undefined ||
+        homeCamp === undefined ||
+        homeCampId === null ||
+        world.banditCamps === undefined
+      ) {
+        party.phase = 'returning';
+        return;
+      }
+      // Use a synthetic camp for the combat call; extract the side-effects.
+      const synth = partyAsSyntheticCamp(party);
+      // executeSettlementRaid mutates `synth.loot`, `synth.treasury` and
+      // writes back to world.banditCamps[homeCampId] for casualties. We
+      // temporarily install the synth under the home camp's id so the
+      // function's writes land somewhere we can read.
+      const realCampSnapshot = homeCamp;
+      world.banditCamps.set(homeCampId, synth);
+      executeSettlementRaid(world, today, homeCampId, synth, target, rng.derive('raid'), events);
+      const afterRaid = world.banditCamps.get(homeCampId);
+      // Restore the real camp (preserving its bandit count from before)
+      // and read the synth's loot back into the party.
+      world.banditCamps.set(homeCampId, realCampSnapshot);
+      if (afterRaid !== undefined) {
+        party.banditCount = afterRaid.banditCount;
+        party.cargo = new Map(afterRaid.loot);
+        party.treasury = afterRaid.treasury;
+      } else {
+        // Synthetic camp was deleted (zero count) — the party was wiped.
+        party.banditCount = 0;
+        party.cargo = new Map();
+        party.treasury = 0;
+      }
+      party.phase = 'returning';
+      return;
+    }
+    case 'raid_caravan': {
+      const targetCaravan = findCaravanAtHex(world, party.position);
+      if (targetCaravan === null || homeCamp === undefined || world.banditCamps === undefined) {
+        party.phase = 'returning';
+        return;
+      }
+      const tile = world.grid.get(targetCaravan.position);
+      if (tile === undefined) {
+        party.phase = 'returning';
+        return;
+      }
+      const synth = partyAsSyntheticCamp(party);
+      const result = resolveAmbush({
+        attacker: synth,
+        target: targetCaravan,
+        ambushHexTerrain: tile.terrain,
+        rng: rng.derive('ambush'),
+      });
+      // Apply caravan casualties.
+      let deathsRemaining = result.caravanCasualties.crewDeaths;
+      for (const m of targetCaravan.crew) {
+        if (deathsRemaining <= 0) break;
+        const take = Math.min(m.count, deathsRemaining);
+        m.count -= take;
+        deathsRemaining -= take;
+      }
+      targetCaravan.crew = targetCaravan.crew.filter((m) => m.count > 0);
+      const caravanCrewWiped = totalCrewCount(targetCaravan) <= 0;
+      // Transfer cargo from caravan to PARTY (not camp loot — party
+      // carries it home).
+      for (const [resId, qty] of result.cargoTaken) {
+        const have = targetCaravan.cargo.get(resId) ?? 0;
+        const newQty = have - qty;
+        if (newQty <= 1e-9) targetCaravan.cargo.delete(resId);
+        else targetCaravan.cargo.set(resId, newQty);
+        party.cargo.set(resId, (party.cargo.get(resId) ?? 0) + qty);
+      }
+      targetCaravan.treasury = Math.max(0, targetCaravan.treasury - result.coinTaken);
+      party.treasury += result.coinTaken;
+      // Apply party casualties.
+      party.banditCount = Math.max(0, party.banditCount - result.banditCasualties.deaths);
+      if (result.outcome === 'attacker_won' || result.outcome === 'caravan_fled') {
+        if (homeCampId !== null) lastSuccessfulRaidDay.set(homeCampId, today);
+      }
+      let cargoLost = 0;
+      for (const qty of result.cargoTaken.values()) cargoLost += qty;
+      if (cargoLost > 0 || result.coinTaken > 0 || result.caravanCasualties.crewDeaths > 0) {
+        events.push({
+          type: 'caravan_robbed',
+          caravan: targetCaravan.id,
+          by: homeCampId ?? (`party:${String(party.id)}` as BanditCampId),
+          cargoLost,
+        });
+      }
+      spawnNewsFromAmbush(
+        world,
+        today,
+        targetCaravan,
+        homeCampId ?? (`party:${String(party.id)}` as BanditCampId),
+        synth,
+        result,
+        cargoLost,
+        events,
+      );
+      if (caravanCrewWiped) {
+        world.caravans.delete(targetCaravan.id);
+        events.push({
+          type: 'caravan_disbanded',
+          caravan: targetCaravan.id,
+          at: { q: targetCaravan.position.q, r: targetCaravan.position.r },
+          reason: 'zero_crew',
+        });
+      }
+      party.phase = 'returning';
+      return;
+    }
+    case 'fence_loot': {
+      const through = world.settlements.get(party.mission.through);
+      if (through === undefined || homeCamp === undefined || world.banditCamps === undefined) {
+        party.phase = 'returning';
+        return;
+      }
+      // Reuse the existing fence transaction by handing it a synthetic
+      // camp (party stats + party cargo).
+      const synth = partyAsSyntheticCamp(party);
+      const realCampSnapshot = homeCamp;
+      if (homeCampId !== null) world.banditCamps.set(homeCampId, synth);
+      executeFenceTransaction(
+        world,
+        today,
+        homeCampId ?? (`party:${String(party.id)}` as BanditCampId),
+        synth,
+        through,
+        events,
+      );
+      if (homeCampId !== null) world.banditCamps.set(homeCampId, realCampSnapshot);
+      party.cargo = new Map(synth.loot);
+      party.treasury = synth.treasury;
+      party.phase = 'returning';
+      return;
+    }
+    case 'recruit_drive': {
+      // Recruitment side-effect already handled by recruitDriveMultiplier
+      // at dispatch time. The visible party walking to the village is a
+      // physical anchor for the recruitment narrative — no further
+      // action required at target.
+      party.phase = 'returning';
+      return;
+    }
+    case 'bribe_settlement': {
+      const target = world.settlements.get(party.mission.settlement);
+      if (target === undefined) {
+        party.phase = 'returning';
+        return;
+      }
+      let receiver: Actor | undefined;
+      for (const oId of target.stockpileOwners) {
+        const a = world.actors.get(oId);
+        if (a !== undefined && (a.kind === 'city_corporation' || a.kind === 'governor_office')) {
+          receiver = a;
+          break;
+        }
+      }
+      const amount = Math.min(party.treasury, party.mission.amount);
+      if (amount > 0) {
+        party.treasury -= amount;
+        if (receiver !== undefined) receiver.treasury += amount;
+        if (receiver !== undefined) {
+          world.reputation.apply(party.ownerActor, receiver.id, 0.05);
+          world.reputation.apply(receiver.id, party.ownerActor, 0.1);
+        }
+      }
+      party.phase = 'returning';
+      return;
+    }
+    case 'migrate': {
+      // Found a new camp here. Party despawns; the new camp inherits
+      // the party's roster.
+      foundCampFromParty(world, party, today);
+      party.phase = 'done';
+      events.push({
+        type: 'bandit_party_returned',
+        party: party.id,
+        outcome: 'founded_camp',
+        at: { q: party.position.q, r: party.position.r },
+      });
+      return;
+    }
+  }
+};
+
+const banditPartyPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[]): void => {
+  if (world.banditParties === undefined) return;
+  for (const [partyId, party] of Array.from(world.banditParties.entries())) {
+    party.daysOnTrip += 1;
+    // If the party has been wiped (count <= 0), despawn.
+    if (party.banditCount <= 0) {
+      world.banditParties.delete(partyId);
+      events.push({
+        type: 'bandit_party_returned',
+        party: partyId,
+        outcome: 'lost',
+        at: { q: party.position.q, r: party.position.r },
+      });
+      continue;
+    }
+    if (party.phase === 'done') {
+      world.banditParties.delete(partyId);
+      continue;
+    }
+    // Per-phase movement decision.
+    let nextHex = party.position;
+    if (party.phase === 'fleeing' && party.fleeingFromHex !== undefined) {
+      nextHex = stepAwayFromHex(party.position, party.fleeingFromHex);
+    } else if (party.phase === 'outbound') {
+      nextHex = stepTowardHex(party.position, missionTargetHex(party.mission));
+    } else if (party.phase === 'returning') {
+      nextHex = stepTowardHex(party.position, party.homeHex);
+    }
+    // Confirm the next hex exists; clamp otherwise.
+    if (world.grid.has(nextHex)) party.position = nextHex;
+
+    // Arrival logic.
+    if (party.phase === 'outbound' && partyAtMissionTarget(party)) {
+      resolvePartyMissionAtTarget(
+        world,
+        partyId,
+        party,
+        today,
+        rng.derive(`party-${partyId}`),
+        events,
+      );
+    }
+    if (party.phase === 'returning' && partyAtHome(party)) {
+      // Merge back into home camp; or, if camp is gone, found a new one.
+      const homeCampId = party.homeCamp;
+      const home = homeCampId !== null ? world.banditCamps?.get(homeCampId) : undefined;
+      if (home !== undefined && homeCampId !== null && world.banditCamps !== undefined) {
+        world.banditCamps.set(homeCampId, mergePartyIntoCamp(home, party));
+        events.push({
+          type: 'bandit_party_returned',
+          party: partyId,
+          outcome: 'merged_home',
+          at: { q: party.position.q, r: party.position.r },
+        });
+      } else {
+        foundCampFromParty(world, party, today);
+        events.push({
+          type: 'bandit_party_returned',
+          party: partyId,
+          outcome: 'founded_camp',
+          at: { q: party.position.q, r: party.position.r },
+        });
+      }
+      world.banditParties.delete(partyId);
+    }
+  }
 };
 
 const recruitFromIdle = (world: WorldState, rng: Rng, _today: Day, events: TickEvent[]): void => {
