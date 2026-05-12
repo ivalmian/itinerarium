@@ -108,9 +108,17 @@ export const mergeLedgerInto = (
   maxAgeDays: number,
 ): void => {
   for (const [resource, byHex] of source) {
+    let targetByHex = target.priceLedger.get(resource);
     for (const [hexKey, obs] of byHex) {
       if (today - obs.observedOnDay > maxAgeDays) continue;
-      depositObservation(target, resource, hexKey, obs);
+      if (targetByHex === undefined) {
+        targetByHex = new Map<string, GuildPriceObs>();
+        target.priceLedger.set(resource, targetByHex);
+      }
+      const prev = targetByHex.get(hexKey);
+      if (prev === undefined || obs.observedOnDay > prev.observedOnDay) {
+        targetByHex.set(hexKey, obs);
+      }
     }
   }
 };

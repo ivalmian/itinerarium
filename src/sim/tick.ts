@@ -34,16 +34,16 @@
 import { allBuildings, getBuilding } from './buildings/catalog.js';
 import { tickCaravanMovement } from './caravan/movement.js';
 import { MAX_ACTIVE_WORLD_CARAVANS } from './caravan/limits.js';
-import { approximatePath, expectedRisk, planCaravanRoute } from './caravan/ai.js';
+import { expectedRiskOnApproximatePath, planCaravanRoute } from './caravan/ai.js';
 import { createCamp, decideCampAction, recruit, type BanditCamp } from './bandit/camp.js';
 import { createActor } from './politics/actor.js';
 import { createCharacter, generateFullName } from './politics/character.js';
 import { createFaction } from './politics/faction.js';
 import {
   buildGuildByMember,
-  depositObservation,
   mergeLedgerInto,
   type Guild,
+  type GuildPriceObs,
 } from './politics/guild.js';
 import { isGoalComplete, peekGoal, popGoal, type Goal } from './caravan/goal.js';
 import { actorId, banditCampId as makeBanditCampId, characterId, factionId } from './types.js';
@@ -64,6 +64,7 @@ import { tickPatrol, type Patrol } from './conflict/patrol.js';
 import { resolveRaid, type WallLevel } from './conflict/raid.js';
 import {
   dailyCarriedFoodReserveKg,
+  ANIMAL_KINDS,
   createCaravan,
   totalCrewCount,
   totalCarryKg,
@@ -79,9 +80,11 @@ import type { ReputationMagnitude } from './reputation/table.js';
 import { clearMarket } from './market/clear.js';
 import {
   buildSettlementSchedules,
+  createSettlementDemandSourceBuilder,
   institutionalProcurementResourcesForBuilding,
   laborCostPerWorkerDay,
   serviceMarketResources,
+  type SettlementDemandSourceBuilder,
 } from './market/scheduleBuilder.js';
 import type { DemandSource } from './market/demand.js';
 import {
@@ -92,7 +95,7 @@ import {
   type SettlementHealth,
 } from './population/disease.js';
 import { tickDaily, tickYearly, ROMAN_VITAL_RATES } from './population/vitalRates.js';
-import { runRecipe, type RecipeRunResult } from './production/engine.js';
+import { planRecipeRun } from './production/engine.js';
 import { recipesByOutput, type RecipeDef } from './production/recipes.js';
 import { allRecipes } from './production/recipes.js';
 // News-carrier ticking is handled by docs/13's tickCarrier; the world doesn't
@@ -473,6 +476,16 @@ export const tick = (inputs: TickInputs): TickResult => {
   // recipe_blocked event without re-walking world.settlements.
   settlementsById = world.settlements;
 
+  const laborContextCache = new Map<Settlement, LaborClassContext>();
+  const laborContextForSettlement = (settlement: Settlement): LaborClassContext => {
+    let cached = laborContextCache.get(settlement);
+    if (cached === undefined) {
+      cached = buildLaborClassContext(settlement);
+      laborContextCache.set(settlement, cached);
+    }
+    return cached;
+  };
+
   // --- Phase 0: age the per-settlement recent-flow counters ----------------
   // recentInflows / recentOutflows now follow exponential-decay semantics
   // with a ~30-day half-life (factor exp(-1/30) ≈ 0.967/day). Without this
@@ -488,11 +501,11 @@ export const tick = (inputs: TickInputs): TickResult => {
   ageRecentFlowsPhase(world);
 
   // --- Phase 1: Production -------------------------------------------------
-  productionPhase(world, season, events, stats);
+  productionPhase(world, season, events, stats, laborContextForSettlement);
   // After production, drain mason+carpenter worker-days toward each
   // settlement's pendingBuildings. Per docs/15 §C8 — construction takes
   // real time and labor; new buildings don't appear instantly.
-  constructionPhase(world, today, events);
+  constructionPhase(world, today, events, laborContextForSettlement);
   // Demolition phase: buildings on released catchment hexes get torn
   // down over time, refunding ~50% of materials to the owner. Per
   // docs/15 §C8 demolition.
@@ -503,14 +516,14 @@ export const tick = (inputs: TickInputs): TickResult => {
 
   // --- Phase 4: Trade ------------------------------------------------------
   const subsistenceAccess = initializeSubsistenceAccess(world);
-  tradePhase(world, season, today, events, stats, subsistenceAccess);
+  tradePhase(world, season, today, events, stats, subsistenceAccess, laborContextForSettlement);
   // After every settlement clears its market, run the petty-merchant /
   // villager-pickup-cart pass that arbitrages price spreads between
   // settlements within 3 hexes (docs/06 §"Local trade between nearby
   // settlements", docs/08 §"Per-settlement markets, regional smoothing").
   // This is what keeps ~8000 separate markets aligned into a regional
   // price gradient instead of 8000 disconnected wells.
-  localTradePhase(world, season, today, events, subsistenceAccess);
+  localTradePhase(world, season, today, events, subsistenceAccess, laborContextForSettlement);
 
   // --- Phase 4b: Consumption / famine pressure -----------------------------
   consumptionPhase(world, today, events, stats, subsistenceAccess);
@@ -601,14 +614,25 @@ const productionPhase = (
   season: Season,
   events: TickEvent[],
   stats: TickStats,
+  laborContextForSettlement: (settlement: Settlement) => LaborClassContext,
 ): void => {
   const productionPasses = 2;
   for (const settlement of world.settlements.values()) {
-    const laborClassContext = buildLaborClassContext(settlement);
+    const laborClassContext = laborContextForSettlement(settlement);
     const laborPools = laborPoolsForSettlement(settlement, laborClassContext);
+    const laborAvailabilityByOwnerKind = new Map<Actor['kind'], ReadonlyMap<JobId, number>>();
+    const laborAvailabilityForOwnerKind = (ownerKind: Actor['kind']): ReadonlyMap<JobId, number> => {
+      let view = laborAvailabilityByOwnerKind.get(ownerKind);
+      if (view === undefined) {
+        view = laborAvailabilityViewForOwner(laborPools, ownerKind);
+        laborAvailabilityByOwnerKind.set(ownerKind, view);
+      }
+      return view;
+    };
     const buildingsById = buildingsByKindForSettlement(settlement);
     const wagePriceSignal = wagePriceSignalForSettlement(settlement);
-    const recipesForToday = productionOrderForSettlement(settlement, season);
+    const wagePerWorkerDay = laborCostPerWorkerDay(wagePriceSignal);
+    const recipesForToday = productionOrderForSettlement(settlement, season, buildingsById);
     for (let pass = 0; pass < productionPasses; pass++) {
       const finalPass = pass === productionPasses - 1;
       for (const recipe of recipesForToday) {
@@ -619,7 +643,7 @@ const productionPhase = (
           if (ownerActor === undefined) continue;
           if (b.capacity <= 0) continue;
           if (mineRecipeHasMismatchedDeposit(world, b, recipe)) continue;
-          const laborForOwner = laborAvailableFromPoolsForOwner(laborPools, ownerActor.kind);
+          const laborForOwner = laborAvailabilityForOwnerKind(ownerActor.kind);
           const depositCapacity = mineDepositCapacityForRecipe(world, b, recipe);
           if (depositCapacity <= 0) {
             if (finalPass) {
@@ -645,6 +669,7 @@ const productionPhase = (
             laborClassContext,
             ownerActor,
             wagePriceSignal,
+            wagePerWorkerDay,
           );
           if (wageAffordableCapacity <= 0) {
             if (finalPass) {
@@ -657,7 +682,7 @@ const productionPhase = (
             }
             continue;
           }
-          const result: RecipeRunResult = runRecipe({
+          const result = planRecipeRun({
             recipe,
             building: {
               id: b.buildingId,
@@ -685,8 +710,11 @@ const productionPhase = (
             continue;
           }
           if (result.ranAtFraction > 0) {
+            const fraction = result.ranAtFraction;
             // Apply the deltas to the owner's stockpile.
-            for (const [resId, qty] of result.inputsConsumed) {
+            for (const [resId, qtyPerRun] of recipe.inputs) {
+              const qty = qtyPerRun * fraction;
+              if (qty <= 0) continue;
               decreaseStockpile(ownerActor, resId, qty);
               // Recipe-input drain is local consumption: the resource was
               // used UP in this settlement to make something else.
@@ -694,17 +722,20 @@ const productionPhase = (
                 recordConsumption(settlement, resId, qty);
               }
             }
-            for (const [resId, qty] of result.outputsProduced) {
+            for (const [resId, qtyPerRun] of recipe.outputs) {
+              const qty = qtyPerRun * fraction;
+              if (qty <= 0) continue;
               if (isServiceResource(resId)) continue;
               receiveResourceOrCoin(ownerActor, resId, qty);
               recordProduction(settlement, resId, qty);
             }
-            depleteMineDeposit(world, b, recipe, result);
+            depleteMineDeposit(world, b, recipe, fraction);
             // Decrement the labor pool we estimated locally so subsequent
             // recipes in this phase don't double-count workers.
             const consumed = consumeLaborFromPoolsForOwner(
               laborPools,
-              result.laborUsed,
+              recipe.labor,
+              fraction,
               ownerActor.kind,
             );
             payProductionWagesForWorkerDaysByClass(
@@ -713,6 +744,7 @@ const productionPhase = (
               ownerActor,
               consumed.paidWorkerDaysByClass,
               wagePriceSignal,
+              wagePerWorkerDay,
             );
             // Decrement building capacity for the day.
             b.capacity = Math.max(0, b.capacity - result.buildingCapacityUsed);
@@ -789,13 +821,33 @@ const WAGE_RECIPIENT_KIND_PRIORITY_BY_CLASS: Readonly<
   ],
 };
 
+const WAGE_PRICE_SIGNAL_RESOURCES: readonly ResourceId[] = Object.freeze(
+  [
+    'food.bread',
+    'food.flour',
+    'food.grain',
+    'food.cheese',
+    'food.fish',
+    'food.game',
+    'mineral.salt',
+    'material.wood',
+    'material.charcoal',
+    'goods.cloth',
+  ].map(resourceId),
+);
+
 const wagePriceSignalForSettlement = (settlement: Settlement): ReadonlyMap<ResourceId, number> => {
   const prices = new Map<ResourceId, number>();
-  for (const [resource, price] of settlement.market.lastClearingPrice) {
-    if (Number.isFinite(price) && price > 0) prices.set(resource, price);
-  }
-  for (const [resource, price] of DEFAULT_GLOBAL_PRICES) {
-    if (!prices.has(resource) && Number.isFinite(price) && price > 0) prices.set(resource, price);
+  for (const resource of WAGE_PRICE_SIGNAL_RESOURCES) {
+    const localPrice = settlement.market.lastClearingPrice.get(resource);
+    if (localPrice !== undefined && Number.isFinite(localPrice) && localPrice > 0) {
+      prices.set(resource, localPrice);
+      continue;
+    }
+    const globalPrice = DEFAULT_GLOBAL_PRICES.get(resource);
+    if (globalPrice !== undefined && Number.isFinite(globalPrice) && globalPrice > 0) {
+      prices.set(resource, globalPrice);
+    }
   }
   return prices;
 };
@@ -806,15 +858,19 @@ const selectWageRecipientForClass = (
   payer: Actor,
   klass: 'plebeian' | 'freedman' | 'foreigner' | 'patrician',
 ): Actor | undefined => {
-  const candidates = settlement.stockpileOwners
-    .map((id) => world.actors.get(id))
-    .filter((a): a is Actor => a !== undefined);
   const priority = WAGE_RECIPIENT_KIND_PRIORITY_BY_CLASS[klass];
   for (const kind of priority) {
-    const found = candidates.find((a) => a.kind === kind && a.id !== payer.id);
-    if (found !== undefined) return found;
+    for (const id of settlement.stockpileOwners) {
+      const candidate = world.actors.get(id);
+      if (candidate === undefined) continue;
+      if (candidate.kind === kind && candidate.id !== payer.id) return candidate;
+    }
   }
-  return candidates.find((a) => a.id === payer.id);
+  for (const id of settlement.stockpileOwners) {
+    const candidate = world.actors.get(id);
+    if (candidate !== undefined && candidate.id === payer.id) return candidate;
+  }
+  return undefined;
 };
 
 /**
@@ -840,8 +896,8 @@ const wageAffordableCapacityForRecipe = (
   laborClassContext: LaborClassContext,
   payer: Actor,
   prices: ReadonlyMap<ResourceId, number>,
+  wagePerDay: number,
 ): number => {
-  const wagePerDay = laborCostPerWorkerDay(prices);
   if (wagePerDay <= 0) return Infinity;
   const paidWorkerDaysPerRun = wageEarningWorkerDaysForLaborForOwner(
     laborClassContext,
@@ -861,13 +917,14 @@ const payProductionWages = (
   payer: Actor,
   laborUsed: ReadonlyMap<JobId, number>,
   prices: ReadonlyMap<ResourceId, number>,
+  wagePerDay: number,
 ): void => {
   const byClass = wageEarningWorkerDaysByClassForLaborForOwner(
     laborClassContext,
     laborUsed,
     payer.kind,
   );
-  payProductionWagesForWorkerDaysByClass(world, settlement, payer, byClass, prices);
+  payProductionWagesForWorkerDaysByClass(world, settlement, payer, byClass, prices, wagePerDay);
 };
 
 /**
@@ -882,9 +939,9 @@ const payProductionWagesForWorkerDaysByClass = (
   payer: Actor,
   workerDaysByClass: ReadonlyMap<CharacterClass, number>,
   prices: ReadonlyMap<ResourceId, number>,
+  wagePerDay: number,
 ): void => {
   if (workerDaysByClass.size === 0) return;
-  const wagePerDay = laborCostPerWorkerDay(prices);
   if (wagePerDay <= 0) return;
   for (const [klass, workerDays] of workerDaysByClass) {
     if (workerDays <= 0) continue;
@@ -975,6 +1032,19 @@ const buildingsByKindCache: WeakMap<
 
 type LaborClassPools = Map<JobId, Map<CharacterClass, number>>;
 
+const ALL_RECIPE_LABOR_ROLES: readonly JobId[] = (() => {
+  const seen = new Set<JobId>();
+  const out: JobId[] = [];
+  for (const recipe of allRecipes()) {
+    for (const role of recipe.labor.keys()) {
+      if (seen.has(role)) continue;
+      seen.add(role);
+      out.push(role);
+    }
+  }
+  return Object.freeze(out);
+})();
+
 const laborPoolsForSettlement = (
   settlement: Settlement,
   laborClassContext: LaborClassContext,
@@ -1004,29 +1074,36 @@ const laborPoolsForSettlement = (
 
   const adults = settlement.population.totalAdults();
   if (adults <= 0) return out;
-  for (const recipe of allRecipes()) {
-    for (const role of recipe.labor.keys()) {
-      out.set(role, new Map([['plebeian' as CharacterClass, adults]]));
-    }
+  for (const role of ALL_RECIPE_LABOR_ROLES) {
+    out.set(role, new Map([['plebeian' as CharacterClass, adults]]));
   }
   return out;
 };
 
-const laborAvailableFromPoolsForOwner = (
+const laborAvailableForJobFromPoolsForOwner = (
+  pools: LaborClassPools,
+  job: JobId,
+  ownerKind: Actor['kind'],
+): number => {
+  const byClass = pools.get(job);
+  if (byClass === undefined) return 0;
+  let total = 0;
+  for (const [klass, count] of byClass) {
+    if (!ownerCanUseLaborClass(klass, ownerKind)) continue;
+    total += count;
+  }
+  return total;
+};
+
+const laborAvailabilityViewForOwner = (
   pools: LaborClassPools,
   ownerKind: Actor['kind'],
-): Map<JobId, number> => {
-  const out = new Map<JobId, number>();
-  for (const [job, byClass] of pools) {
-    let total = 0;
-    for (const [klass, count] of byClass) {
-      if (!ownerCanUseLaborClass(klass, ownerKind)) continue;
-      total += count;
-    }
-    if (total > 0) out.set(job, total);
-  }
-  return out;
-};
+): ReadonlyMap<JobId, number> =>
+  ({
+    get(job: JobId): number {
+      return laborAvailableForJobFromPoolsForOwner(pools, job, ownerKind);
+    },
+  }) as ReadonlyMap<JobId, number>;
 
 const LABOR_CONSUMPTION_CLASS_ORDER: readonly CharacterClass[] = [
   'slave',
@@ -1050,13 +1127,14 @@ interface ConsumedLaborByClass {
 
 const consumeLaborFromPoolsForOwner = (
   pools: LaborClassPools,
-  laborUsed: ReadonlyMap<JobId, number>,
+  laborPerRun: ReadonlyMap<JobId, number>,
+  fraction: number,
   ownerKind: Actor['kind'],
 ): ConsumedLaborByClass => {
   let paidWorkerDays = 0;
   const paidWorkerDaysByClass = new Map<CharacterClass, number>();
-  for (const [job, required] of laborUsed) {
-    let remaining = required;
+  for (const [job, requiredPerRun] of laborPerRun) {
+    let remaining = requiredPerRun * fraction;
     if (remaining <= 0) continue;
     const byClass = pools.get(job);
     if (byClass === undefined) continue;
@@ -1168,11 +1246,11 @@ const depleteMineDeposit = (
   world: WorldState,
   building: SettlementBuilding,
   recipe: RecipeDef,
-  result: RecipeRunResult,
+  fraction: number,
 ): void => {
   const minedResource = minedResourceForRecipe(recipe);
   if (minedResource === undefined) return;
-  const outputQty = result.outputsProduced.get(minedResource) ?? 0;
+  const outputQty = (recipe.outputs.get(minedResource) ?? 0) * fraction;
   if (outputQty <= 0) return;
   const tile = world.grid.get(building.hex);
   const deposit = tile?.deposit;
@@ -1210,11 +1288,15 @@ const resourceMapValue = (
   return total;
 };
 
-const laborDaysForRecipe = (recipe: RecipeDef): number => {
-  let total = 0;
-  for (const qty of recipe.labor.values()) total += Math.max(0, qty);
-  return total;
-};
+const LABOR_DAYS_BY_RECIPE: ReadonlyMap<RecipeId, number> = (() => {
+  const out = new Map<RecipeId, number>();
+  for (const recipe of allRecipes()) {
+    let total = 0;
+    for (const qty of recipe.labor.values()) total += Math.max(0, qty);
+    out.set(recipe.id, total);
+  }
+  return out;
+})();
 
 const productionPriority = (settlement: Settlement, recipe: RecipeDef, season: Season): number => {
   const seasonMul = recipeSeasonalMultiplier(recipe, season);
@@ -1222,7 +1304,7 @@ const productionPriority = (settlement: Settlement, recipe: RecipeDef, season: S
   const outputValue = resourceMapValue(settlement, recipe.outputs);
   const inputCost = resourceMapValue(settlement, recipe.inputs);
   const margin = outputValue - inputCost;
-  const laborDays = Math.max(0.1, laborDaysForRecipe(recipe));
+  const laborDays = Math.max(0.1, LABOR_DAYS_BY_RECIPE.get(recipe.id) ?? 0);
   // Producers react to observed marginal prices: high-value downstream
   // goods should get scarce labor before low-price intermediates. A small
   // gross-output term keeps extraction running early in a save before input
@@ -1233,15 +1315,25 @@ const productionPriority = (settlement: Settlement, recipe: RecipeDef, season: S
 const productionOrderForSettlement = (
   settlement: Settlement,
   season: Season,
+  buildingsById: ReadonlyMap<BuildingId, readonly Settlement['buildings'][number][]>,
 ): readonly RecipeDef[] => {
-  const out = [...RECIPES_IN_TOPO_ORDER];
-  out.sort((a, b) => {
-    const pa = productionPriority(settlement, a, season);
-    const pb = productionPriority(settlement, b, season);
-    if (pb !== pa) return pb - pa;
-    return (RECIPE_TOPO_INDEX.get(a.id) ?? 0) - (RECIPE_TOPO_INDEX.get(b.id) ?? 0);
+  const ranked: { readonly recipe: RecipeDef; readonly priority: number; readonly topo: number }[] =
+    [];
+  for (const recipe of RECIPES_IN_TOPO_ORDER) {
+    if (!buildingsById.has(recipe.building)) continue;
+    const priority = productionPriority(settlement, recipe, season);
+    if (priority === Number.NEGATIVE_INFINITY) continue;
+    ranked.push({
+      recipe,
+      priority,
+      topo: RECIPE_TOPO_INDEX.get(recipe.id) ?? 0,
+    });
+  }
+  ranked.sort((a, b) => {
+    if (b.priority !== a.priority) return b.priority - a.priority;
+    return a.topo - b.topo;
   });
-  return out;
+  return ranked.map((entry) => entry.recipe);
 };
 
 const DEFAULT_PRODUCTION_OUTPUT_STOCK_TARGET_DAYS = 30;
@@ -1393,13 +1485,12 @@ const consumptionPhase = (
     const access = accessBySettlement.get(settlement);
     if (access === undefined || access.needModii <= 0) continue;
 
-    // Source: any stockpileOwner in the settlement holding non-grain food.
-    const owners = settlement.stockpileOwners
-      .map((id) => world.actors.get(id))
-      .filter((a): a is Actor => a !== undefined);
     let drawn = 0;
     const fallbackMarkets = new Map<ResourceId, FallbackRationMarket>();
-    for (const o of owners) {
+    // Source: any stockpileOwner in the settlement holding non-grain food.
+    for (const ownerId of settlement.stockpileOwners) {
+      const o = world.actors.get(ownerId);
+      if (o === undefined) continue;
       const remainingNeed = access.needModii - access.fulfilledModii - drawn;
       if (remainingNeed <= 0) break;
       drawn += buyFallbackRationsFromOwner(world, settlement, o, remainingNeed, fallbackMarkets);
@@ -1824,12 +1915,14 @@ const DIRT_UPGRADE_THRESHOLD = 100;
 const DIRT_DOWNGRADE_THRESHOLD = 20;
 const MAX_ROAD_WEAR = 200;
 const MAX_ROAD_WEAR_ADDED_PER_ENTRY = 10;
+const MASON_JOB = jobId('mason');
+const CARPENTER_JOB = jobId('carpenter');
 
 const caravanTrailWear = (c: Caravan): number => {
   let crew = 0;
   for (const m of c.crew) crew += m.count;
   let animals = 0;
-  for (const k of Object.keys(c.animals) as (keyof typeof c.animals)[]) {
+  for (const k of ANIMAL_KINDS) {
     animals += c.animals[k] ?? 0;
   }
   return crew * WEAR_PER_CREW + animals * WEAR_PER_PACK_ANIMAL;
@@ -1856,8 +1949,8 @@ const addRoadWear = (world: WorldState, h: Hex, amount: number): void => {
 const demolitionPhase = (world: WorldState, _today: Day, events: TickEvent[]): void => {
   for (const settlement of world.settlements.values()) {
     if (settlement.pendingDemolitions.length === 0) continue;
-    let masonBudget = settlement.jobAllocations.get(jobId('mason')) ?? 0;
-    let carpenterBudget = settlement.jobAllocations.get(jobId('carpenter')) ?? 0;
+    let masonBudget = settlement.jobAllocations.get(MASON_JOB) ?? 0;
+    let carpenterBudget = settlement.jobAllocations.get(CARPENTER_JOB) ?? 0;
     let budget = masonBudget + carpenterBudget;
     if (budget <= 0) continue;
 
@@ -1972,15 +2065,16 @@ const syncCaravanWithLocalGuild = (world: WorldState, c: Caravan, today: Day): v
 
   // Deposit recent observations.
   for (const [resource, byHex] of c.priceBook) {
+    let guildByHex = ownerGuild.priceLedger.get(resource);
     for (const [hexK, obs] of byHex) {
-      depositObservation(ownerGuild, resource, hexK, {
-        price: obs.price,
-        ...(obs.bidPrice !== undefined ? { bidPrice: obs.bidPrice } : {}),
-        ...(obs.askPrice !== undefined ? { askPrice: obs.askPrice } : {}),
-        ...(obs.bidDepth !== undefined ? { bidDepth: obs.bidDepth } : {}),
-        ...(obs.askDepth !== undefined ? { askDepth: obs.askDepth } : {}),
-        observedOnDay: obs.observedOnDay,
-      });
+      if (guildByHex === undefined) {
+        guildByHex = new Map<string, GuildPriceObs>();
+        ownerGuild.priceLedger.set(resource, guildByHex);
+      }
+      const prev = guildByHex.get(hexK);
+      if (prev === undefined || obs.observedOnDay > prev.observedOnDay) {
+        guildByHex.set(hexK, obs);
+      }
     }
   }
 
@@ -1995,14 +2089,7 @@ const syncCaravanWithLocalGuild = (world: WorldState, c: Caravan, today: Day): v
       if (today - obs.observedOnDay > GUILD_LEDGER_MAX_AGE_DAYS) continue;
       const prev = book.get(hexK);
       if (prev === undefined || obs.observedOnDay > prev.observedOnDay) {
-        book.set(hexK, {
-          price: obs.price,
-          ...(obs.bidPrice !== undefined ? { bidPrice: obs.bidPrice } : {}),
-          ...(obs.askPrice !== undefined ? { askPrice: obs.askPrice } : {}),
-          ...(obs.bidDepth !== undefined ? { bidDepth: obs.bidDepth } : {}),
-          ...(obs.askDepth !== undefined ? { askDepth: obs.askDepth } : {}),
-          observedOnDay: obs.observedOnDay,
-        });
+        book.set(hexK, obs);
       }
     }
   }
@@ -2841,7 +2928,7 @@ const RECENT_FLOW_DECAY_FACTOR = Math.exp(-1 / 30);
 const RECENT_FLOW_PRUNE_BELOW = 0.5;
 
 const decayFlowMap = (m: Map<ResourceId, number>): void => {
-  for (const [r, v] of [...m]) {
+  for (const [r, v] of m) {
     const next = v * RECENT_FLOW_DECAY_FACTOR;
     if (next < RECENT_FLOW_PRUNE_BELOW) m.delete(r);
     else m.set(r, next);
@@ -3085,6 +3172,32 @@ const recordBookFromClearing = (
 
 const BOOK_LADDER_MAX_ORDERS_PER_SIDE = 12;
 
+const insertAskBookOrder = (orders: MarketBookOrder[], order: MarketBookOrder): void => {
+  if (
+    orders.length >= BOOK_LADDER_MAX_ORDERS_PER_SIDE &&
+    order.price >= (orders[orders.length - 1]?.price ?? Infinity)
+  ) {
+    return;
+  }
+  let index = 0;
+  while (index < orders.length && orders[index]!.price <= order.price) index++;
+  orders.splice(index, 0, order);
+  if (orders.length > BOOK_LADDER_MAX_ORDERS_PER_SIDE) orders.pop();
+};
+
+const insertBidBookOrder = (orders: MarketBookOrder[], order: MarketBookOrder): void => {
+  if (
+    orders.length >= BOOK_LADDER_MAX_ORDERS_PER_SIDE &&
+    order.price <= (orders[orders.length - 1]?.price ?? 0)
+  ) {
+    return;
+  }
+  let index = 0;
+  while (index < orders.length && orders[index]!.price >= order.price) index++;
+  orders.splice(index, 0, order);
+  if (orders.length > BOOK_LADDER_MAX_ORDERS_PER_SIDE) orders.pop();
+};
+
 /**
  * Per docs/15 §C19: build the per-source bid/ask ladder from the residual
  * schedules and stamp it on the settlement. Asks ascending, bids descending,
@@ -3122,40 +3235,43 @@ const recordBookLadderFromClearing = (
   today: Day,
 ): void => {
   // How much of each demand/supply source was filled today?
-  const filledByBuyer = new Map<string, number>();
-  const filledBySeller = new Map<string, number>();
-  for (const trade of result.trades) {
-    filledByBuyer.set(
-      trade.buyerSourceId,
-      (filledByBuyer.get(trade.buyerSourceId) ?? 0) + trade.quantity,
-    );
-    filledBySeller.set(
-      trade.sellerSourceId,
-      (filledBySeller.get(trade.sellerSourceId) ?? 0) + trade.quantity,
-    );
+  let filledByBuyer: Map<string, number> | undefined;
+  let filledBySeller: Map<string, number> | undefined;
+  if (result.trades.length > 0) {
+    filledByBuyer = new Map<string, number>();
+    filledBySeller = new Map<string, number>();
+    for (const trade of result.trades) {
+      filledByBuyer.set(
+        trade.buyerSourceId,
+        (filledByBuyer.get(trade.buyerSourceId) ?? 0) + trade.quantity,
+      );
+      filledBySeller.set(
+        trade.sellerSourceId,
+        (filledBySeller.get(trade.sellerSourceId) ?? 0) + trade.quantity,
+      );
+    }
   }
   const evalPrice = Number.isFinite(result.clearingPrice)
     ? result.clearingPrice
     : Number.MAX_SAFE_INTEGER;
   const asks: MarketBookOrder[] = [];
   for (const s of supplySources) {
-    const filled = filledBySeller.get(s.id) ?? 0;
+    const filled = filledBySeller?.get(s.id) ?? 0;
     const remaining = Math.max(0, s.availableToSell - filled);
     if (remaining <= 1e-6) continue;
     if (!Number.isFinite(s.reservationPrice)) continue;
     const actor = world.actors.get(s.ownerActor);
     if (actor === undefined) continue;
-    asks.push({
+    insertAskBookOrder(asks, {
       actorId: s.ownerActor,
       actorKind: actor.kind,
       price: s.reservationPrice,
       quantity: remaining,
     });
   }
-  asks.sort((a, b) => a.price - b.price);
   const bids: MarketBookOrder[] = [];
   for (const d of demandSources) {
-    const filled = filledByBuyer.get(d.id) ?? 0;
+    const filled = filledByBuyer?.get(d.id) ?? 0;
     // Residual quantity that would still trade at the curve's max-WTP.
     // For subsistence (maxWtp = Infinity) we use quantityAt(eval) as a
     // representative current-day order size.
@@ -3170,7 +3286,7 @@ const recordBookLadderFromClearing = (
       if (!Number.isFinite(result.clearingPrice) || result.clearingPrice <= 0) continue;
       const buyer = d.buyerActor !== undefined ? world.actors.get(d.buyerActor) : undefined;
       if (buyer === undefined) continue;
-      bids.push({
+      insertBidBookOrder(bids, {
         actorId: d.buyerActor as ActorId,
         actorKind: buyer.kind,
         price: result.clearingPrice,
@@ -3183,7 +3299,7 @@ const recordBookLadderFromClearing = (
     if (d.buyerActor === undefined) continue;
     const buyer = world.actors.get(d.buyerActor);
     if (buyer === undefined) continue;
-    bids.push({
+    insertBidBookOrder(bids, {
       actorId: d.buyerActor,
       actorKind: buyer.kind,
       price: d.maxWillingnessToPay,
@@ -3192,11 +3308,7 @@ const recordBookLadderFromClearing = (
       ...(d.buyerDisposition !== undefined ? { buyerDisposition: d.buyerDisposition } : {}),
     });
   }
-  bids.sort((a, b) => b.price - a.price);
-  const ladder: MarketBookLadder = {
-    asks: asks.slice(0, BOOK_LADDER_MAX_ORDERS_PER_SIDE),
-    bids: bids.slice(0, BOOK_LADDER_MAX_ORDERS_PER_SIDE),
-  };
+  const ladder: MarketBookLadder = { asks, bids };
   recordMarketBookLadder(settlement, resource, ladder, today);
 };
 
@@ -3207,6 +3319,7 @@ const tradePhase = (
   events: TickEvent[],
   stats: TickStats,
   subsistenceAccess: SubsistenceAccessMap,
+  laborContextForSettlement: (settlement: Settlement) => LaborClassContext,
 ): void => {
   // Per docs/08 + codex review #5: replaced the v1 8-resource hardcoded
   // "grain or comfort" model with the full demand/supply schedule
@@ -3223,11 +3336,13 @@ const tradePhase = (
 
     // Stockpiles by owner — buildSettlementSchedules expects this shape.
     const stockpilesByOwner = new Map<ActorId, ReadonlyMap<ResourceId, Quantity>>();
+    const actorTreasuryByActor = new Map<ActorId, number>();
     const owners: Actor[] = [];
     for (const oId of settlement.stockpileOwners) {
       const a = world.actors.get(oId);
       if (a === undefined) continue;
       stockpilesByOwner.set(a.id, a.stockpile);
+      actorTreasuryByActor.set(a.id, a.treasury);
       owners.push(a);
     }
     if (owners.length === 0) continue;
@@ -3274,18 +3389,7 @@ const tradePhase = (
     //      computable → bread clears, etc.
     // Per the user: "i don't think pinning prices to some arbitrary
     // values is good, that's not what happens irl either."
-    const seededPrices = new Map<ResourceId, number>();
-    for (const r of tradable) {
-      const observed = settlement.market.lastClearingPrice.get(r) ?? 0;
-      if (observed > 0) {
-        seededPrices.set(r, observed);
-        continue;
-      }
-      const globalPrice = DEFAULT_GLOBAL_PRICES.get(r);
-      if (globalPrice !== undefined && globalPrice > 0) {
-        seededPrices.set(r, globalPrice);
-      }
-    }
+    const seededPrices = seededPricesForSettlement(settlement);
 
     const schedules = buildSettlementSchedules({
       settlement,
@@ -3295,7 +3399,8 @@ const tradePhase = (
       today,
       season,
       ownerKindByActor,
-      actorTreasuryByActor: new Map(owners.map((a) => [a.id, a.treasury] as const)),
+      actorTreasuryByActor,
+      laborClassContext: laborContextForSettlement(settlement),
       grid: world.grid,
     });
 
@@ -3347,8 +3452,10 @@ const tradePhase = (
         }
         continue;
       }
-      const demandSourceById = new Map(pair.demand.sources.map((source) => [source.id, source]));
-      const supplySourceById = new Map(pair.supply.sources.map((source) => [source.id, source]));
+      const demandSourceById = new Map<string, DemandSource>();
+      for (const source of pair.demand.sources) demandSourceById.set(source.id, source);
+      const supplySourceById = new Map<string, (typeof pair.supply.sources)[number]>();
+      for (const source of pair.supply.sources) supplySourceById.set(source.id, source);
       let actualTraded = 0;
       for (const trade of result.trades) {
         const sellerActorId = supplySourceById.get(trade.sellerSourceId)?.ownerActor;
@@ -3364,9 +3471,7 @@ const tradePhase = (
         const concreteBuyer = buyer;
         const buyerPaysSeller = concreteBuyer.id !== seller.id;
         const maxByBuyerTreasury =
-          buyerPaysSeller && trade.price > 0
-            ? concreteBuyer.treasury / trade.price
-            : trade.quantity;
+          buyerPaysSeller && trade.price > 0 ? concreteBuyer.treasury / trade.price : trade.quantity;
         const qty = Math.min(trade.quantity, maxByBuyerTreasury);
         if (qty <= 1e-9) continue;
 
@@ -3575,6 +3680,15 @@ const TRADABLE_RESOURCES: readonly ResourceId[] = (() => {
   return Object.freeze(out);
 })();
 
+const TRADABLE_RESOURCE_KEYS: ReadonlySet<string> = new Set(TRADABLE_RESOURCES.map(String));
+
+const DEFAULT_GLOBAL_TRADABLE_PRICE_ENTRIES: readonly (readonly [ResourceId, number])[] =
+  Object.freeze(
+    Array.from(DEFAULT_GLOBAL_PRICES.entries()).filter(([resource, price]) => {
+      return TRADABLE_RESOURCE_KEYS.has(String(resource)) && price > 0;
+    }),
+  );
+
 // --- Phase 4b: Local trade (regional smoothing) -----------------------------
 
 /**
@@ -3623,65 +3737,64 @@ const localTradePhase = (
   today: Day,
   events: TickEvent[],
   subsistenceAccess: SubsistenceAccessMap,
+  laborContextForSettlement: (settlement: Settlement) => LaborClassContext,
 ): void => {
-  const settlementsByAnchorHex = settlementAnchorIndexForWorld(world).byAnchorHex;
+  const localTradePairs = settlementAnchorIndexForWorld(world).localTradePairs;
   const ownerKindByActor = ownerKindByActorForWorld(world);
-  const demandCache = new Map<string, readonly DemandSource[]>();
+  const demandCache: LocalTradeDemandCache = new Map();
+  const pricedResourceCache = new Map<Settlement, PricedLocalTradeResources>();
+  const scheduleBaseCache = new Map<Settlement, LocalTradeScheduleBase>();
 
   // Cache anchor passability per phase. v1 approximation: a pair is feasible
   // if both anchors are on passable terrain this season. Real path
   // reachability across intervening hexes would require an A* call per pair
   // and is deferred to v1.5+ when long-haul caravan AI consolidation lands.
-  const passableAtAnchor = new Map<string, boolean>();
+  const passableAtAnchor = new Map<Settlement, boolean>();
   const isAnchorPassable = (s: Settlement): boolean => {
-    const k = hexKey(s.anchor);
-    const cached = passableAtAnchor.get(k);
+    const cached = passableAtAnchor.get(s);
     if (cached !== undefined) return cached;
     const tile = world.grid.get(s.anchor);
     // If the tile isn't in the grid (test stub), treat as passable so unit
     // tests don't have to populate every hex with terrain just to exercise
     // local trade.
     const ok = tile === undefined ? true : isPassable(tile.terrain, season);
-    passableAtAnchor.set(k, ok);
+    passableAtAnchor.set(s, ok);
     return ok;
   };
 
-  for (const a of world.settlements.values()) {
+  for (const pair of localTradePairs) {
+    const { a, b, dist } = pair;
     if (!isAnchorPassable(a)) continue;
-    // Enumerate every hex within the widest local-cartage range of A's anchor
-    // and look up settlements anchored there. This is O(local neighborhood) per
-    // A, vs O(N) naive.
-    for (const neighborHex of hexesWithinRange(a.anchor, LOCAL_TRADE_MAX_HEX_DISTANCE)) {
-      const bucket = settlementsByAnchorHex.get(hexKey(neighborHex));
-      if (bucket === undefined) continue;
-      for (const b of bucket) {
-        // Determinism: visit each unordered pair once, with id ordering.
-        if (String(a.id) >= String(b.id)) continue;
-        if (!isAnchorPassable(b)) continue;
-        const dist = hexDistance(a.anchor, b.anchor);
-        if (dist > LOCAL_TRADE_MAX_HEX_DISTANCE) continue;
-        // Per docs/06 §"Distance and cost", the table is in coin/kg, not
-        // coin/unit. tryLocalTrade scales by the resource's weightKgPerUnit
-        // before comparing prices.
-        const transportCostPerKg = TRANSPORT_COST_BY_DISTANCE[dist];
-        if (transportCostPerKg === undefined) continue;
-        for (const resId of LOCAL_TRADE_RESOURCES) {
-          if (dist > localTradeMaxHexDistanceForResource(resId)) continue;
-          tryLocalTrade(
-            world,
-            a,
-            b,
-            resId,
-            transportCostPerKg,
-            season,
-            today,
-            ownerKindByActor,
-            demandCache,
-            subsistenceAccess,
-            events,
-          );
-        }
-      }
+    if (!isAnchorPassable(b)) continue;
+    // Per docs/06 §"Distance and cost", the table is in coin/kg, not
+    // coin/unit. tryLocalTrade scales by the resource's weightKgPerUnit
+    // before comparing prices.
+    const transportCostPerKg = TRANSPORT_COST_BY_DISTANCE[dist];
+    if (transportCostPerKg === undefined) continue;
+    const aResources = pricedLocalTradeResourcesForSettlement(a, pricedResourceCache);
+    const bResources = pricedLocalTradeResourcesForSettlement(b, pricedResourceCache);
+    const smaller =
+      aResources.resources.length <= bResources.resources.length ? aResources : bResources;
+    const other =
+      smaller === aResources ? bResources.resourcesById : aResources.resourcesById;
+    for (const resId of smaller.resources) {
+      if (!other.has(resId)) continue;
+      if (dist > localTradeMaxHexDistanceForResource(resId)) continue;
+      tryLocalTrade(
+        world,
+        a,
+        b,
+        resId,
+        transportCostPerKg,
+        season,
+        today,
+        ownerKindByActor,
+        demandCache,
+        scheduleBaseCache,
+        laborContextForSettlement,
+        subsistenceAccess,
+        events,
+      );
     }
   }
 };
@@ -3689,6 +3802,11 @@ const localTradePhase = (
 interface SettlementAnchorIndex {
   readonly settlementCount: number;
   readonly byAnchorHex: ReadonlyMap<string, readonly Settlement[]>;
+  readonly localTradePairs: readonly {
+    readonly a: Settlement;
+    readonly b: Settlement;
+    readonly dist: number;
+  }[];
   readonly candidates: readonly {
     readonly id: SettlementId;
     readonly hex: Hex;
@@ -3715,13 +3833,53 @@ const settlementAnchorIndexForWorld = (world: WorldState): SettlementAnchorIndex
     bucket.push(s);
   }
 
+  const localTradePairs: { a: Settlement; b: Settlement; dist: number }[] = [];
+  for (const a of world.settlements.values()) {
+    for (const neighborHex of hexesWithinRange(a.anchor, LOCAL_TRADE_MAX_HEX_DISTANCE)) {
+      const bucket = byAnchorHex.get(hexKey(neighborHex));
+      if (bucket === undefined) continue;
+      for (const b of bucket) {
+        // Determinism: preserve the previous per-day pair order exactly.
+        if (String(a.id) >= String(b.id)) continue;
+        const dist = hexDistance(a.anchor, b.anchor);
+        if (dist > LOCAL_TRADE_MAX_HEX_DISTANCE) continue;
+        localTradePairs.push({ a, b, dist });
+      }
+    }
+  }
+
   const index: SettlementAnchorIndex = {
     settlementCount: world.settlements.size,
     byAnchorHex,
+    localTradePairs,
     candidates,
   };
   settlementAnchorIndexCache.set(world, index);
   return index;
+};
+
+interface PricedLocalTradeResources {
+  readonly resources: readonly ResourceId[];
+  readonly resourcesById: ReadonlySet<ResourceId>;
+}
+
+const pricedLocalTradeResourcesForSettlement = (
+  settlement: Settlement,
+  cache: Map<Settlement, PricedLocalTradeResources>,
+): PricedLocalTradeResources => {
+  const cached = cache.get(settlement);
+  if (cached !== undefined) return cached;
+  const resources: ResourceId[] = [];
+  const resourcesById = new Set<ResourceId>();
+  for (const resId of LOCAL_TRADE_RESOURCES) {
+    const price = settlement.market.lastClearingPrice.get(resId);
+    if (price === undefined || price <= 0) continue;
+    resources.push(resId);
+    resourcesById.add(resId);
+  }
+  const priced = { resources, resourcesById };
+  cache.set(settlement, priced);
+  return priced;
 };
 
 const tryLocalTrade = (
@@ -3733,7 +3891,9 @@ const tryLocalTrade = (
   season: Season,
   today: Day,
   ownerKindByActor: ReadonlyMap<ActorId, Actor['kind']>,
-  demandCache: Map<string, readonly DemandSource[]>,
+  demandCache: LocalTradeDemandCache,
+  scheduleBaseCache: Map<Settlement, LocalTradeScheduleBase>,
+  laborContextForSettlement: (settlement: Settlement) => LaborClassContext,
   subsistenceAccess: SubsistenceAccessMap,
   events: TickEvent[],
 ): void => {
@@ -3796,6 +3956,8 @@ const tryLocalTrade = (
     today,
     ownerKindByActor,
     demandCache,
+    scheduleBaseCache,
+    laborContextForSettlement,
   );
   if (buyerIntent === null) return;
   const buyerActor = buyerIntent.actor;
@@ -3857,23 +4019,59 @@ interface LocalTradeBuyerIntent {
   readonly quantityDemanded: number;
 }
 
-const localTradeDemandCacheKey = (settlement: Settlement, resource: ResourceId): string =>
-  `${String(settlement.id)}\u0000${String(resource)}`;
+type LocalTradeDemandCache = Map<Settlement, Map<ResourceId, readonly DemandSource[]>>;
 
 const seededPricesForSettlement = (settlement: Settlement): Map<ResourceId, number> => {
-  const seededPrices = new Map<ResourceId, number>();
-  for (const resource of TRADABLE_RESOURCES) {
-    const observed = settlement.market.lastClearingPrice.get(resource) ?? 0;
-    if (observed > 0) {
-      seededPrices.set(resource, observed);
-      continue;
-    }
-    const globalPrice = DEFAULT_GLOBAL_PRICES.get(resource);
-    if (globalPrice !== undefined && globalPrice > 0) {
-      seededPrices.set(resource, globalPrice);
-    }
+  const seededPrices = new Map<ResourceId, number>(DEFAULT_GLOBAL_TRADABLE_PRICE_ENTRIES);
+  for (const [resource, observed] of settlement.market.lastClearingPrice) {
+    if (observed <= 0) continue;
+    if (!TRADABLE_RESOURCE_KEYS.has(String(resource))) continue;
+    seededPrices.set(resource, observed);
   }
   return seededPrices;
+};
+
+interface LocalTradeScheduleBase {
+  readonly owners: readonly Actor[];
+  readonly demandBuilder: SettlementDemandSourceBuilder;
+  readonly actorTreasuryByActor: Map<ActorId, number>;
+}
+
+const localTradeScheduleBaseForSettlement = (
+  world: WorldState,
+  settlement: Settlement,
+  season: Season,
+  today: Day,
+  ownerKindByActor: ReadonlyMap<ActorId, Actor['kind']>,
+  cache: Map<Settlement, LocalTradeScheduleBase>,
+  laborContextForSettlement: (settlement: Settlement) => LaborClassContext,
+): LocalTradeScheduleBase => {
+  const cached = cache.get(settlement);
+  if (cached !== undefined) return cached;
+  const owners: Actor[] = [];
+  const stockpilesByOwner = new Map<ActorId, ReadonlyMap<ResourceId, Quantity>>();
+  for (const ownerId of settlement.stockpileOwners) {
+    const actor = world.actors.get(ownerId);
+    if (actor === undefined) continue;
+    owners.push(actor);
+    stockpilesByOwner.set(actor.id, actor.stockpile);
+  }
+  const base = {
+    owners,
+    actorTreasuryByActor: new Map<ActorId, number>(),
+    demandBuilder: createSettlementDemandSourceBuilder({
+      settlement,
+      stockpilesByOwner,
+      recentLocalPrices: seededPricesForSettlement(settlement),
+      today,
+      season,
+      ownerKindByActor,
+      laborClassContext: laborContextForSettlement(settlement),
+      grid: world.grid,
+    }),
+  };
+  cache.set(settlement, base);
+  return base;
 };
 
 const localTradeDemandSourcesFor = (
@@ -3883,39 +4081,37 @@ const localTradeDemandSourcesFor = (
   season: Season,
   today: Day,
   ownerKindByActor: ReadonlyMap<ActorId, Actor['kind']>,
-  demandCache: Map<string, readonly DemandSource[]>,
+  demandCache: LocalTradeDemandCache,
+  scheduleBaseCache: Map<Settlement, LocalTradeScheduleBase>,
+  laborContextForSettlement: (settlement: Settlement) => LaborClassContext,
 ): readonly DemandSource[] => {
-  const key = localTradeDemandCacheKey(settlement, resource);
-  const cached = demandCache.get(key);
+  let cacheByResource = demandCache.get(settlement);
+  if (cacheByResource === undefined) {
+    cacheByResource = new Map<ResourceId, readonly DemandSource[]>();
+    demandCache.set(settlement, cacheByResource);
+  }
+  const cached = cacheByResource.get(resource);
   if (cached !== undefined) return cached;
 
-  const owners: Actor[] = [];
-  const stockpilesByOwner = new Map<ActorId, ReadonlyMap<ResourceId, Quantity>>();
-  for (const ownerId of settlement.stockpileOwners) {
-    const actor = world.actors.get(ownerId);
-    if (actor === undefined) continue;
-    owners.push(actor);
-    stockpilesByOwner.set(actor.id, actor.stockpile);
-  }
-  if (owners.length === 0) {
-    demandCache.set(key, []);
+  const base = localTradeScheduleBaseForSettlement(
+    world,
+    settlement,
+    season,
+    today,
+    ownerKindByActor,
+    scheduleBaseCache,
+    laborContextForSettlement,
+  );
+  if (base.owners.length === 0) {
+    cacheByResource.set(resource, []);
     return [];
   }
+  const actorTreasuryByActor = base.actorTreasuryByActor;
+  actorTreasuryByActor.clear();
+  for (const actor of base.owners) actorTreasuryByActor.set(actor.id, actor.treasury);
 
-  const pair = buildSettlementSchedules({
-    settlement,
-    stockpilesByOwner,
-    resources: [resource],
-    recentLocalPrices: seededPricesForSettlement(settlement),
-    today,
-    season,
-    ownerKindByActor,
-    actorTreasuryByActor: new Map(owners.map((actor) => [actor.id, actor.treasury] as const)),
-    grid: world.grid,
-  }).schedulesByResource.get(resource);
-
-  const sources = pair?.demand.sources ?? [];
-  demandCache.set(key, sources);
+  const sources = base.demandBuilder.sourcesFor(resource, actorTreasuryByActor);
+  cacheByResource.set(resource, sources);
   return sources;
 };
 
@@ -3968,7 +4164,9 @@ const pickLocalTradeBuyer = (
   season: Season,
   today: Day,
   ownerKindByActor: ReadonlyMap<ActorId, Actor['kind']>,
-  demandCache: Map<string, readonly DemandSource[]>,
+  demandCache: LocalTradeDemandCache,
+  scheduleBaseCache: Map<Settlement, LocalTradeScheduleBase>,
+  laborContextForSettlement: (settlement: Settlement) => LaborClassContext,
 ): LocalTradeBuyerIntent | null => {
   const sources = localTradeDemandSourcesFor(
     world,
@@ -3978,6 +4176,8 @@ const pickLocalTradeBuyer = (
     today,
     ownerKindByActor,
     demandCache,
+    scheduleBaseCache,
+    laborContextForSettlement,
   );
   // Pass 1: prefer a real demand-backed buyer (subsistence/comfort/derived).
   // We still check `sources.length > 0` because some fixtures populate no
@@ -4066,7 +4266,7 @@ const INDUSTRIAL_CARTAGE_RESOURCES: ReadonlySet<string> = new Set([
   'material.brick_tile',
 ]);
 
-const localTradeLoadKgForResource = (resource: ResourceId): number => {
+const computeLocalTradeLoadKgForResource = (resource: ResourceId): number => {
   const def = getResource(resource);
   if (def.category === 'livestock') {
     return def.weightKgPerUnit * MAX_WALKING_HERD_LOCAL_TRADE_UNITS;
@@ -4083,7 +4283,7 @@ const localTradeLoadKgForResource = (resource: ResourceId): number => {
   return MAX_HOUSEHOLD_PETTY_LOAD_KG;
 };
 
-const localTradeMaxHexDistanceForResource = (resource: ResourceId): number => {
+const computeLocalTradeMaxHexDistanceForResource = (resource: ResourceId): number => {
   const def = getResource(resource);
   if (def.category === 'livestock') {
     return HOUSEHOLD_LOCAL_TRADE_MAX_HEX_DISTANCE;
@@ -4139,6 +4339,19 @@ const LOCAL_TRADE_RESOURCES: readonly ResourceId[] = Object.freeze(
 const LOCAL_TRADE_WEIGHT_KG_BY_RESOURCE: ReadonlyMap<ResourceId, number> = new Map(
   LOCAL_TRADE_RESOURCES.map((id) => [id, getResource(id).weightKgPerUnit] as const),
 );
+const LOCAL_TRADE_LOAD_KG_BY_RESOURCE: ReadonlyMap<ResourceId, number> = new Map(
+  LOCAL_TRADE_RESOURCES.map((id) => [id, computeLocalTradeLoadKgForResource(id)] as const),
+);
+const LOCAL_TRADE_MAX_DISTANCE_BY_RESOURCE: ReadonlyMap<ResourceId, number> = new Map(
+  LOCAL_TRADE_RESOURCES.map((id) => [id, computeLocalTradeMaxHexDistanceForResource(id)] as const),
+);
+
+const localTradeLoadKgForResource = (resource: ResourceId): number =>
+  LOCAL_TRADE_LOAD_KG_BY_RESOURCE.get(resource) ?? computeLocalTradeLoadKgForResource(resource);
+
+const localTradeMaxHexDistanceForResource = (resource: ResourceId): number =>
+  LOCAL_TRADE_MAX_DISTANCE_BY_RESOURCE.get(resource) ??
+  computeLocalTradeMaxHexDistanceForResource(resource);
 
 // --- Phase 5: Demographics --------------------------------------------------
 
@@ -5373,6 +5586,11 @@ const LOW_RISK_SCOUT_WINDOW = 0.015;
 const LOW_RATION_RISK_PENALTY_HEXES = 24;
 const SCOUT_NEAR_DISTANCE_WINDOW_HEXES = 6;
 
+type RouteRiskLookup = (from: Hex, to: Hex) => number;
+const ROUTE_RISK_KEY_OFFSET = 32768;
+const routeRiskCoordKey = (h: Hex): number =>
+  (((h.q + ROUTE_RISK_KEY_OFFSET) << 16) | (h.r + ROUTE_RISK_KEY_OFFSET)) >>> 0;
+
 const fallbackScoutCandidate = (
   from: Hex,
   candidates: readonly {
@@ -5380,7 +5598,7 @@ const fallbackScoutCandidate = (
     readonly hex: Hex;
     readonly tier: Settlement['tier'];
   }[],
-  knownBanditDensity: ReadonlyMap<string, number>,
+  routeRisk: RouteRiskLookup,
   rationDays: number,
   rng: Rng,
 ):
@@ -5390,42 +5608,70 @@ const fallbackScoutCandidate = (
       readonly tier: Settlement['tier'];
     }
   | undefined => {
-  const scored = candidates
-    .filter((candidate) => !hexEquals(candidate.hex, from))
-    .map((candidate) => {
-      const distance = hexDistance(from, candidate.hex);
-      const risk =
-        knownBanditDensity.size === 0
-          ? 0
-          : expectedRisk(knownBanditDensity, approximatePath(from, candidate.hex));
-      return { candidate, distance, risk };
-    });
-  if (scored.length === 0) return undefined;
-
   if (rationDays < 7) {
-    scored.sort((a, b) => {
-      const scoreA = a.distance + a.risk * LOW_RATION_RISK_PENALTY_HEXES;
-      const scoreB = b.distance + b.risk * LOW_RATION_RISK_PENALTY_HEXES;
-      if (scoreA !== scoreB) return scoreA - scoreB;
-      if (a.distance !== b.distance) return a.distance - b.distance;
-      if (a.risk !== b.risk) return a.risk - b.risk;
-      return String(a.candidate.id).localeCompare(String(b.candidate.id));
-    });
-    return scored[0]?.candidate;
+    let best:
+      | {
+          readonly candidate: (typeof candidates)[number];
+          readonly distance: number;
+          readonly risk: number;
+          readonly score: number;
+        }
+      | undefined;
+    for (const candidate of candidates) {
+      if (hexEquals(candidate.hex, from)) continue;
+      const distance = hexDistance(from, candidate.hex);
+      const risk = routeRisk(from, candidate.hex);
+      const score = distance + risk * LOW_RATION_RISK_PENALTY_HEXES;
+      if (
+        best === undefined ||
+        score < best.score ||
+        (score === best.score && distance < best.distance) ||
+        (score === best.score && distance === best.distance && risk < best.risk) ||
+        (score === best.score &&
+          distance === best.distance &&
+          risk === best.risk &&
+          String(candidate.id).localeCompare(String(best.candidate.id)) < 0)
+      ) {
+        best = { candidate, distance, risk, score };
+      }
+    }
+    return best?.candidate;
   }
 
   let minRisk = Infinity;
-  for (const item of scored) minRisk = Math.min(minRisk, item.risk);
-  const lowRisk = scored.filter((item) => item.risk <= minRisk + LOW_RISK_SCOUT_WINDOW);
+  for (const candidate of candidates) {
+    if (hexEquals(candidate.hex, from)) continue;
+    minRisk = Math.min(minRisk, routeRisk(from, candidate.hex));
+  }
+  if (!Number.isFinite(minRisk)) return undefined;
+
   let nearest = Infinity;
-  for (const item of lowRisk) nearest = Math.min(nearest, item.distance);
-  const reasonable = lowRisk
-    .filter((item) => item.distance <= nearest + SCOUT_NEAR_DISTANCE_WINDOW_HEXES)
-    .sort((a, b) => {
-      if (a.distance !== b.distance) return a.distance - b.distance;
-      if (a.risk !== b.risk) return a.risk - b.risk;
-      return String(a.candidate.id).localeCompare(String(b.candidate.id));
-    });
+  for (const candidate of candidates) {
+    if (hexEquals(candidate.hex, from)) continue;
+    const risk = routeRisk(from, candidate.hex);
+    if (risk <= minRisk + LOW_RISK_SCOUT_WINDOW) {
+      nearest = Math.min(nearest, hexDistance(from, candidate.hex));
+    }
+  }
+  const reasonable: Array<{
+    readonly candidate: (typeof candidates)[number];
+    readonly distance: number;
+    readonly risk: number;
+  }> = [];
+  for (const candidate of candidates) {
+    if (hexEquals(candidate.hex, from)) continue;
+    const risk = routeRisk(from, candidate.hex);
+    if (risk > minRisk + LOW_RISK_SCOUT_WINDOW) continue;
+    const distance = hexDistance(from, candidate.hex);
+    if (distance <= nearest + SCOUT_NEAR_DISTANCE_WINDOW_HEXES) {
+      reasonable.push({ candidate, distance, risk });
+    }
+  }
+  reasonable.sort((a, b) => {
+    if (a.distance !== b.distance) return a.distance - b.distance;
+    if (a.risk !== b.risk) return a.risk - b.risk;
+    return String(a.candidate.id).localeCompare(String(b.candidate.id));
+  });
   return rng.pick(reasonable).candidate;
 };
 
@@ -5578,6 +5824,28 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
   const candidates = settlementIndex.candidates;
   const edgeHexKeys = new Set(computeEdgeHexes(world.grid).map(hexKey));
   const knownBanditDensity = knownBanditDensityForCaravans(world);
+  const routeRiskCache = new Map<number, Map<number, number>>();
+  const routeRisk: RouteRiskLookup =
+    knownBanditDensity.size === 0
+      ? () => 0
+      : (from, to) => {
+          const fromKey = routeRiskCoordKey(from);
+          const toKey = routeRiskCoordKey(to);
+          let byDestination = routeRiskCache.get(fromKey);
+          if (byDestination === undefined) {
+            byDestination = new Map<number, number>();
+            routeRiskCache.set(fromKey, byDestination);
+          }
+          const cached = byDestination.get(toKey);
+          if (cached !== undefined) return cached;
+          const risk = expectedRiskOnApproximatePath(knownBanditDensity, from, to);
+          byDestination.set(toKey, risk);
+          return risk;
+        };
+  // Market bid-depth books are produced in the trade phase and are not
+  // mutated by caravan replan cargo transfers, so one phase-level snapshot is
+  // equivalent to rebuilding it for every arrived caravan.
+  const destinationBidDepth = buildDestinationBidDepthMap(world, candidates);
 
   // Build a city-anchor lookup once per phase for goal-completion checks.
   const settlementAnchorByCity = new Map<SettlementId, Hex>();
@@ -5657,8 +5925,6 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
     // depth map for the candidates so the planner can cap cargo at what
     // each destination market can actually absorb. Without this the
     // planner over-loads goods that won't clear on arrival.
-    const destinationBidDepth = buildDestinationBidDepthMap(world, candidates);
-
     // 2. Plan next route.
     // Per docs/15 §C25: require a meaningful margin, not just netProfit>0.
     // CARAVAN_MIN_NET_PROFIT_COIN sets an absolute floor representing the
@@ -5670,6 +5936,7 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
       candidateSettlements: candidates,
       knownPrices: c.priceBook,
       knownBanditDensity,
+      expectedRiskForRoute: routeRisk,
       knownToll: () => 0, // v1: no toll signal yet
       cargoConstraints: {
         reserveCapacityKg: missingRationKg,
@@ -5679,9 +5946,7 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
         // spending the caravan into starvation.
         maxSpendCoin: Math.max(0, c.treasury - missingRationKg),
         reserveTripOperatingCost: true,
-        ...(originAvailability !== undefined
-          ? { originAvailableQuantity: originAvailability }
-          : {}),
+        ...(originAvailability !== undefined ? { originAvailableQuantity: originAvailability } : {}),
         destinationBidDepth,
       },
       minNetProfitCoin: CARAVAN_MIN_NET_PROFIT_COIN,
@@ -5703,7 +5968,7 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
         const fallback = fallbackScoutCandidate(
           c.position,
           candidates,
-          knownBanditDensity,
+          routeRisk,
           rationDays,
           rngHere,
         );
@@ -5715,7 +5980,7 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
         const fallback = fallbackScoutCandidate(
           c.position,
           candidates,
-          knownBanditDensity,
+          routeRisk,
           0,
           rng.derive(`${String(cId)}-ration-fallback`),
         );
@@ -5748,7 +6013,7 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
       const fallback = fallbackScoutCandidate(
         c.position,
         candidates,
-        knownBanditDensity,
+        routeRisk,
         rationDays,
         rng.derive(`${String(cId)}-fallback`),
       );
@@ -7116,25 +7381,31 @@ const spawnNewsFromPatrolBattle = (
  * but realistic outcome — the patron whose smithy site got abandoned
  * for the new town wall has to write off the lumber).
  */
-const constructionPhase = (world: WorldState, today: Day, events: TickEvent[]): void => {
+const constructionPhase = (
+  world: WorldState,
+  today: Day,
+  events: TickEvent[],
+  laborContextForSettlement: (settlement: Settlement) => LaborClassContext,
+): void => {
   for (const settlement of world.settlements.values()) {
     if (settlement.pendingBuildings.length === 0) continue;
     const wagePriceSignal = wagePriceSignalForSettlement(settlement);
-    const laborClassContext = buildLaborClassContext(settlement);
+    const wagePerWorkerDay = laborCostPerWorkerDay(wagePriceSignal);
+    const laborClassContext = laborContextForSettlement(settlement);
     // Per docs/15 §C14: mason and carpenter pools drain INDEPENDENTLY.
     // A granary (heavy stone+brick) bottleneck on masons, a smithy
     // (heavy lumber) bottlenecks on carpenters.
     const shouldCapByClass = laborClassContext.totalWorkingAdults > 0;
-    let masonBudget = settlement.jobAllocations.get(jobId('mason')) ?? 0;
-    let carpenterBudget = settlement.jobAllocations.get(jobId('carpenter')) ?? 0;
+    let masonBudget = settlement.jobAllocations.get(MASON_JOB) ?? 0;
+    let carpenterBudget = settlement.jobAllocations.get(CARPENTER_JOB) ?? 0;
     if (shouldCapByClass) {
       masonBudget = Math.min(
         masonBudget,
-        allocatedWorkersForJob(laborClassContext, jobId('mason')),
+        allocatedWorkersForJob(laborClassContext, MASON_JOB),
       );
       carpenterBudget = Math.min(
         carpenterBudget,
-        allocatedWorkersForJob(laborClassContext, jobId('carpenter')),
+        allocatedWorkersForJob(laborClassContext, CARPENTER_JOB),
       );
     }
     if (masonBudget <= 0 && carpenterBudget <= 0) continue;
@@ -7188,10 +7459,11 @@ const constructionPhase = (world: WorldState, today: Day, events: TickEvent[]): 
           laborClassContext,
           owner,
           new Map([
-            [jobId('mason'), masonApplied],
-            [jobId('carpenter'), carpenterApplied],
+            [MASON_JOB, masonApplied],
+            [CARPENTER_JOB, carpenterApplied],
           ]),
           wagePriceSignal,
+          wagePerWorkerDay,
         );
       }
       if (pb.workerDaysRemaining <= 0) completed.push(i);

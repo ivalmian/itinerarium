@@ -26,7 +26,14 @@
 import { findPath, type MovementProfile } from '../world/pathfinding.js';
 import type { HexGrid } from '../world/grid.js';
 import { hexEquals, type Hex } from '../world/hex.js';
-import { isPassable, type RoadGrade, type Season, type Terrain } from '../world/terrain.js';
+import {
+  isPassable,
+  SEASONS,
+  TERRAIN_TYPES,
+  type RoadGrade,
+  type Season,
+  type Terrain,
+} from '../world/terrain.js';
 import { getResource } from '../resources/index.js';
 import type { Day, ResourceId } from '../types.js';
 import {
@@ -73,17 +80,55 @@ const RATION_SOURCES: readonly ResourceId[] = [
 const FODDER_SOURCES: readonly ResourceId[] = ['food.legumes', 'food.grain'] as ResourceId[];
 
 const RATION_DAILY_BASE_WEAR = 0.001; // 0.1% per day baseline (docs/06)
+const ROAD_GRADES = ['none', 'dirt', 'roman'] as const satisfies readonly RoadGrade[];
+const ROAD_INDEX: Readonly<Record<RoadGrade, number>> = Object.freeze({
+  none: 0,
+  dirt: 1,
+  roman: 2,
+});
+const SEASON_INDEX: Readonly<Record<Season, number>> = Object.freeze({
+  spring: 0,
+  summer: 1,
+  autumn: 2,
+  winter: 3,
+});
+const TERRAIN_INDEX: Readonly<Record<Terrain, number>> = Object.freeze(
+  Object.fromEntries(TERRAIN_TYPES.map((terrain, index) => [terrain, index])) as Record<
+    Terrain,
+    number
+  >,
+);
+const MOVEMENT_COST_TABLE_SIZE = TERRAIN_TYPES.length * ROAD_GRADES.length * SEASONS.length;
+
+const movementCostIndex = (terrain: Terrain, road: RoadGrade, season: Season): number =>
+  (TERRAIN_INDEX[terrain] * ROAD_GRADES.length + ROAD_INDEX[road]) * SEASONS.length +
+  SEASON_INDEX[season];
 
 /** A MovementProfile that turns the caravan's daily MP allowance into per-hex cost. */
-const profileForCaravan = (stats: CaravanMovementStats): MovementProfile => ({
-  costFor(terrain: Terrain, road: RoadGrade, season: Season, _loadFraction: number): number {
-    if (!isPassable(terrain, season)) return Infinity;
-    const allowance = dailyMpAllowanceWithStats(stats, terrain, road, season);
-    if (!Number.isFinite(allowance) || allowance <= 0) return Infinity;
-    // Crossing one hex consumes 1/allowance of a day's progress budget.
-    return 1 / allowance;
-  },
-});
+const profileForCaravan = (stats: CaravanMovementStats): MovementProfile => {
+  const costs = new Array<number>(MOVEMENT_COST_TABLE_SIZE);
+  for (const terrain of TERRAIN_TYPES) {
+    for (const road of ROAD_GRADES) {
+      for (const season of SEASONS) {
+        let cost = Infinity;
+        if (isPassable(terrain, season)) {
+          const allowance = dailyMpAllowanceWithStats(stats, terrain, road, season);
+          if (Number.isFinite(allowance) && allowance > 0) {
+            // Crossing one hex consumes 1/allowance of a day's progress budget.
+            cost = 1 / allowance;
+          }
+        }
+        costs[movementCostIndex(terrain, road, season)] = cost;
+      }
+    }
+  }
+
+  return {
+    costFor(terrain: Terrain, road: RoadGrade, season: Season, _loadFraction: number): number {
+      return costs[movementCostIndex(terrain, road, season)] as number;
+    },
+  };
+};
 
 const drawCargoFoodKg = (c: Caravan, kg: number, sources: readonly ResourceId[]): number => {
   if (kg <= 0) return 0;
@@ -126,7 +171,7 @@ const advanceAlongPath = (
   grid: HexGrid,
   path: readonly Hex[],
   season: Season,
-  stats: CaravanMovementStats,
+  profile: MovementProfile,
 ): { hexesMoved: Hex[]; blockedAt: Hex | null; arrived: boolean } => {
   const out: { hexesMoved: Hex[]; blockedAt: Hex | null; arrived: boolean } = {
     hexesMoved: [],
@@ -144,21 +189,16 @@ const advanceAlongPath = (
   // path[0] is the current position; iterate from index 1.
   for (let i = 1; i < path.length; i++) {
     const next = path[i] as Hex;
-    const tile = grid.get(next);
+    const tile = grid.getAt(next.q, next.r);
     if (tile === undefined) {
       out.blockedAt = next;
       break;
     }
-    if (!isPassable(tile.terrain, season)) {
+    const stepCost = profile.costFor(tile.terrain, tile.road, season, 0);
+    if (!Number.isFinite(stepCost)) {
       out.blockedAt = next;
       break;
     }
-    const allowance = dailyMpAllowanceWithStats(stats, tile.terrain, tile.road, season);
-    if (allowance <= 0) {
-      out.blockedAt = next;
-      break;
-    }
-    const stepCost = 1 / allowance;
     if (stepCost > c.mpRemainingToday + 1e-9) {
       // Out of MP for today; carry remainder into tomorrow's accumulator
       // (we leave mpRemainingToday so a downstream system could detect it,
@@ -266,8 +306,15 @@ const forageFodderKg = (
 export const tickCaravanMovement = (inputs: CaravanTickInputs): CaravanTickResult => {
   const { caravan: c, grid, season } = inputs;
   const events: CaravanTickEvent[] = [];
-  const movementStats = caravanMovementStats(c);
-  const movementProfile = profileForCaravan(movementStats);
+  let movementStats: CaravanMovementStats | undefined;
+  let movementProfile: MovementProfile | undefined;
+  const getMovementProfile = (): MovementProfile => {
+    if (movementProfile === undefined) {
+      movementStats = caravanMovementStats(c);
+      movementProfile = profileForCaravan(movementStats);
+    }
+    return movementProfile;
+  };
 
   // ---------- Plan -----------------------------------------------------
   let hexesMoved: readonly Hex[] = [];
@@ -284,19 +331,20 @@ export const tickCaravanMovement = (inputs: CaravanTickInputs): CaravanTickResul
       // pattern) arrives in the same tick — no trivial "walk from A to B
       // within the hex" leg.
       arrived = true;
-    } else if (grid.has(c.position) && grid.has(dest)) {
+    } else if (grid.hasAt(c.position.q, c.position.r) && grid.hasAt(dest.q, dest.r)) {
+      const profile = getMovementProfile();
       const path = findPath(
         grid,
         c.position,
         dest,
-        movementProfile,
+        profile,
         season,
         // The profile already holds this caravan-day's load state, so the
         // value here is documentation only.
         0,
       ).path;
       if (path.length > 1) {
-        const advance = advanceAlongPath(c, grid, path, season, movementStats);
+        const advance = advanceAlongPath(c, grid, path, season, profile);
         hexesMoved = advance.hexesMoved;
         blockedAt = advance.blockedAt;
         arrived = advance.arrived;
@@ -304,9 +352,9 @@ export const tickCaravanMovement = (inputs: CaravanTickInputs): CaravanTickResul
         // No path under current season. If a path exists in summer, the cause
         // is a seasonal closure: find the first impassable hex on the summer
         // path so the caller knows where the caravan is stuck.
-        const summerResult = findPath(grid, c.position, dest, movementProfile, 'summer', 0);
+        const summerResult = findPath(grid, c.position, dest, profile, 'summer', 0);
         for (const h of summerResult.path) {
-          const t = grid.get(h);
+          const t = grid.getAt(h.q, h.r);
           if (t !== undefined && !isPassable(t.terrain, season)) {
             blockedAt = h;
             break;
@@ -323,7 +371,7 @@ export const tickCaravanMovement = (inputs: CaravanTickInputs): CaravanTickResul
     events.push({ type: 'arrived', at: c.position });
   }
 
-  const finalTile = grid.get(c.position);
+  const finalTile = grid.getAt(c.position.q, c.position.r);
 
   // ---------- Daily costs ---------------------------------------------
   const rationsNeeded = dailyCrewRationKg(c);

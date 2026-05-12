@@ -116,6 +116,10 @@ export const clearMarket = (
     };
   }
 
+  if (demand.sources.length === 0) {
+    return finalizeClearing(demand, supply, minPrice);
+  }
+
   // Build a sorted unique list of candidate prices: every breakpoint plus
   // the price floor and ceiling. We deduplicate within an epsilon so
   // floating-point jitter does not create spurious empty intervals.
@@ -247,8 +251,14 @@ const collectCandidates = (
   const set: number[] = [];
   set.push(minPrice);
   if (Number.isFinite(maxPrice)) set.push(maxPrice);
-  for (const bp of demand.breakpoints()) set.push(bp.price);
-  for (const bp of supply.breakpoints()) set.push(bp.price);
+  for (const source of demand.sources) {
+    if (source.peakQuantity <= 0) continue;
+    if (source.curve !== 'status' && source.curve !== 'derived') continue;
+    set.push(source.maxWillingnessToPay);
+  }
+  for (const source of supply.sources) {
+    if (source.availableToSell > 0) set.push(source.reservationPrice);
+  }
   // Sort ascending.
   set.sort((a, b) => a - b);
   // Deduplicate within eps.
@@ -278,32 +288,41 @@ const finalizeClearing = (
 
   const totalDemand = sumSourceQuantities(demand.sources, evalPrice);
   const totalSupply = sumSupply(supply.sources);
+  const supplyAtEvalPrice = Number.isFinite(clearingPrice)
+    ? supplyAvailableAt(supply.sources, evalPrice)
+    : totalSupply;
   const tradedAtPrice = Number.isFinite(clearingPrice)
-    ? Math.min(demand.totalAt(evalPrice), supply.totalAt(evalPrice))
+    ? Math.min(totalDemand, supplyAtEvalPrice)
     : Math.min(totalDemand, totalSupply);
 
   const totalTraded = Math.max(0, tradedAtPrice);
 
   // Allocate trades: highest-WTP demanders ↔ lowest-reservation suppliers.
-  const buyerOrder = demand.sources
-    .map((s) => ({
+  const buyerOrder: { id: string; maxWtp: number; remaining: number }[] = [];
+  for (const s of demand.sources) {
+    const remaining = Math.max(0, s.quantityAt(evalPrice));
+    if (remaining <= 0) continue;
+    buyerOrder.push({
       id: s.id,
       maxWtp: s.maxWillingnessToPay,
-      remaining: Math.max(0, s.quantityAt(evalPrice)),
-    }))
-    .filter((b) => b.remaining > 0)
-    .sort((a, b) => b.maxWtp - a.maxWtp);
+      remaining,
+    });
+  }
+  buyerOrder.sort((a, b) => b.maxWtp - a.maxWtp);
 
-  const sellerOrder = supply.sources
-    .map((s) => ({
+  const sellerOrder: { id: string; reservation: number; remaining: number }[] = [];
+  for (const s of supply.sources) {
+    const remaining = s.availableToSell;
+    const reservation = s.reservationPrice;
+    if (remaining <= 0) continue;
+    if (reservation > clearingPrice && Number.isFinite(clearingPrice)) continue;
+    sellerOrder.push({
       id: s.id,
-      reservation: s.reservationPrice,
-      remaining: s.availableToSell,
-    }))
-    .filter(
-      (s) => s.remaining > 0 && (s.reservation <= clearingPrice || !Number.isFinite(clearingPrice)),
-    )
-    .sort((a, b) => a.reservation - b.reservation);
+      reservation,
+      remaining,
+    });
+  }
+  sellerOrder.sort((a, b) => a.reservation - b.reservation);
 
   const trades: ClearingTrade[] = [];
   let remainingToTrade = totalTraded;
@@ -337,10 +356,7 @@ const finalizeClearing = (
   // p* but could not be served. Priced-out derived/status/comfort demand is
   // foregone activity, not a shortage at the discovered market price.
   const unmetDemandAtClearingPrice = Math.max(0, totalDemand - totalTraded);
-  const unsoldSupplyAtClearingPrice = Math.max(
-    0,
-    supplyAvailableAt(supply.sources, clearingPrice) - totalTraded,
-  );
+  const unsoldSupplyAtClearingPrice = Math.max(0, supplyAtEvalPrice - totalTraded);
 
   const book = derivePostClearingBook(
     demand,
@@ -362,6 +378,7 @@ const finalizeClearing = (
 };
 
 const BOOK_QTY_EPS = 1e-9;
+const BOOK_REMAINING_MAP_THRESHOLD = 8;
 
 interface PostClearingBook {
   readonly bestAsk: number | null;
@@ -413,8 +430,12 @@ const derivePostClearingBook = (
     if (bestAsk === null || s.reservationPrice < bestAsk) bestAsk = s.reservationPrice;
   }
   if (bestAsk !== null) {
+    const sellerRemainingById =
+      sellerOrder.length > BOOK_REMAINING_MAP_THRESHOLD ? remainingById(sellerOrder) : undefined;
     for (const s of supply.sources) {
-      const remaining = sellerOrder.find((x) => x.id === s.id)?.remaining ?? s.availableToSell;
+      const remaining =
+        (sellerRemainingById?.get(s.id) ?? remainingInSmallOrder(sellerOrder, s.id)) ??
+        s.availableToSell;
       if (remaining <= BOOK_QTY_EPS) continue;
       if (!Number.isFinite(s.reservationPrice)) continue;
       if (s.reservationPrice <= bestAsk + BOOK_QTY_EPS) askDepth += remaining;
@@ -433,7 +454,6 @@ const derivePostClearingBook = (
   // Demanders with WTP at-or-below the clearing price (they were squeezed out)
   // still represent a quoted bid in the residual book.
   for (const d of demand.sources) {
-    if (!Number.isFinite(d.maxWillingnessToPay)) continue;
     if (d.maxWillingnessToPay <= 0) continue;
     // Subsistence has maxWtp = +Infinity; never finite-quote it as a book bid.
     if (!Number.isFinite(d.maxWillingnessToPay)) continue;
@@ -443,10 +463,13 @@ const derivePostClearingBook = (
     if (bestBid === null || d.maxWillingnessToPay > bestBid) bestBid = d.maxWillingnessToPay;
   }
   if (bestBid !== null) {
+    const buyerRemainingById =
+      buyerOrder.length > BOOK_REMAINING_MAP_THRESHOLD ? remainingById(buyerOrder) : undefined;
     for (const d of demand.sources) {
       if (!Number.isFinite(d.maxWillingnessToPay)) continue;
       if (d.maxWillingnessToPay + BOOK_QTY_EPS < bestBid) continue;
-      const matchedRemaining = buyerOrder.find((b) => b.id === d.id)?.remaining;
+      const matchedRemaining =
+        buyerRemainingById?.get(d.id) ?? remainingInSmallOrder(buyerOrder, d.id);
       const remaining =
         matchedRemaining !== undefined ? matchedRemaining : Math.max(0, d.peakQuantity);
       bidDepth += remaining;
@@ -472,6 +495,25 @@ const derivePostClearingBook = (
   }
 
   return { bestAsk, askDepth, bestBid, bidDepth, midPrice, spread };
+};
+
+const remainingById = (
+  order: readonly { readonly id: string; readonly remaining: number }[],
+): Map<string, number> => {
+  const out = new Map<string, number>();
+  for (const item of order) out.set(item.id, item.remaining);
+  return out;
+};
+
+const remainingInSmallOrder = (
+  order: readonly { readonly id: string; readonly remaining: number }[],
+  id: string,
+): number | undefined => {
+  for (let i = order.length - 1; i >= 0; i--) {
+    const item = order[i] as { readonly id: string; readonly remaining: number };
+    if (item.id === id) return item.remaining;
+  }
+  return undefined;
 };
 
 const sumSourceQuantities = (

@@ -21,6 +21,9 @@ export interface LaborClassContext {
   readonly hasJobAllocations: boolean;
 }
 
+const EMPTY_WORKERS_BY_JOB_AND_CLASS: ReadonlyMap<JobId, ReadonlyMap<CharacterClass, number>> =
+  new Map();
+
 const WORKING_AGE_BANDS: ReadonlySet<string> = new Set([
   '15-19',
   '20-24',
@@ -85,7 +88,11 @@ export const buildLaborClassContext = (settlement: Settlement): LaborClassContex
   });
   return {
     workingAdultsByClass,
-    workersByJobAndClass: buildWorkersByJobAndClass(settlement, workingAdultsByClass),
+    workersByJobAndClass: buildWorkersByJobAndClass(
+      settlement,
+      workingAdultsByClass,
+      totalWorkingAdults,
+    ),
     totalWorkingAdults,
     hasJobAllocations: settlement.jobAllocations.size > 0,
   };
@@ -94,28 +101,33 @@ export const buildLaborClassContext = (settlement: Settlement): LaborClassContex
 const buildWorkersByJobAndClass = (
   settlement: Settlement,
   workingAdultsByClass: ReadonlyMap<CharacterClass, number>,
+  totalWorkingAdults: number,
 ): ReadonlyMap<JobId, ReadonlyMap<CharacterClass, number>> => {
-  if (settlement.jobAllocations.size === 0) return new Map();
+  if (settlement.jobAllocations.size === 0) return EMPTY_WORKERS_BY_JOB_AND_CLASS;
 
   const remainingByClass = new Map<CharacterClass, number>(workingAdultsByClass);
-  let remainingTotal = 0;
-  for (const [, count] of remainingByClass) remainingTotal += count;
-  if (remainingTotal <= 0) return new Map();
+  if (totalWorkingAdults <= 0) return EMPTY_WORKERS_BY_JOB_AND_CLASS;
 
   const out = new Map<JobId, Map<CharacterClass, number>>();
-  const allocations = [...settlement.jobAllocations.entries()]
-    .filter(([, count]) => count > 0)
-    .map(([job, count]) => ({ job, count, allowedClasses: getJob(job).allowedClasses }))
-    .sort((a, b) => {
-      const aJob = String(a.job);
-      const bJob = String(b.job);
-      if (aJob === 'idle' && bJob !== 'idle') return 1;
-      if (bJob === 'idle' && aJob !== 'idle') return -1;
-      const aAllowed = a.allowedClasses.length;
-      const bAllowed = b.allowedClasses.length;
-      if (aAllowed !== bAllowed) return aAllowed - bAllowed;
-      return aJob < bJob ? -1 : aJob > bJob ? 1 : 0;
-    });
+  const allocations: {
+    readonly job: JobId;
+    readonly count: number;
+    readonly allowedClasses: readonly CharacterClass[];
+  }[] = [];
+  for (const [job, count] of settlement.jobAllocations) {
+    if (count <= 0) continue;
+    allocations.push({ job, count, allowedClasses: getJob(job).allowedClasses });
+  }
+  allocations.sort((a, b) => {
+    const aJob = String(a.job);
+    const bJob = String(b.job);
+    if (aJob === 'idle' && bJob !== 'idle') return 1;
+    if (bJob === 'idle' && aJob !== 'idle') return -1;
+    const aAllowed = a.allowedClasses.length;
+    const bAllowed = b.allowedClasses.length;
+    if (aAllowed !== bAllowed) return aAllowed - bAllowed;
+    return aJob < bJob ? -1 : aJob > bJob ? 1 : 0;
+  });
 
   for (const { job, count: requested, allowedClasses } of allocations) {
     let eligibleRemaining = 0;

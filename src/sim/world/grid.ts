@@ -23,12 +23,12 @@ import type { Hex } from './hex.js';
 import type { HexTile } from './terrain.js';
 
 const COORD_KEY_OFFSET = 32768;
-const COORD_KEY_STRIDE = 65536;
 
 const coordKey = (q: number, r: number): number =>
-  (q + COORD_KEY_OFFSET) * COORD_KEY_STRIDE + (r + COORD_KEY_OFFSET);
+  (((q + COORD_KEY_OFFSET) << 16) | (r + COORD_KEY_OFFSET)) >>> 0;
 
 export interface HexGrid {
+  readonly coordTiles: ReadonlyMap<number, HexTile>;
   size(): number;
   get(h: Hex): HexTile | undefined;
   getAt(q: number, r: number): HexTile | undefined;
@@ -46,10 +46,12 @@ export interface HexGrid {
 class MapHexGrid implements HexGrid {
   private readonly store: Map<string, HexTile>;
   private readonly coordStore: Map<number, HexTile>;
+  readonly coordTiles: ReadonlyMap<number, HexTile>;
 
   constructor(initial?: ReadonlyMap<string, HexTile>) {
     this.store = new Map();
     this.coordStore = new Map();
+    this.coordTiles = this.coordStore;
     if (initial !== undefined) {
       for (const [key, tile] of initial) {
         // Validate the key by round-tripping. parseHexKey throws on garbage,
