@@ -33,7 +33,7 @@ import { generateTerrain } from '../procgen/terrain.js';
 import { siteSettlements } from '../procgen/settlements.js';
 import { seedWorld, type WorldState } from '../procgen/seed.js';
 import { seedCaravans } from '../procgen/seedCaravans.js';
-import { tick, type TickEvent } from '../sim/tick.js';
+import { tick } from '../sim/tick.js';
 import { createRng } from '../sim/rng.js';
 import { serializeWorld, writeSnapshot } from '../sim/snapshot.js';
 import {
@@ -260,11 +260,15 @@ export const runBurnIn = async (opts: BurnInOpts): Promise<BurnInReport> => {
   let abortReason: string | null = null;
   for (let dayCount = 0; dayCount < totalDays; dayCount++) {
     const today = world.day;
+    const shouldCheckInvariants = invInterval !== null && today % invInterval === 0;
 
     // Run a single day. Per-tick RNG seeds combine the run seed and the
     // day so a re-run with the same seed produces the same per-day stream.
     const rng = createRng(`${opts.seed}|tick-${today}`);
-    const result = tick({ world, rng });
+    // Burn-in invariants currently inspect world state, not full tick event
+    // payloads. Keep tick's internal labor-event path but skip returned
+    // diagnostic event arrays on this hot path.
+    const result = tick({ world, rng, collectEvents: false });
     world = result.world;
 
     // Accumulate event-derived stats.
@@ -277,12 +281,12 @@ export const runBurnIn = async (opts: BurnInOpts): Promise<BurnInReport> => {
 
     // Periodic invariant check on the day AFTER tick advances world.day.
     const checkDay = world.day - 1;
-    if (invInterval !== null && checkDay % invInterval === 0) {
+    if (shouldCheckInvariants) {
       const checkResults = checkInvariants(
         {
           world,
           day: checkDay,
-          recentEvents: result.events as readonly TickEvent[],
+          recentEvents: result.events,
           ...(previousSummary !== undefined ? { previousSummary } : {}),
         },
         STANDARD_INVARIANTS,

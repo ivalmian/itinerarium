@@ -18,6 +18,8 @@
     "lint": "eslint src --max-warnings=0",
     "format": "prettier --write src",
     "format:check": "prettier --check src",
+    "wasm:build": "asc assembly/pathfinding.ts --runtime stub -O --noAssert -o src/wasm/pathfinding.kernel.wasm && node scripts/embed-pathfinding-wasm.mjs",
+    "bench:pathfinding": "tsx scripts/bench-pathfinding.ts",
     "burnin": "tsx src/cli/burnin.ts",
     "build": "vite build",
     "dev": "vite"
@@ -32,6 +34,7 @@
     "@typescript-eslint/eslint-plugin": "^8.20.0",
     "@typescript-eslint/parser": "^8.20.0",
     "@vitest/coverage-v8": "^3.0.0",
+    "assemblyscript": "^0.28.17",
     "eslint": "^9.18.0",
     "prettier": "^3.4.2",
     "tsx": "^4.19.2",

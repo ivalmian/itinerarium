@@ -34,15 +34,19 @@
  *   - Empty schedules: clearingPrice = minPrice; no trades.
  */
 
-import type { DemandSchedule } from './demand.js';
+import { quantityAtDemandSource, type DemandSchedule } from './demand.js';
 import type { SupplySchedule } from './supply.js';
 
 export interface ClearingTrade {
   readonly buyerSourceId: string;
   readonly sellerSourceId: string;
+  readonly buyerSourceIndex: number;
+  readonly sellerSourceIndex: number;
   readonly quantity: number;
   readonly price: number;
 }
+
+const NO_TRADES: readonly ClearingTrade[] = Object.freeze([]);
 
 export interface ClearingResult {
   readonly clearingPrice: number;
@@ -104,7 +108,7 @@ export const clearMarket = (
     return {
       clearingPrice: minPrice,
       totalTraded: 0,
-      trades: [],
+      trades: NO_TRADES,
       unmetDemandAtClearingPrice: 0,
       unsoldSupplyAtClearingPrice: 0,
       bestAsk: null,
@@ -117,6 +121,18 @@ export const clearMarket = (
   }
 
   if (demand.sources.length === 0) {
+    return finalizeNoDemand(supply, minPrice);
+  }
+  const demandSources = demand.sources;
+  const supplySources = supply.sources;
+
+  if (supplySources.length === 0 && canUseNoSupplyStepFastPath(demandSources)) {
+    return finalizeNoSupplyStepDemand(demandSources, minPrice, maxPrice, eps, maxIter);
+  }
+
+  // If supply already meets demand at the minPrice, clearing happens there.
+  // (E.g., no demand at all → trivial clear at floor.)
+  if (supplyDemandDiffAt(demandSources, supplySources, minPrice) >= 0) {
     return finalizeClearing(demand, supply, minPrice);
   }
 
@@ -124,15 +140,6 @@ export const clearMarket = (
   // the price floor and ceiling. We deduplicate within an epsilon so
   // floating-point jitter does not create spurious empty intervals.
   const candidates = collectCandidates(demand, supply, minPrice, maxPrice, eps);
-
-  const D = (p: number): number => demand.totalAt(p);
-  const S = (p: number): number => supply.totalAt(p);
-
-  // If supply already meets demand at the minPrice, clearing happens there.
-  // (E.g., no demand at all → trivial clear at floor.)
-  if (S(minPrice) >= D(minPrice)) {
-    return finalizeClearing(demand, supply, minPrice);
-  }
 
   // Walk candidates ascending. The first candidate where diff >= 0 brackets
   // the crossing; the previous candidate is the lower bracket.
@@ -143,13 +150,17 @@ export const clearMarket = (
   let upper: number | undefined;
   for (const c of candidates) {
     if (c <= lower) continue;
-    if (S(c) >= D(c)) {
+    if (supplyDemandDiffAt(demandSources, supplySources, c) >= 0) {
       upper = c;
       break;
     }
     // Demand-step drop just above this candidate.
     const probe = c + eps;
-    if (S(probe) >= D(probe) && D(c) > D(probe) + eps) {
+    const demandAtProbe = sumSourceQuantities(demandSources, probe);
+    if (
+      supplyAvailableAt(supplySources, probe) >= demandAtProbe &&
+      sumSourceQuantities(demandSources, c) > demandAtProbe + eps
+    ) {
       return finalizeClearing(demand, supply, c);
     }
     lower = c;
@@ -161,7 +172,7 @@ export const clearMarket = (
     // below the supply level. Probe upward exponentially to find an upper
     // bracket. If we hit the maxPrice cap without crossing, this is a true
     // famine — clearing price is the cap (or +Infinity uncapped).
-    const probed = probeUpward(D, S, lower, maxPrice, eps);
+    const probed = probeUpward(demandSources, supplySources, lower, maxPrice, eps);
     if (probed === undefined) {
       const clearingPrice = Number.isFinite(maxPrice) ? maxPrice : Number.POSITIVE_INFINITY;
       return finalizeClearing(demand, supply, clearingPrice);
@@ -173,13 +184,17 @@ export const clearMarket = (
   // over demand at `upper`, the clearing price is `upper` itself: any
   // p ∈ (lower, upper) sits in the constant supply level below the step.
   // If demand is continuous and crosses inside (lower, upper], bisect.
-  const supplyJumpsAtUpper = Math.abs(S(upper) - S(midSafe(lower, upper))) > eps;
+  const supplyJumpsAtUpper =
+    Math.abs(
+      supplyAvailableAt(supplySources, upper) -
+        supplyAvailableAt(supplySources, midSafe(lower, upper)),
+    ) > eps;
   if (supplyJumpsAtUpper) {
     return finalizeClearing(demand, supply, upper);
   }
 
   // Continuous crossing: bisect for diff(p) = 0.
-  const root = bisect(D, S, lower, upper, eps, maxIter);
+  const root = bisect(demandSources, supplySources, lower, upper, eps, maxIter);
   return finalizeClearing(demand, supply, root);
 };
 
@@ -195,8 +210,8 @@ const midSafe = (lo: number, hi: number): number => {
  * undefined if we hit the cap (or run out of doubling room) without crossing.
  */
 const probeUpward = (
-  D: (p: number) => number,
-  S: (p: number) => number,
+  demandSources: DemandSchedule['sources'],
+  supplySources: SupplySchedule['sources'],
   lower: number,
   maxPrice: number,
   eps: number,
@@ -208,10 +223,14 @@ const probeUpward = (
   for (let i = 0; i < 200; i++) {
     if (p > cap) {
       // Try the cap itself before giving up.
-      if (S(cap) - D(cap) >= -eps) return cap;
+      if (supplyDemandDiffAt(demandSources, supplySources, cap) >= -eps) {
+        return cap;
+      }
       return undefined;
     }
-    if (S(p) - D(p) >= -eps) return p;
+    if (supplyDemandDiffAt(demandSources, supplySources, p) >= -eps) {
+      return p;
+    }
     step *= 2;
     p = lower + step;
   }
@@ -219,8 +238,8 @@ const probeUpward = (
 };
 
 const bisect = (
-  D: (p: number) => number,
-  S: (p: number) => number,
+  demandSources: DemandSchedule['sources'],
+  supplySources: SupplySchedule['sources'],
   lo: number,
   hi: number,
   eps: number,
@@ -231,7 +250,7 @@ const bisect = (
   for (let i = 0; i < maxIter; i++) {
     const m = (a + b) / 2;
     if (b - a < eps) return m;
-    const diff = S(m) - D(m);
+    const diff = supplyDemandDiffAt(demandSources, supplySources, m);
     if (diff >= 0) {
       b = m;
     } else {
@@ -249,29 +268,68 @@ const collectCandidates = (
   eps: number,
 ): readonly number[] => {
   const set: number[] = [];
-  set.push(minPrice);
-  if (Number.isFinite(maxPrice)) set.push(maxPrice);
+  insertCandidatePrice(set, minPrice);
+  if (Number.isFinite(maxPrice)) insertCandidatePrice(set, maxPrice);
   for (const source of demand.sources) {
     if (source.peakQuantity <= 0) continue;
     if (source.curve !== 'status' && source.curve !== 'derived') continue;
-    set.push(source.maxWillingnessToPay);
+    insertCandidatePrice(set, source.maxWillingnessToPay);
   }
   for (const source of supply.sources) {
-    if (source.availableToSell > 0) set.push(source.reservationPrice);
+    if (source.availableToSell > 0) insertCandidatePrice(set, source.reservationPrice);
   }
-  // Sort ascending.
-  set.sort((a, b) => a - b);
   // Deduplicate within eps.
-  const out: number[] = [];
+  let write = 0;
   for (const p of set) {
     if (p < minPrice) continue;
     if (Number.isFinite(maxPrice) && p > maxPrice) continue;
-    const last = out.length > 0 ? out[out.length - 1] : undefined;
+    const last = write > 0 ? set[write - 1] : undefined;
     if (last === undefined || p - last > eps) {
-      out.push(p);
+      set[write] = p;
+      write++;
     }
   }
-  return out;
+  set.length = write;
+  return set;
+};
+
+const insertCandidatePrice = (prices: number[], price: number): void => {
+  let index = prices.length;
+  while (index > 0 && (prices[index - 1] as number) > price) {
+    prices[index] = prices[index - 1] as number;
+    index--;
+  }
+  prices[index] = price;
+};
+
+interface BuyerOrder {
+  id: string;
+  sourceIndex: number;
+  maxWtp: number;
+  remaining: number;
+}
+
+interface SellerOrder {
+  id: string;
+  sourceIndex: number;
+  reservation: number;
+  remaining: number;
+}
+
+const insertBuyerOrder = (orders: BuyerOrder[], order: BuyerOrder): void => {
+  const length = orders.length;
+  let index = 0;
+  while (index < length && orders[index]!.maxWtp >= order.maxWtp) index++;
+  for (let i = length; i > index; i--) orders[i] = orders[i - 1] as BuyerOrder;
+  orders[index] = order;
+};
+
+const insertSellerOrder = (orders: SellerOrder[], order: SellerOrder): void => {
+  const length = orders.length;
+  let index = 0;
+  while (index < length && orders[index]!.reservation <= order.reservation) index++;
+  for (let i = length; i > index; i--) orders[i] = orders[i - 1] as SellerOrder;
+  orders[index] = order;
 };
 
 const finalizeClearing = (
@@ -286,11 +344,43 @@ const finalizeClearing = (
   // total availableToSell, plus the demand at this large p.
   const evalPrice = Number.isFinite(clearingPrice) ? clearingPrice : Number.MAX_SAFE_INTEGER;
 
-  const totalDemand = sumSourceQuantities(demand.sources, evalPrice);
-  const totalSupply = sumSupply(supply.sources);
-  const supplyAtEvalPrice = Number.isFinite(clearingPrice)
-    ? supplyAvailableAt(supply.sources, evalPrice)
-    : totalSupply;
+  const buyerOrder: BuyerOrder[] = [];
+  let totalDemand = 0;
+  for (let sourceIndex = 0; sourceIndex < demand.sources.length; sourceIndex++) {
+    const s = demand.sources[sourceIndex] as DemandSchedule['sources'][number];
+    const quoted = quantityAtDemandSource(s, evalPrice);
+    totalDemand += quoted;
+    const remaining = Math.max(0, quoted);
+    if (remaining <= 0) continue;
+    insertBuyerOrder(buyerOrder, {
+      id: s.id,
+      sourceIndex,
+      maxWtp: s.maxWillingnessToPay,
+      remaining,
+    });
+  }
+
+  const sellerOrder: SellerOrder[] = [];
+  let totalSupply = 0;
+  let supplyAtEvalPrice = 0;
+  for (let sourceIndex = 0; sourceIndex < supply.sources.length; sourceIndex++) {
+    const s = supply.sources[sourceIndex] as SupplySchedule['sources'][number];
+    const remaining = s.availableToSell;
+    const reservation = s.reservationPrice;
+    totalSupply += remaining;
+    if (!Number.isFinite(clearingPrice) || evalPrice >= reservation) {
+      supplyAtEvalPrice += remaining;
+    }
+    if (remaining <= 0) continue;
+    if (reservation > clearingPrice && Number.isFinite(clearingPrice)) continue;
+    insertSellerOrder(sellerOrder, {
+      id: s.id,
+      sourceIndex,
+      reservation,
+      remaining,
+    });
+  }
+
   const tradedAtPrice = Number.isFinite(clearingPrice)
     ? Math.min(totalDemand, supplyAtEvalPrice)
     : Math.min(totalDemand, totalSupply);
@@ -298,32 +388,6 @@ const finalizeClearing = (
   const totalTraded = Math.max(0, tradedAtPrice);
 
   // Allocate trades: highest-WTP demanders ↔ lowest-reservation suppliers.
-  const buyerOrder: { id: string; maxWtp: number; remaining: number }[] = [];
-  for (const s of demand.sources) {
-    const remaining = Math.max(0, s.quantityAt(evalPrice));
-    if (remaining <= 0) continue;
-    buyerOrder.push({
-      id: s.id,
-      maxWtp: s.maxWillingnessToPay,
-      remaining,
-    });
-  }
-  buyerOrder.sort((a, b) => b.maxWtp - a.maxWtp);
-
-  const sellerOrder: { id: string; reservation: number; remaining: number }[] = [];
-  for (const s of supply.sources) {
-    const remaining = s.availableToSell;
-    const reservation = s.reservationPrice;
-    if (remaining <= 0) continue;
-    if (reservation > clearingPrice && Number.isFinite(clearingPrice)) continue;
-    sellerOrder.push({
-      id: s.id,
-      reservation,
-      remaining,
-    });
-  }
-  sellerOrder.sort((a, b) => a.reservation - b.reservation);
-
   const trades: ClearingTrade[] = [];
   let remainingToTrade = totalTraded;
   let bi = 0;
@@ -342,6 +406,8 @@ const finalizeClearing = (
     trades.push({
       buyerSourceId: buyer.id,
       sellerSourceId: seller.id,
+      buyerSourceIndex: buyer.sourceIndex,
+      sellerSourceIndex: seller.sourceIndex,
       quantity: qty,
       price: clearingPrice,
     });
@@ -370,7 +436,7 @@ const finalizeClearing = (
   return {
     clearingPrice,
     totalTraded,
-    trades,
+    trades: trades.length === 0 ? NO_TRADES : trades,
     unmetDemandAtClearingPrice,
     unsoldSupplyAtClearingPrice,
     ...book,
@@ -379,6 +445,205 @@ const finalizeClearing = (
 
 const BOOK_QTY_EPS = 1e-9;
 const BOOK_REMAINING_MAP_THRESHOLD = 8;
+
+const canUseNoSupplyStepFastPath = (sources: DemandSchedule['sources']): boolean => {
+  for (const source of sources) {
+    if (source.curve !== 'status' && source.curve !== 'derived') return false;
+    if (source.peakQuantity > 0 && !Number.isFinite(source.maxWillingnessToPay)) return false;
+  }
+  return true;
+};
+
+const finalizeNoSupplyStepDemand = (
+  demandSources: DemandSchedule['sources'],
+  minPrice: number,
+  maxPrice: number,
+  eps: number,
+  maxIter: number,
+): ClearingResult => {
+  let clearingPrice = minPrice;
+  if (stepDemandAt(demandSources, minPrice) > 0) {
+    const candidates = collectNoSupplyStepCandidates(demandSources, minPrice, maxPrice, eps);
+    let lower = minPrice;
+    let upper: number | undefined;
+    let stepDropClearingPrice: number | undefined;
+
+    for (const c of candidates) {
+      if (c <= lower) continue;
+      const demandAtCandidate = stepDemandAt(demandSources, c);
+      if (demandAtCandidate <= 0) {
+        upper = c;
+        break;
+      }
+      const demandAtProbe = stepDemandAt(demandSources, c + eps);
+      if (demandAtProbe <= 0 && demandAtCandidate > demandAtProbe + eps) {
+        stepDropClearingPrice = c;
+        break;
+      }
+      lower = c;
+    }
+
+    if (stepDropClearingPrice !== undefined) {
+      clearingPrice = stepDropClearingPrice;
+    } else {
+      if (upper === undefined) {
+        upper = probeUpwardNoSupplyStepDemand(demandSources, lower, maxPrice, eps);
+        if (upper === undefined) {
+          clearingPrice = Number.isFinite(maxPrice) ? maxPrice : Number.POSITIVE_INFINITY;
+        }
+      }
+      if (upper !== undefined) {
+        clearingPrice = bisectNoSupplyStepDemand(demandSources, lower, upper, eps, maxIter);
+      }
+    }
+  }
+
+  const evalPrice = Number.isFinite(clearingPrice) ? clearingPrice : Number.MAX_SAFE_INTEGER;
+  const totalDemand = stepDemandAt(demandSources, evalPrice);
+  let bestBid: number | null = null;
+  for (const source of demandSources) {
+    const peak = source.peakQuantity;
+    if (peak <= BOOK_QTY_EPS) continue;
+    const maxWtp = source.maxWillingnessToPay;
+    if (!Number.isFinite(maxWtp)) continue;
+    if (evalPrice <= maxWtp || maxWtp < clearingPrice || !Number.isFinite(clearingPrice)) {
+      if (bestBid === null || maxWtp > bestBid) bestBid = maxWtp;
+    }
+  }
+
+  let bidDepth = 0;
+  if (bestBid !== null) {
+    for (const source of demandSources) {
+      const maxWtp = source.maxWillingnessToPay;
+      if (!Number.isFinite(maxWtp)) continue;
+      if (maxWtp + BOOK_QTY_EPS < bestBid) continue;
+      bidDepth += Math.max(0, source.peakQuantity);
+    }
+  }
+
+  return {
+    clearingPrice,
+    totalTraded: 0,
+    trades: NO_TRADES,
+    unmetDemandAtClearingPrice: Math.max(0, totalDemand),
+    unsoldSupplyAtClearingPrice: 0,
+    bestAsk: null,
+    askDepth: 0,
+    bestBid,
+    bidDepth,
+    midPrice: bestBid,
+    spread: null,
+  };
+};
+
+const collectNoSupplyStepCandidates = (
+  sources: DemandSchedule['sources'],
+  minPrice: number,
+  maxPrice: number,
+  eps: number,
+): number[] => {
+  const candidates: number[] = [];
+  insertCandidatePrice(candidates, minPrice);
+  if (Number.isFinite(maxPrice)) insertCandidatePrice(candidates, maxPrice);
+  for (const source of sources) {
+    if (source.peakQuantity <= 0) continue;
+    insertCandidatePrice(candidates, source.maxWillingnessToPay);
+  }
+  let write = 0;
+  for (const p of candidates) {
+    if (p < minPrice) continue;
+    if (Number.isFinite(maxPrice) && p > maxPrice) continue;
+    const last = write > 0 ? candidates[write - 1] : undefined;
+    if (last === undefined || p - last > eps) {
+      candidates[write] = p;
+      write++;
+    }
+  }
+  candidates.length = write;
+  return candidates;
+};
+
+const probeUpwardNoSupplyStepDemand = (
+  sources: DemandSchedule['sources'],
+  lower: number,
+  maxPrice: number,
+  eps: number,
+): number | undefined => {
+  const cap = Number.isFinite(maxPrice) ? maxPrice : 1e18;
+  let step = Math.max(1, lower * 2 + 1);
+  let p = lower + step;
+  for (let i = 0; i < 200; i++) {
+    if (p > cap) {
+      if (stepDemandAt(sources, cap) <= eps) return cap;
+      return undefined;
+    }
+    if (stepDemandAt(sources, p) <= eps) return p;
+    step *= 2;
+    p = lower + step;
+  }
+  return undefined;
+};
+
+const bisectNoSupplyStepDemand = (
+  sources: DemandSchedule['sources'],
+  lo: number,
+  hi: number,
+  eps: number,
+  maxIter: number,
+): number => {
+  let a = lo;
+  let b = hi;
+  for (let i = 0; i < maxIter; i++) {
+    const m = (a + b) / 2;
+    if (b - a < eps) return m;
+    if (stepDemandAt(sources, m) <= 0) b = m;
+    else a = m;
+  }
+  return (a + b) / 2;
+};
+
+const stepDemandAt = (sources: DemandSchedule['sources'], price: number): number => {
+  let total = 0;
+  for (const source of sources) {
+    if (source.peakQuantity <= 0) continue;
+    if (price <= source.maxWillingnessToPay) total += source.peakQuantity;
+  }
+  return total;
+};
+
+const finalizeNoDemand = (supply: SupplySchedule, clearingPrice: number): ClearingResult => {
+  let supplyAtClearingPrice = 0;
+  let bestAsk: number | null = null;
+  for (const s of supply.sources) {
+    if (clearingPrice >= s.reservationPrice) supplyAtClearingPrice += s.availableToSell;
+    if (s.availableToSell <= BOOK_QTY_EPS) continue;
+    if (!Number.isFinite(s.reservationPrice)) continue;
+    if (bestAsk === null || s.reservationPrice < bestAsk) bestAsk = s.reservationPrice;
+  }
+
+  let askDepth = 0;
+  if (bestAsk !== null) {
+    for (const s of supply.sources) {
+      if (s.availableToSell <= BOOK_QTY_EPS) continue;
+      if (!Number.isFinite(s.reservationPrice)) continue;
+      if (s.reservationPrice <= bestAsk + BOOK_QTY_EPS) askDepth += s.availableToSell;
+    }
+  }
+
+  return {
+    clearingPrice,
+    totalTraded: 0,
+    trades: NO_TRADES,
+    unmetDemandAtClearingPrice: 0,
+    unsoldSupplyAtClearingPrice: Math.max(0, supplyAtClearingPrice),
+    bestAsk,
+    askDepth,
+    bestBid: null,
+    bidDepth: 0,
+    midPrice: bestAsk,
+    spread: null,
+  };
+};
 
 interface PostClearingBook {
   readonly bestAsk: number | null;
@@ -410,8 +675,8 @@ const derivePostClearingBook = (
   supply: SupplySchedule,
   clearingPrice: number,
   totalTraded: number,
-  buyerOrder: readonly { id: string; maxWtp: number; remaining: number }[],
-  sellerOrder: readonly { id: string; reservation: number; remaining: number }[],
+  buyerOrder: readonly { sourceIndex: number; maxWtp: number; remaining: number }[],
+  sellerOrder: readonly { sourceIndex: number; reservation: number; remaining: number }[],
 ): PostClearingBook => {
   // --- Ask side: residual sellers ---
   let bestAsk: number | null = null;
@@ -430,12 +695,17 @@ const derivePostClearingBook = (
     if (bestAsk === null || s.reservationPrice < bestAsk) bestAsk = s.reservationPrice;
   }
   if (bestAsk !== null) {
-    const sellerRemainingById =
-      sellerOrder.length > BOOK_REMAINING_MAP_THRESHOLD ? remainingById(sellerOrder) : undefined;
-    for (const s of supply.sources) {
-      const remaining =
-        (sellerRemainingById?.get(s.id) ?? remainingInSmallOrder(sellerOrder, s.id)) ??
-        s.availableToSell;
+    const sellerRemainingByIndex =
+      sellerOrder.length > BOOK_REMAINING_MAP_THRESHOLD
+        ? remainingBySourceIndex(sellerOrder)
+        : undefined;
+    for (let sourceIndex = 0; sourceIndex < supply.sources.length; sourceIndex++) {
+      const s = supply.sources[sourceIndex] as SupplySchedule['sources'][number] | undefined;
+      if (s === undefined) continue;
+      const matchedRemaining =
+        sellerRemainingByIndex?.[sourceIndex] ??
+        remainingInSmallOrderBySourceIndex(sellerOrder, sourceIndex);
+      const remaining = matchedRemaining !== undefined ? matchedRemaining : s.availableToSell;
       if (remaining <= BOOK_QTY_EPS) continue;
       if (!Number.isFinite(s.reservationPrice)) continue;
       if (s.reservationPrice <= bestAsk + BOOK_QTY_EPS) askDepth += remaining;
@@ -463,13 +733,18 @@ const derivePostClearingBook = (
     if (bestBid === null || d.maxWillingnessToPay > bestBid) bestBid = d.maxWillingnessToPay;
   }
   if (bestBid !== null) {
-    const buyerRemainingById =
-      buyerOrder.length > BOOK_REMAINING_MAP_THRESHOLD ? remainingById(buyerOrder) : undefined;
-    for (const d of demand.sources) {
+    const buyerRemainingByIndex =
+      buyerOrder.length > BOOK_REMAINING_MAP_THRESHOLD
+        ? remainingBySourceIndex(buyerOrder)
+        : undefined;
+    for (let sourceIndex = 0; sourceIndex < demand.sources.length; sourceIndex++) {
+      const d = demand.sources[sourceIndex] as DemandSchedule['sources'][number] | undefined;
+      if (d === undefined) continue;
       if (!Number.isFinite(d.maxWillingnessToPay)) continue;
       if (d.maxWillingnessToPay + BOOK_QTY_EPS < bestBid) continue;
       const matchedRemaining =
-        buyerRemainingById?.get(d.id) ?? remainingInSmallOrder(buyerOrder, d.id);
+        buyerRemainingByIndex?.[sourceIndex] ??
+        remainingInSmallOrderBySourceIndex(buyerOrder, sourceIndex);
       const remaining =
         matchedRemaining !== undefined ? matchedRemaining : Math.max(0, d.peakQuantity);
       bidDepth += remaining;
@@ -497,38 +772,43 @@ const derivePostClearingBook = (
   return { bestAsk, askDepth, bestBid, bidDepth, midPrice, spread };
 };
 
-const remainingById = (
-  order: readonly { readonly id: string; readonly remaining: number }[],
-): Map<string, number> => {
-  const out = new Map<string, number>();
-  for (const item of order) out.set(item.id, item.remaining);
+const remainingBySourceIndex = (
+  order: readonly { readonly sourceIndex: number; readonly remaining: number }[],
+): number[] => {
+  const out: number[] = [];
+  for (const item of order) out[item.sourceIndex] = item.remaining;
   return out;
 };
 
-const remainingInSmallOrder = (
-  order: readonly { readonly id: string; readonly remaining: number }[],
-  id: string,
+const remainingInSmallOrderBySourceIndex = (
+  order: readonly { readonly sourceIndex: number; readonly remaining: number }[],
+  sourceIndex: number,
 ): number | undefined => {
   for (let i = order.length - 1; i >= 0; i--) {
-    const item = order[i] as { readonly id: string; readonly remaining: number };
-    if (item.id === id) return item.remaining;
+    const item = order[i] as { readonly sourceIndex: number; readonly remaining: number };
+    if (item.sourceIndex === sourceIndex) return item.remaining;
   }
   return undefined;
 };
 
-const sumSourceQuantities = (
-  sources: readonly { quantityAt(p: number): number }[],
-  p: number,
-): number => {
+const sumSourceQuantities = (sources: DemandSchedule['sources'], p: number): number => {
   let total = 0;
-  for (const s of sources) total += s.quantityAt(p);
+  for (const s of sources) total += quantityAtDemandSource(s, p);
   return total;
 };
 
-const sumSupply = (sources: readonly { availableToSell: number }[]): number => {
-  let total = 0;
-  for (const s of sources) total += s.availableToSell;
-  return total;
+const supplyDemandDiffAt = (
+  demandSources: DemandSchedule['sources'],
+  supplySources: readonly { reservationPrice: number; availableToSell: number }[],
+  p: number,
+): number => {
+  let supply = 0;
+  for (const s of supplySources) {
+    if (p >= s.reservationPrice) supply += s.availableToSell;
+  }
+  let demand = 0;
+  for (const s of demandSources) demand += quantityAtDemandSource(s, p);
+  return supply - demand;
 };
 
 const supplyAvailableAt = (

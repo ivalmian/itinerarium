@@ -12,7 +12,7 @@ import type { CharacterClass } from '../population/types.js';
 import type { ActorKind } from '../politics/actor.js';
 import type { JobId } from '../types.js';
 import type { Settlement } from '../world/settlement.js';
-import { getJob } from './catalog.js';
+import { allJobs, getJob } from './catalog.js';
 
 export interface LaborClassContext {
   readonly workingAdultsByClass: ReadonlyMap<CharacterClass, number>;
@@ -21,8 +21,10 @@ export interface LaborClassContext {
   readonly hasJobAllocations: boolean;
 }
 
-const EMPTY_WORKERS_BY_JOB_AND_CLASS: ReadonlyMap<JobId, ReadonlyMap<CharacterClass, number>> =
-  new Map();
+const EMPTY_WORKERS_BY_JOB_AND_CLASS: ReadonlyMap<
+  JobId,
+  ReadonlyMap<CharacterClass, number>
+> = new Map();
 
 const WORKING_AGE_BANDS: ReadonlySet<string> = new Set([
   '15-19',
@@ -98,6 +100,25 @@ export const buildLaborClassContext = (settlement: Settlement): LaborClassContex
   };
 };
 
+const JOB_ALLOCATION_ORDER: ReadonlyMap<JobId, number> = new Map(
+  [...allJobs()]
+    .sort((a, b) => {
+      const aJob = String(a.id);
+      const bJob = String(b.id);
+      if (aJob === 'idle' && bJob !== 'idle') return 1;
+      if (bJob === 'idle' && aJob !== 'idle') return -1;
+      const aAllowed = a.allowedClasses.length;
+      const bAllowed = b.allowedClasses.length;
+      if (aAllowed !== bAllowed) return aAllowed - bAllowed;
+      return aJob < bJob ? -1 : aJob > bJob ? 1 : 0;
+    })
+    .map((job, index) => [job.id, index] as const),
+);
+
+const JOB_ALLOWED_CLASSES: ReadonlyMap<JobId, readonly CharacterClass[]> = new Map(
+  allJobs().map((job) => [job.id, job.allowedClasses] as const),
+);
+
 const buildWorkersByJobAndClass = (
   settlement: Settlement,
   workingAdultsByClass: ReadonlyMap<CharacterClass, number>,
@@ -105,29 +126,27 @@ const buildWorkersByJobAndClass = (
 ): ReadonlyMap<JobId, ReadonlyMap<CharacterClass, number>> => {
   if (settlement.jobAllocations.size === 0) return EMPTY_WORKERS_BY_JOB_AND_CLASS;
 
-  const remainingByClass = new Map<CharacterClass, number>(workingAdultsByClass);
   if (totalWorkingAdults <= 0) return EMPTY_WORKERS_BY_JOB_AND_CLASS;
+  const remainingByClass = new Map<CharacterClass, number>(workingAdultsByClass);
 
   const out = new Map<JobId, Map<CharacterClass, number>>();
   const allocations: {
     readonly job: JobId;
     readonly count: number;
     readonly allowedClasses: readonly CharacterClass[];
+    readonly order: number;
   }[] = [];
   for (const [job, count] of settlement.jobAllocations) {
     if (count <= 0) continue;
-    allocations.push({ job, count, allowedClasses: getJob(job).allowedClasses });
+    const allowedClasses = JOB_ALLOWED_CLASSES.get(job);
+    const order = JOB_ALLOCATION_ORDER.get(job);
+    if (allowedClasses === undefined || order === undefined) {
+      getJob(job);
+      continue;
+    }
+    allocations.push({ job, count, allowedClasses, order });
   }
-  allocations.sort((a, b) => {
-    const aJob = String(a.job);
-    const bJob = String(b.job);
-    if (aJob === 'idle' && bJob !== 'idle') return 1;
-    if (bJob === 'idle' && aJob !== 'idle') return -1;
-    const aAllowed = a.allowedClasses.length;
-    const bAllowed = b.allowedClasses.length;
-    if (aAllowed !== bAllowed) return aAllowed - bAllowed;
-    return aJob < bJob ? -1 : aJob > bJob ? 1 : 0;
-  });
+  allocations.sort((a, b) => a.order - b.order);
 
   for (const { job, count: requested, allowedClasses } of allocations) {
     let eligibleRemaining = 0;
@@ -190,7 +209,18 @@ export const allocatedWorkersForJobForOwner = (
 export const allocatedWorkersForJob = (context: LaborClassContext, job: JobId): number =>
   allocatedWorkersForJobForOwner(context, job);
 
-export const wageEarningShareForJobForOwner = (
+const wageEarningShareCache: WeakMap<
+  LaborClassContext,
+  Map<ActorKind | 'none', Map<JobId, number>>
+> = new WeakMap();
+
+const WAGE_EARNING_SHARE_CACHE = Symbol('wageEarningShareCache');
+
+type LaborClassContextWithShareCache = LaborClassContext & {
+  [WAGE_EARNING_SHARE_CACHE]?: Map<ActorKind | 'none', Map<JobId, number>>;
+};
+
+const computeWageEarningShareForJobForOwner = (
   context: LaborClassContext,
   job: JobId,
   ownerKind?: ActorKind,
@@ -226,6 +256,34 @@ export const wageEarningShareForJobForOwner = (
     return context.totalWorkingAdults <= 0 ? 1 : 0;
   }
   return Math.max(0, Math.min(1, wageEarning / eligible));
+};
+
+export const wageEarningShareForJobForOwner = (
+  context: LaborClassContext,
+  job: JobId,
+  ownerKind?: ActorKind,
+): number => {
+  const cachedContext = context as LaborClassContextWithShareCache;
+  let byOwnerKind = cachedContext[WAGE_EARNING_SHARE_CACHE] ?? wageEarningShareCache.get(context);
+  if (byOwnerKind === undefined) {
+    byOwnerKind = new Map<ActorKind | 'none', Map<JobId, number>>();
+    try {
+      cachedContext[WAGE_EARNING_SHARE_CACHE] = byOwnerKind;
+    } catch {
+      wageEarningShareCache.set(context, byOwnerKind);
+    }
+  }
+  const ownerKey = ownerKind ?? 'none';
+  let byJob = byOwnerKind.get(ownerKey);
+  if (byJob === undefined) {
+    byJob = new Map<JobId, number>();
+    byOwnerKind.set(ownerKey, byJob);
+  }
+  const cached = byJob.get(job);
+  if (cached !== undefined) return cached;
+  const share = computeWageEarningShareForJobForOwner(context, job, ownerKind);
+  byJob.set(job, share);
+  return share;
 };
 
 export const wageEarningShareForJob = (context: LaborClassContext, job: JobId): number =>

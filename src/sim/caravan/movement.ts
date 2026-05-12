@@ -23,7 +23,11 @@
  * are passable.
  */
 
-import { findPath, type MovementProfile } from '../world/pathfinding.js';
+import {
+  findPath,
+  profileWithPathfindingCostTable,
+  type MovementProfile,
+} from '../world/pathfinding.js';
 import type { HexGrid } from '../world/grid.js';
 import { hexEquals, type Hex } from '../world/hex.js';
 import {
@@ -123,11 +127,11 @@ const profileForCaravan = (stats: CaravanMovementStats): MovementProfile => {
     }
   }
 
-  return {
+  return profileWithPathfindingCostTable({
     costFor(terrain: Terrain, road: RoadGrade, season: Season, _loadFraction: number): number {
       return costs[movementCostIndex(terrain, road, season)] as number;
     },
-  };
+  });
 };
 
 const drawCargoFoodKg = (c: Caravan, kg: number, sources: readonly ResourceId[]): number => {

@@ -105,6 +105,7 @@ const paintRoute = (grid: HexGrid, path: readonly Hex[], grade: RoadGrade): void
     // daily decay doesn't reclaim procgen-laid roads in the first
     // post-procgen month before traffic accumulates.
     tile.roadWear = Math.max(tile.roadWear ?? 0, 100);
+    grid.markTileChanged(h);
   }
 };
 
@@ -116,6 +117,7 @@ const paveUrbanFootprint = (grid: HexGrid, settlement: SettlementSite): void => 
     if (tile === undefined) continue;
     tile.road = upgradeRoad(tile.road, grade);
     tile.roadWear = Math.max(tile.roadWear ?? 0, 100);
+    grid.markTileChanged(h);
   }
 };
 

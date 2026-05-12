@@ -106,7 +106,8 @@ export const mergeLedgerInto = (
   source: ReadonlyMap<ResourceId, ReadonlyMap<string, GuildPriceObs>>,
   today: Day,
   maxAgeDays: number,
-): void => {
+): boolean => {
+  let changed = false;
   for (const [resource, byHex] of source) {
     let targetByHex = target.priceLedger.get(resource);
     for (const [hexKey, obs] of byHex) {
@@ -118,9 +119,11 @@ export const mergeLedgerInto = (
       const prev = targetByHex.get(hexKey);
       if (prev === undefined || obs.observedOnDay > prev.observedOnDay) {
         targetByHex.set(hexKey, obs);
+        changed = true;
       }
     }
   }
+  return changed;
 };
 
 /**

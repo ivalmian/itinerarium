@@ -83,6 +83,12 @@ export interface RecipeRunPlan {
   readonly shortfall?: RecipeRunShortfall;
 }
 
+export interface RecipeRunPlanSummary {
+  readonly ranAtFraction: number;
+  readonly buildingCapacityUsed: number;
+  readonly shortfallReason?: ShortfallReason;
+}
+
 const EMPTY_RESOURCES: ReadonlyMap<ResourceId, Quantity> = new Map();
 const EMPTY_LABOR: ReadonlyMap<JobId, number> = new Map();
 
@@ -100,6 +106,62 @@ const noRunPlan = (shortfall: RecipeRunShortfall): RecipeRunPlan => ({
   buildingCapacityUsed: 0,
   shortfall,
 });
+
+const noRunPlanSummary = (shortfallReason: ShortfallReason): RecipeRunPlanSummary => ({
+  ranAtFraction: 0,
+  buildingCapacityUsed: 0,
+  shortfallReason,
+});
+
+export const planRecipeRunSummary = (
+  recipe: ProductionRecipe,
+  buildingId: BuildingId,
+  capacityRemaining: number,
+  laborAvailable: ReadonlyMap<JobId, number>,
+  inputStocks: ReadonlyMap<ResourceId, Quantity>,
+  season: Season,
+): RecipeRunPlanSummary => {
+  const seasonMul = seasonalMultiplier(recipe, season);
+  if (seasonMul <= 0) return noRunPlanSummary('no_building');
+
+  if (buildingId !== recipe.building) return noRunPlanSummary('no_building');
+  if (!Number.isFinite(capacityRemaining) || capacityRemaining <= 0) {
+    return noRunPlanSummary('no_building');
+  }
+
+  let laborFraction = Number.POSITIVE_INFINITY;
+  for (const [role, required] of recipe.labor) {
+    if (required <= 0) continue;
+    const available = laborAvailable.get(role) ?? 0;
+    if (available <= 0) return noRunPlanSummary('no_labor');
+    laborFraction = Math.min(laborFraction, available / required);
+  }
+
+  let inputFraction = Number.POSITIVE_INFINITY;
+  for (const [resource, required] of recipe.inputs) {
+    if (required <= 0) continue;
+    const available = inputStocks.get(resource) ?? 0;
+    if (available <= 0) return noRunPlanSummary('missing_input');
+    inputFraction = Math.min(inputFraction, available / required);
+  }
+
+  if (recipe.requires !== undefined) {
+    for (const [resource, needed] of recipe.requires) {
+      if (needed <= 0) continue;
+      const available = inputStocks.get(resource) ?? 0;
+      if (available <= 0) return noRunPlanSummary('missing_input');
+      inputFraction = Math.min(inputFraction, available / needed);
+    }
+  }
+
+  const fraction = Math.min(capacityRemaining, laborFraction, inputFraction) * seasonMul;
+  if (fraction <= 0) return noRunPlanSummary('no_building');
+
+  return {
+    ranAtFraction: fraction,
+    buildingCapacityUsed: fraction,
+  };
+};
 
 export const planRecipeRun = (req: RecipeRunRequest): RecipeRunPlan => {
   const { recipe, building, laborAvailable, inputStocks, season } = req;
