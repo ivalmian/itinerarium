@@ -35,6 +35,7 @@ export type {
 export {
   ageOneYear,
   createCharacter,
+  generateFamilyMemberName,
   generateFullName,
   generateLatinNomen,
   generateLatinPraenomen,

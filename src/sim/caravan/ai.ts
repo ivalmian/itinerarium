@@ -343,6 +343,25 @@ export interface PlanCaravanRouteInputs {
   };
   readonly cargoConstraints?: CargoPlanningConstraints;
   readonly includeReason?: boolean;
+  /**
+   * Per docs/15 §C25: minimum **absolute** net profit (in coin) below
+   * which a route is considered not worth running. Caravans currently
+   * routinely fire 0%-margin trades because `netProfit > 0` is the only
+   * bar — any spread, however tiny, looks attractive. Real merchants
+   * have a profit floor (wages, opportunity cost of capital, depreciation
+   * not fully captured by travelCost). Default 0 keeps back-compat with
+   * fixtures that don't set the floor; callers in tick.ts set a sensible
+   * floor.
+   */
+  readonly minNetProfitCoin?: number;
+  /**
+   * Per docs/15 §C25: minimum **fractional** net profit relative to
+   * travel cost. `netProfit / travelCost >= minNetProfitFraction`. This
+   * captures the "is this trip worth the time" intuition: a route with
+   * net profit ≈ travel cost is "barely positive" and should be rejected
+   * unless the absolute floor is loose. Default 0.
+   */
+  readonly minNetProfitFraction?: number;
 }
 
 /**
@@ -465,14 +484,27 @@ export const planCaravanRoute = (inputs: PlanCaravanRouteInputs): RoutePlan | nu
   const observationsByDest = observationsByDestination(origin, inputs.knownPrices);
   if (observationsByDest.size === 0) return null;
 
+  const minAbsProfit = Math.max(0, inputs.minNetProfitCoin ?? 0);
+  const minFractionalProfit = Math.max(0, inputs.minNetProfitFraction ?? 0);
+
   const evaluations: Evaluation[] = [];
   for (const candidate of inputs.candidateSettlements) {
     const obs = observationsByDest.get(hexKey(candidate.hex));
     if (obs === undefined) continue;
     const ev = evaluateCandidate(inputs.caravan, origin, candidate, inputs, obs);
-    if (ev !== null && ev.netProfit > 0) {
-      evaluations.push(ev);
+    if (ev === null) continue;
+    // Per docs/15 §C25: require net profit ABOVE absolute and fractional
+    // floors, not just positive. A 0.5%-margin route is not worth a
+    // multi-week trip; the merchant would rather hold cargo / disband.
+    if (ev.netProfit <= minAbsProfit) continue;
+    if (
+      minFractionalProfit > 0 &&
+      ev.travelCostCoin > 0 &&
+      ev.netProfit < ev.travelCostCoin * minFractionalProfit
+    ) {
+      continue;
     }
+    evaluations.push(ev);
   }
   if (evaluations.length === 0) return null;
 

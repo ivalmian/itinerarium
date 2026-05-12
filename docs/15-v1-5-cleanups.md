@@ -653,6 +653,168 @@ caravans completing instead of residual transfers firing.
 `docs/15-v1-5-cleanups.md` §C20, `src/sim/tick.ts`
 `fiscalRedistributionPhase`, `completeOffMapExportIfArrived`.
 
+## C23 — Non-cash wealth floor on comfort + status demand (landed)
+
+**Diagnosed during the §C22 bid-book audit:** in a year-1 burn-in
+snapshot a large city had 45 of 61 priced resources with NO bid in
+the book — including obviously-consumed goods like olive oil (228k
+units sitting in stockpile), wine (140k), cheese, cloth, pottery.
+Cause: `plebeian_household / freedman_household / foreigner_household`
+actors all had treasury = 0. The schedule builder's
+`budgetCapForActor` was a HARD cap at actor treasury — when treasury
+hit zero, the comfort/status demand source was skipped entirely.
+Households drained because wages-in-coin only fire when the payer
+has cash, and patrician estates pay in-kind grain when their own
+treasury runs low. The result: a chicken-and-egg cash deadlock with
+giant stockpiles, no bidders, and a silent bid book.
+
+**v1.5 mechanics (landed):**
+
+1. `budgetCapForActor` gains a `nominalBudgetFloorFraction`
+   parameter. The cap becomes
+   `max(min(treasury, nominal), nominal × floor)` — the actor's
+   treasury still caps demand at the upper end, but a small fraction
+   of the **population-derived nominal budget** is always available,
+   representing non-cash wealth (household food stockpile, barter,
+   in-kind exchange, savings stashed in goods).
+2. `COMFORT_NOMINAL_FLOOR_FRACTION = 0.05` for plebeian/freedman/
+   foreigner comfort demand.
+3. `STATUS_NOMINAL_FLOOR_FRACTION = 0.05` for patrician status
+   demand (broke patricians retain credit lines + lineage wealth).
+4. Subsistence demand is unchanged — it already uses
+   `subsistenceBudgetForActor` which credits the actor's own
+   stockpile through `selfProvisionCredit`. Subsistence at literal
+   zero treasury AND zero stockpile remains zero, which is correct:
+   starving people don't bid.
+
+**Effect:** the bid book in cities populates correctly even when
+households drain. Comfort markets (wine, oil, cheese, cloth,
+pottery) clear continuously instead of pulsing. The floor unlocks
+~5% of nominal volume per affected good — modest in absolute
+terms, but critical for the cash-flow loop because it gives
+patrician estates a buyer for their output.
+
+**Cross-refs:** `docs/08-money-and-trade.md` §"Cash circulation
+discipline", `src/sim/market/scheduleBuilder.ts`
+`budgetCapForActor`.
+
+## C24 — Patrician family members share the family nomen (landed)
+
+**Pre-§C24 hack:** every patrician_family seeded ONE named
+character (the patriarch), generated via `generateFullName` which
+drew a random praenomen + nomen. The patriarch of Family Vibian
+might be named "Lucius Caelius" — the actor's name said one
+family, the character's name said another. The faction screen
+in the viewer showed a single misnamed character per family.
+
+**v1.5 mechanics (landed):**
+
+1. New `generateFamilyMemberName(rng, sex, nomen)` in
+   `src/sim/politics/character.ts`. Produces a Latin name using the
+   given nomen as the family surname.
+2. `seedPatricianFamily` in `src/procgen/seed.ts` now seeds 3-5
+   members per family (patriarch + 2-4 adult members), all sharing
+   the family nomen. Members include:
+   - Patriarch (male, age 35-60).
+   - Heir (male, 18-32).
+   - Matron (female, 35-55).
+   - Younger scion (any sex, 10-24).
+   - Optional elder (any sex, 45-68).
+3. Faction members list contains all of them. Reputation and news
+   propagation still target individuals — but now the family has
+   members for events to affect.
+
+**Cross-refs:** `docs/11-politics-and-ownership.md` §"Every
+faction has named characters", `src/sim/politics/character.ts`
+`generateFamilyMemberName`, `src/procgen/seed.ts`
+`seedPatricianFamily`.
+
+## C25 — Caravan minimum-margin gate + unprofitable-disband (landed)
+
+**Pre-§C25 hack:** the caravan planner accepted any route with
+`netProfit > 0`, so caravans regularly ran 0.5%-margin trades that
+covered travel cost by a few coin and netted nothing. Worse,
+caravans that found no profitable route at all just kept scouting
+indefinitely, draining their owner's treasury on rations forever.
+
+**v1.5 mechanics (landed):**
+
+1. `PlanCaravanRouteInputs` gains:
+   - `minNetProfitCoin` — absolute net-profit floor in coin per
+     trip. Default 0 (back-compat). tick.ts wires
+     `CARAVAN_MIN_NET_PROFIT_COIN = 5`.
+   - `minNetProfitFraction` — fractional floor relative to travel
+     cost. Default 0. tick.ts wires
+     `CARAVAN_MIN_NET_PROFIT_FRACTION = 0.10` (≥10% margin over
+     travel cost).
+2. `planCaravanRoute` rejects evaluations failing either floor.
+3. `Caravan` gains optional `noProfitableRouteDays` counter.
+   `caravanReplanPhase` resets to 0 on a successful plan, increments
+   when the planner returns null. After
+   `CARAVAN_NO_PROFITABLE_ROUTE_DISBAND_DAYS = 45` consecutive ticks
+   without a plan, the caravan disbands.
+4. New `disbandUnprofitableCaravan` helper returns the caravan's
+   treasury + cargo to the owner, refunds equine herd-units +
+   carts to the owner's stockpile, and emits a
+   `caravan_disbanded` event with reason `'unprofitable'`.
+
+**Effect:** caravans only form / persist when there's real
+incentive. The province's caravan count tracks the real opportunity
+set rather than mechanical replacement.
+
+**Cross-refs:** `docs/06-caravans.md` §"NPC caravan AI",
+`src/sim/caravan/ai.ts` `planCaravanRoute`, `src/sim/tick.ts`
+`disbandUnprofitableCaravan`.
+
+## C26 — Patrician + city-corp market making (landed)
+
+**Pre-§C26 hack:** even with §C23's comfort-floor, many resources
+in cities had no quoted bid OR ask in the book because no concrete
+buyer/seller had reason to engage that day. The book showed `—`
+even for goods both sides held in stockpile + would trade if given
+a price signal.
+
+**Realistic:** in a real Roman forum, the institutional traders
+(patrician estates with surplus, city corporations with reserves)
+maintained STANDING BID/ASK quotes for every good they held or
+might need — a small fraction of inventory listed at a modest
+markup, and a small fraction of treasury reserved as a passive bid
+at a modest discount. This is **market making**: providing
+liquidity at the spread for any counterparty willing to cross. It
+is the "wide spread, low volume" baseline against which the
+"narrow spread, high volume" concrete bids and asks layer on top.
+
+**v1.5 mechanics (landed):**
+
+1. New `marketMakerSupplySources` in scheduleBuilder.ts: for every
+   resource in a patrician_family / city_corporation /
+   governor_office stockpile with a known `lastClearingPrice`,
+   emit a SupplySource offering 5% of stockpile at
+   `lastPrice × 1.05`. The 5% is `PASSIVE_INVENTORY_LIST_FRACTION`.
+2. New `marketMakerDemandSources` in scheduleBuilder.ts: each
+   market-making actor dedicates 10% of its treasury
+   (`PASSIVE_TREASURY_BID_FRACTION`) split across the resources for
+   which a `lastClearingPrice` is observed. The per-resource bid is
+   at `lastPrice × 0.95` for quantity `(treasury_share / bid_price)`.
+3. Market-making sources are ADDITIVE — they sit alongside
+   concrete supply (production-derived) and demand (subsistence /
+   comfort / status / derived input). When a concrete buyer/seller
+   has a tighter price, that price wins in the CDA. When no
+   concrete counterparty exists, the market maker's quote is the
+   only thing in the book and ensures `bestBid` / `bestAsk` are
+   never null on resources the actor touches.
+4. Service resources are excluded — they don't have a stockpile
+   shape and aren't tradable as physical goods.
+
+**Effect:** the bid-ask book is meaningfully non-empty for every
+resource any cash-and-stockpile institution holds. Two-sided book
+coverage in cities rises from ~10% of priced goods to near
+universal.
+
+**Cross-refs:** `docs/08-money-and-trade.md` §"Bid-ask book",
+`src/sim/market/scheduleBuilder.ts` `marketMakerSupplySources`,
+`marketMakerDemandSources`.
+
 ## C16 — Cascading consequences of price explosion [TODO]
 
 **Current state:** prices are capped at a sane multiple of base

@@ -1454,7 +1454,10 @@ describe('tick (per-day loop)', () => {
       expect(seller.stockpile.get(weapons)).toBeLessThan(2);
       expect(seller.treasury).toBeGreaterThan(0);
       expect(buyer.treasury).toBeLessThan(beforeBuyerTreasury);
-      expect(buyer.stockpile.get(weapons) ?? 0).toBe(0);
+      // Per docs/15 §C26 the governor also market-makes — they may end
+      // with a small residual MM stockpile alongside the consumed
+      // institutional procurement. Allow up to 1 unit of residual.
+      expect(buyer.stockpile.get(weapons) ?? 0).toBeLessThan(1);
     });
 
     it('clears local service capacity for coin without creating stockpile cargo', () => {
@@ -2127,7 +2130,10 @@ describe('tick (per-day loop)', () => {
       expect(dispatched[0]?.ownerActor).toBe(familyId);
       expect(seller.stockpile.get(resourceId('livestock.equines'))).toBeUndefined();
       expect(seller.treasury).toBeGreaterThan(sellerTreasuryBefore);
-      expect(family.stockpile.get(resourceId('livestock.equines'))).toBeUndefined();
+      // Per docs/15 §C26 the patrician family also market-makes — they
+      // may keep a tiny residual MM stockpile of equines beyond what
+      // the caravan assembly consumed. Allow sub-unit residual.
+      expect(family.stockpile.get(resourceId('livestock.equines')) ?? 0).toBeLessThan(1);
     });
 
     it('does not assemble replacement merchants when temporary convoys fill the world cap', () => {

@@ -78,6 +78,7 @@ const tile = (overrides: Partial<HexTile> = {}): HexTile => ({
 const PATRICIAN = actorId('actor:vibian');
 const PLEBEIAN = actorId('actor:plebeian-coop');
 const MILLER = actorId('actor:miller-1');
+const CITY = actorId('actor:city-corp');
 
 const baseSettlement = (
   id: string = 's1',
@@ -390,7 +391,13 @@ describe('buildSettlementSchedules — comfort', () => {
     expect(pair.demand.totalAt(1000000)).toBeLessThan(pair.demand.totalAt(0.001));
   });
 
-  it('ignores floating-point treasury dust as spendable comfort demand', () => {
+  it('surfaces a population-derived comfort bid even when treasury is dust (docs/15 §C23 5% floor)', () => {
+    // Per docs/15 §C23: a settlement with real population but a
+    // numerically-empty treasury still produces a small comfort bid via
+    // the 5% nominal-budget floor. Models non-cash wealth (household
+    // stockpile, barter, in-kind exchange) — without this floor the
+    // bid-ask book stays silent on every consumed good in a city where
+    // households drained.
     const s = baseSettlement();
     setSegment(s, 'plebeian', 100);
     const result = buildSettlementSchedules({
@@ -402,6 +409,28 @@ describe('buildSettlementSchedules — comfort', () => {
       season: 'spring',
       ownerKindByActor: new Map([[PLEBEIAN, 'plebeian_household']]),
       actorTreasuryByActor: new Map([[PLEBEIAN, 1e-12]]),
+    });
+    const pair = result.schedulesByResource.get(RES.wine);
+    if (!pair) throw new Error('missing wine schedule');
+    expect(pair.demand.sources).toHaveLength(1);
+    // The floor produces a small but positive budget; demand at zero price
+    // is the full want quantity from 100 plebeians.
+    expect(pair.demand.totalAt(0)).toBeGreaterThan(0);
+  });
+
+  it('produces no comfort demand when there is no population to want it', () => {
+    // The 5% floor only kicks in for sources backed by real population —
+    // an empty-population settlement with a treasured actor is still zero.
+    const s = baseSettlement();
+    const result = buildSettlementSchedules({
+      settlement: s,
+      stockpilesByOwner: new Map([[PLEBEIAN, new Map()]]),
+      resources: [RES.wine],
+      recentLocalPrices: new Map(),
+      today: 0 as Day,
+      season: 'spring',
+      ownerKindByActor: new Map([[PLEBEIAN, 'plebeian_household']]),
+      actorTreasuryByActor: new Map([[PLEBEIAN, 1000]]),
     });
     const pair = result.schedulesByResource.get(RES.wine);
     if (!pair) throw new Error('missing wine schedule');
@@ -1351,5 +1380,88 @@ describe('buildSettlementSchedules — owner kind drives urgency', () => {
     const source = pair.supply.sources.find((src) => src.ownerActor === PLEBEIAN);
     if (!source) throw new Error('missing plebeian supply source');
     expect(source.reservationPrice).toBeCloseTo(0.335);
+  });
+});
+
+describe('buildSettlementSchedules — market making (docs/15 §C26)', () => {
+  it('patrician estate with stockpile + known price posts a passive ask at +5%', () => {
+    const s = baseSettlement();
+    setSegment(s, 'patrician', 5);
+    const result = buildSettlementSchedules({
+      settlement: s,
+      stockpilesByOwner: new Map([[PATRICIAN, new Map([[RES.oil, 1000]])]]),
+      resources: [RES.oil],
+      recentLocalPrices: new Map([[RES.oil, 6]]),
+      today: 0 as Day,
+      season: 'spring',
+      ownerKindByActor: new Map([[PATRICIAN, 'patrician_family']]),
+      actorTreasuryByActor: new Map([[PATRICIAN, 1000]]),
+    });
+    const pair = result.schedulesByResource.get(RES.oil);
+    if (!pair) throw new Error('missing oil schedule');
+    // The market-making source asks at 6 × 1.05 = 6.3 and offers 5% of
+    // the 1000-unit stockpile = 50 units.
+    const mmSupply = pair.supply.sources.find(
+      (src) => src.ownerActor === PATRICIAN && Math.abs(src.reservationPrice - 6.3) < 1e-6,
+    );
+    if (!mmSupply) throw new Error('expected MM ask at 6.3');
+    expect(mmSupply.availableToSell).toBeCloseTo(50);
+  });
+
+  it('city corp with treasury posts a passive bid at -5% on every priced resource', () => {
+    const s = baseSettlement();
+    setSegment(s, 'patrician', 1); // some population so context isn't empty
+    const result = buildSettlementSchedules({
+      settlement: s,
+      stockpilesByOwner: new Map([[CITY, new Map()]]),
+      resources: [RES.oil, RES.wine],
+      recentLocalPrices: new Map([
+        [RES.oil, 6],
+        [RES.wine, 5],
+      ]),
+      today: 0 as Day,
+      season: 'spring',
+      ownerKindByActor: new Map([[CITY, 'city_corporation']]),
+      actorTreasuryByActor: new Map([[CITY, 10000]]),
+    });
+    // Oil bid: 10% × 10000 / 2 resources = 500 coin at 6 × 0.95 = 5.7 →
+    // 500 / 5.7 ≈ 87.7 units.
+    const oil = result.schedulesByResource.get(RES.oil);
+    if (!oil) throw new Error('missing oil schedule');
+    const oilBid = oil.demand.sources.find(
+      (src) => src.curve === 'status' && src.buyerActor === CITY,
+    );
+    if (!oilBid) throw new Error('expected MM bid on oil');
+    expect(oilBid.maxWillingnessToPay).toBeCloseTo(5.7, 5);
+    // Wine bid: 10% × 10000 / 2 resources = 500 coin at 5 × 0.95 = 4.75.
+    const wine = result.schedulesByResource.get(RES.wine);
+    if (!wine) throw new Error('missing wine schedule');
+    const wineBid = wine.demand.sources.find(
+      (src) => src.curve === 'status' && src.buyerActor === CITY,
+    );
+    if (!wineBid) throw new Error('expected MM bid on wine');
+    expect(wineBid.maxWillingnessToPay).toBeCloseTo(4.75, 5);
+  });
+
+  it('does not post market-making quotes for plebeian or hamlet households', () => {
+    const s = baseSettlement();
+    setSegment(s, 'plebeian', 10);
+    const result = buildSettlementSchedules({
+      settlement: s,
+      stockpilesByOwner: new Map([[PLEBEIAN, new Map([[RES.oil, 1000]])]]),
+      resources: [RES.oil],
+      recentLocalPrices: new Map([[RES.oil, 6]]),
+      today: 0 as Day,
+      season: 'spring',
+      ownerKindByActor: new Map([[PLEBEIAN, 'plebeian_household']]),
+      actorTreasuryByActor: new Map([[PLEBEIAN, 1000]]),
+    });
+    const pair = result.schedulesByResource.get(RES.oil);
+    if (!pair) throw new Error('missing oil schedule');
+    // No MM ask from plebeian household.
+    const mmAsk = pair.supply.sources.find(
+      (src) => src.ownerActor === PLEBEIAN && Math.abs(src.reservationPrice - 6.3) < 1e-6,
+    );
+    expect(mmAsk).toBeUndefined();
   });
 });

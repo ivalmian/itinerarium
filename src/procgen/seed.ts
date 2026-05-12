@@ -40,6 +40,7 @@ import {
   createActor,
   createCharacter,
   createFaction,
+  generateFamilyMemberName,
   generateFullName,
   generateLatinNomen,
   type Actor,
@@ -499,9 +500,16 @@ const seedPatricianFamily = (
     // markets across the province.
     treasury: familyRng.int(8000, 24000),
   });
+  // docs/15 §C24 + docs/11 §"Every faction has named characters":
+  // a patrician family is "Patriarch + adult members", and ALL of them
+  // share the family's nomen. The Vibii are e.g. "Lucius Vibian"
+  // (patriarch) + "Marcus Vibian" (heir) + "Tullia Vibian" (matron)
+  // + "Quintus Vibian" (younger scion). Without this loop the family
+  // had exactly one named character, and the faction screen looked
+  // empty.
   const patriarch = createCharacter({
     id: cId,
-    name: generateFullName(familyRng, 'male'),
+    name: generateFamilyMemberName(familyRng, 'male', nomen),
     age: familyRng.int(35, 60),
     sex: 'male',
     class: 'patrician',
@@ -509,11 +517,40 @@ const seedPatricianFamily = (
     role: 'patriarch',
     location: city.anchor,
   });
+  const memberIds: (typeof cId)[] = [cId];
+  const extraMemberCount = familyRng.int(2, 4);
+  for (let m = 0; m < extraMemberCount; m++) {
+    const memberId = characterId(nextId('char'));
+    const sex: 'male' | 'female' = familyRng.chance(0.45) ? 'female' : 'male';
+    // Age profile: an heir (15-35), a matron (35-55), a younger scion
+    // (10-25), and an occasional elder (50-70). Use slot index to make
+    // the mix predictable but not robotic.
+    const age =
+      m === 0
+        ? familyRng.int(18, 32) // heir
+        : m === 1
+          ? familyRng.int(35, 55) // matron
+          : m === 2
+            ? familyRng.int(10, 24) // scion
+            : familyRng.int(45, 68); // elder
+    const member = createCharacter({
+      id: memberId,
+      name: generateFamilyMemberName(familyRng, sex, nomen),
+      age,
+      sex,
+      class: 'patrician',
+      faction: fId,
+      role: 'family_member',
+      location: city.anchor,
+    });
+    addCharacter(ctx, member);
+    memberIds.push(memberId);
+  }
   const faction = createFaction({
     id: fId,
     actor: aId,
     name: `Family ${nomen}`,
-    members: [cId],
+    members: memberIds,
   });
   addActor(ctx, actor);
   addFaction(ctx, faction);
