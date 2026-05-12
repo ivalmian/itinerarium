@@ -133,6 +133,23 @@ const svgToBlobUrl = (svg: string): string => {
  * fully-realized `ImageBitmap` first, which the spec guarantees is
  * decoded by the time the promise resolves.
  */
+/**
+ * Supersampling factor for SVG rasterization. The painterly art is
+ * authored at 128×148 (one hex), but the viewer routinely zooms in
+ * past 4× (see the wheel-zoom max of 6× in `viewer/app.ts` and the
+ * compounded device-pixel-ratio on retina displays — typically ×2).
+ * Rasterizing at the viewBox size makes a sub-pixel zoom in look
+ * obviously bilinear-filtered. We rasterize at SUPERSAMPLE× the
+ * viewBox and tell Pixi via `Texture` source `resolution` so the
+ * sprite still occupies the correct on-screen size — the upshot is
+ * a sharper image at every zoom level past 1×.
+ *
+ * Memory budget: ~50 SVGs × 128×148 × 4× = ~50 MB raw RGBA. Well
+ * within budget for a desktop browser; WebGL keeps the textures
+ * mipmapped in VRAM.
+ */
+const SUPERSAMPLE = 4;
+
 const loadTexture = async (svg: string, alias: string): Promise<Texture> => {
   // Parse the viewBox so we can give the SVG explicit pixel dimensions
   // before rasterizing. Without this, some browsers report the SVG
@@ -151,16 +168,24 @@ const loadTexture = async (svg: string, alias: string): Promise<Texture> => {
       img.onerror = () => reject(new Error(`Art: failed to load SVG ${alias}`));
       img.src = url;
     });
-    // Rasterize to a fully-decoded ImageBitmap. The HTMLImageElement's
-    // `load` event only guarantees the bytes are parsed — for SVG it
-    // does NOT guarantee a usable raster. WebGL's texImage2D then
-    // fails with `bad image data` and the texture renders solid
-    // black. `createImageBitmap` forces a full decode.
+    // Rasterize to a fully-decoded ImageBitmap at SUPERSAMPLE× the
+    // viewBox size. The browser's SVG rasterizer redraws every path
+    // at the requested target resolution (not a pixel-scaled blit),
+    // so the painterly art stays crisp at zoom.
+    const targetW = Math.round(viewBox.width * SUPERSAMPLE);
+    const targetH = Math.round(viewBox.height * SUPERSAMPLE);
     const bitmap = await createImageBitmap(img, {
-      resizeWidth: viewBox.width,
-      resizeHeight: viewBox.height,
+      resizeWidth: targetW,
+      resizeHeight: targetH,
+      resizeQuality: 'high',
     });
-    return Texture.from(bitmap);
+    // `resolution` tells Pixi the texture is SUPERSAMPLE× denser than
+    // the on-screen CSS pixel size — without it sprites would render
+    // SUPERSAMPLE× too big. With it, callers can still size sprites in
+    // viewBox units and we just get a sharper sample per CSS pixel.
+    const texture = Texture.from(bitmap);
+    texture.source.resolution = SUPERSAMPLE;
+    return texture;
   } finally {
     URL.revokeObjectURL(url);
   }
