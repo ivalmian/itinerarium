@@ -51,13 +51,14 @@ const observePrice = (
   atHex: ReturnType<typeof hex>,
   price: number,
   day: Day = 0,
+  extra: Omit<Partial<PriceObservation>, 'price' | 'observedOnDay'> = {},
 ): void => {
   let perHex = c.priceBook.get(resource);
   if (!perHex) {
     perHex = new Map<string, PriceObservation>();
     c.priceBook.set(resource, perHex);
   }
-  perHex.set(hexKey(atHex), { price, observedOnDay: day });
+  perHex.set(hexKey(atHex), { price, ...extra, observedOnDay: day });
 };
 
 const candAquileia = { id: aquileia, hex: hex(20, 0), tier: 'small_city' as const };
@@ -166,6 +167,30 @@ describe('planCaravanRoute', () => {
     expect(plan).not.toBeNull();
     expect(plan?.destinationSettlement).toBe(aquileia);
     expect(plan?.expectedProfit).toBeGreaterThan(0);
+    expect(plan?.cargoToCarry.has(grain)).toBe(true);
+  });
+
+  it('uses origin ask and destination bid when book-side observations exist', () => {
+    const c = baseCaravan();
+    // Mid/last prices imply a profitable route, but the visible book does not:
+    // the caravan must buy at ask=4 and sell into bid=3, so it should stay put.
+    observePrice(c, grain, homeHex, 1, 0, { askPrice: 4 });
+    observePrice(c, grain, candAquileia.hex, 5, 0, { bidPrice: 3 });
+
+    const plan = planCaravanRoute(baseInputs(c));
+
+    expect(plan).toBeNull();
+  });
+
+  it('plans against the settlement book spread instead of the last-trade spread', () => {
+    const c = baseCaravan();
+    observePrice(c, grain, homeHex, 10, 0, { askPrice: 2 });
+    observePrice(c, grain, candAquileia.hex, 10, 0, { bidPrice: 6 });
+
+    const plan = planCaravanRoute(baseInputs(c));
+
+    expect(plan).not.toBeNull();
+    expect(plan?.destinationSettlement).toBe(aquileia);
     expect(plan?.cargoToCarry.has(grain)).toBe(true);
   });
 

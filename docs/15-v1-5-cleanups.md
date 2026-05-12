@@ -378,7 +378,7 @@ backfill zero rows so all CSVs share the same row count.
 `src/burnin/instruments/timeSeriesCsv.ts`,
 `src/burnin/runner.ts`, `src/cli/burnin.ts`.
 
-## C19 — Bid-ask book per market (landed in progress)
+## C19 — Bid-ask book per market (landed)
 
 **Pre-v1.5 hack:** market clearing returned only a single
 `clearingPrice` per resource per settlement. The CDA actually produces
@@ -412,10 +412,15 @@ remaining book.
 1. `ClearingResult` returns `bestBid`, `bidDepth`, `bestAsk`,
    `askDepth`, `midPrice`, `spread` based on residual sources.
 2. `Settlement.market` carries `bestBid`, `bestAsk`, `bidDepth`,
-   `askDepth`, `midPrice` per resource. Cleared on the same path
-   that prunes `lastClearingPrice` for dead markets.
-3. Viewer `settlementPopup` renders the spread column as
-   `bestBid – bestAsk` with depth annotations.
+   `askDepth`, `midPrice` per resource plus a compact
+   `bookLadder` of per-actor residual bid/ask orders. Cleared on
+   the same path that prunes `lastClearingPrice` for dead markets.
+3. Merchants use the settlement book as the trade surface: origin
+   asks are their expected buy price, destination bids are their
+   expected sale price, and destination bid depth caps planned cargo.
+4. Viewer `settlementPopup` renders the spread column as
+   `bestBid – bestAsk` with depth annotations, and the resource
+   popup shows the per-actor book ladder.
 
 **Acceptance:** at year 5 of a watchdog burn-in, every city
 shows a non-trivial spread on at least 30 different resources;
@@ -441,20 +446,19 @@ mechanism.
 
 **v1.5 mechanics (landed):**
 
-The redistribution lives in a new `fiscalRedistributionPhase` called
-on a **quarterly** cadence (every 91 days), alongside `investmentPhase`.
+The redistribution lives in `fiscalRedistributionPhase` called on a
+**quarterly** cadence (every 90 days), alongside `investmentPhase`.
 Each transfer emits a `fiscal_redistribution` `TickEvent` (`channel`
-∈ `civic_dividend / tenant_rent / merchant_residual`) for viewer +
-burn-in audit.
+∈ `civic_dividend / tenant_rent`) for viewer + burn-in audit.
 
-1. **Quarterly civic dividend to patricians.** Every 91 days, each
+1. **Quarterly civic dividend to patricians.** Every 90 days, each
    `city_corporation` distributes a fraction of its treasury
    (`CITY_CORP_DIVIDEND_FRACTION = 0.08`, ≈32% APR) split evenly
    among `patrician_family` actors whose `homeSettlement` matches
    the city's settlement. Models cura annonae stipends, civic
    contract pay, magistrate salaries — the real Roman income
    channel for families running the city council.
-2. **Quarterly rent collection from tenant villages.** Every 91 days,
+2. **Quarterly rent collection from tenant villages.** Every 90 days,
    each `free_village` and `hamlet_household` pays rent to the
    patrician families of its nearest patron city within
    `TENANT_RENT_MAX_HEX_DISTANCE = 30` hexes. The rent is

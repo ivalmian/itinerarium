@@ -33,6 +33,10 @@ import type { ActorId, CaravanId, Day, ResourceId, SettlementId } from '../types
 
 export interface GuildPriceObs {
   readonly price: number;
+  readonly bidPrice?: number;
+  readonly askPrice?: number;
+  readonly bidDepth?: number;
+  readonly askDepth?: number;
   readonly observedOnDay: Day;
 }
 

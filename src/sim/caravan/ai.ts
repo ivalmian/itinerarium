@@ -29,6 +29,7 @@ import {
   totalCarryKg,
   totalCargoWeightKg,
   type Caravan,
+  type PriceObservation,
 } from './caravan.js';
 
 // --- Cost helpers -----------------------------------------------------------
@@ -114,6 +115,16 @@ interface OriginDestObservation {
   spread: number;
 }
 
+const observedOriginAsk = (obs: PriceObservation): number =>
+  obs.askPrice !== undefined && Number.isFinite(obs.askPrice) && obs.askPrice > 0
+    ? obs.askPrice
+    : obs.price;
+
+const observedDestinationBid = (obs: PriceObservation): number =>
+  obs.bidPrice !== undefined && Number.isFinite(obs.bidPrice) && obs.bidPrice > 0
+    ? obs.bidPrice
+    : obs.price;
+
 export interface CargoPlanningConstraints {
   /**
    * Capacity to leave empty for known missing rations/fodder capacity. This is
@@ -155,9 +166,11 @@ const observationsForRoute = (
   const originKey = hexKey(origin);
   const destKey = hexKey(destination);
   for (const [resource, perHex] of knownPrices) {
-    const o = perHex.get(originKey)?.price;
-    const d = perHex.get(destKey)?.price;
-    if (o === undefined || d === undefined) continue;
+    const originObs = perHex.get(originKey);
+    const destObs = perHex.get(destKey);
+    if (originObs === undefined || destObs === undefined) continue;
+    const o = observedOriginAsk(originObs);
+    const d = observedDestinationBid(destObs);
     const spread = d - o;
     if (spread <= 0) continue;
     out.push({ resource, originPrice: o, destPrice: d, spread });
@@ -172,16 +185,18 @@ const observationsByDestination = (
   const out = new Map<string, OriginDestObservation[]>();
   const originKey = hexKey(origin);
   for (const [resource, perHex] of knownPrices) {
-    const originPrice = perHex.get(originKey)?.price;
-    if (originPrice === undefined) continue;
+    const originObs = perHex.get(originKey);
+    if (originObs === undefined) continue;
+    const originPrice = observedOriginAsk(originObs);
     for (const [destKey, destObs] of perHex) {
       if (destKey === originKey) continue;
-      const spread = destObs.price - originPrice;
+      const destPrice = observedDestinationBid(destObs);
+      const spread = destPrice - originPrice;
       if (spread <= 0) continue;
       const obs = {
         resource,
         originPrice,
-        destPrice: destObs.price,
+        destPrice,
         spread,
       };
       const existing = out.get(destKey);
