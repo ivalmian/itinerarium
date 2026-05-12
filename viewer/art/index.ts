@@ -122,20 +122,83 @@ const svgToBlobUrl = (svg: string): string => {
  * Pixi v8's Assets.load can't reliably auto-detect SVG when handed a blob
  * URL (no file extension, MIME hint not always honored), so we load the
  * SVG through an HTMLImageElement and let the browser's native SVG
- * rasterizer handle it. The resulting raster image is then wrapped in a
- * Texture. Resolution = the SVG's natural viewBox size, which is plenty
- * for the small on-screen hexes (~14×16 px) and zooms in cleanly to a
- * factor of ~10 before pixelation becomes visible.
+ * rasterizer handle it.
+ *
+ * Critically, the HTMLImageElement's `load` event only guarantees that
+ * the bytes are parsed — the image may not yet be decoded into a
+ * pixel buffer the GPU can read. Handing such an image to
+ * `Texture.from(img)` triggers WebGL's `texImage2D: bad image data`
+ * warning and leaves the texture transparent (which renders as solid
+ * black hexes). We work around this by rasterizing the SVG into a
+ * fully-realized `ImageBitmap` first, which the spec guarantees is
+ * decoded by the time the promise resolves.
  */
 const loadTexture = async (svg: string, alias: string): Promise<Texture> => {
-  const url = svgToBlobUrl(svg);
-  const img = new Image();
-  await new Promise<void>((resolve, reject) => {
-    img.onload = () => resolve();
-    img.onerror = () => reject(new Error(`Art: failed to load SVG ${alias}`));
-    img.src = url;
-  });
-  return Texture.from(img);
+  // Parse the viewBox so we can give the SVG explicit pixel dimensions
+  // before rasterizing. Without this, some browsers report the SVG
+  // as having no natural size, and `createImageBitmap` then refuses
+  // to rasterize it ("InvalidStateError: ... without natural
+  // dimensions"). The viewBox is authoritative for our painterly art.
+  const viewBox = parseViewBox(svg);
+  const sized = ensureSvgPixelDimensions(svg, viewBox);
+  const url = svgToBlobUrl(sized);
+  try {
+    const img = new Image();
+    img.width = viewBox.width;
+    img.height = viewBox.height;
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error(`Art: failed to load SVG ${alias}`));
+      img.src = url;
+    });
+    // Rasterize to a fully-decoded ImageBitmap. The HTMLImageElement's
+    // `load` event only guarantees the bytes are parsed — for SVG it
+    // does NOT guarantee a usable raster. WebGL's texImage2D then
+    // fails with `bad image data` and the texture renders solid
+    // black. `createImageBitmap` forces a full decode.
+    const bitmap = await createImageBitmap(img, {
+      resizeWidth: viewBox.width,
+      resizeHeight: viewBox.height,
+    });
+    return Texture.from(bitmap);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+};
+
+interface ViewBox {
+  readonly width: number;
+  readonly height: number;
+}
+
+const VIEW_BOX_RE = /viewBox\s*=\s*"\s*([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s*"/;
+
+const parseViewBox = (svg: string): ViewBox => {
+  const match = VIEW_BOX_RE.exec(svg);
+  if (match !== null) {
+    const w = Number(match[3]);
+    const h = Number(match[4]);
+    if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+      return { width: w, height: h };
+    }
+  }
+  // Fallback: 128×148 matches the hex viewBox used by every painterly
+  // asset in this project. If a future asset ships without a viewBox,
+  // adopting the project default keeps it visible at the right scale.
+  return { width: 128, height: 148 };
+};
+
+/**
+ * If the SVG's root element lacks `width=`/`height=` attributes, splice
+ * the viewBox-derived dimensions onto it. Browsers that compute natural
+ * size from `<svg>` element attributes (rather than the viewBox) then
+ * treat the image as sized and `createImageBitmap` succeeds.
+ */
+const ensureSvgPixelDimensions = (svg: string, viewBox: ViewBox): string => {
+  if (/<svg\b[^>]*\bwidth\s*=/.test(svg) && /<svg\b[^>]*\bheight\s*=/.test(svg)) {
+    return svg;
+  }
+  return svg.replace(/<svg\b/, `<svg width="${viewBox.width}" height="${viewBox.height}"`);
 };
 
 const lookupRaw = (relPath: string): string => {
