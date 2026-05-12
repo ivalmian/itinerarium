@@ -113,30 +113,71 @@ Color by tier:
 - small_city: gold
 - large_city: bright gold + outline
 
-## Caravan rendering
+## Unit rendering
 
-Each caravan is a PIXI sprite using `viewer/art/units/caravan.svg`,
-with a small owner-colored badge. On each sim tick, the caravan's
-`position` may change by a full day of travel. The viewer interpolates
-the sprite along the emitted `caravan_moved` path, and at high sim
-speeds it gives caravan movement a short minimum visual duration. If
-the next sim day arrives before the current animation is finished, the
-viewer keeps the unfinished route tail and appends the next emitted
-path instead of replacing it with a straight catch-up segment. The sim
-state remains authoritative; the visual layer may trail it slightly
-rather than snapping units across the map or making existing caravans
-look like random new spawns. If high-speed burn-in builds a long visual
-backlog, the renderer drains the queued route at a bounded wall-clock
-speed and caps per-frame catch-up distance; it must degrade by trailing,
-not by teleporting.
+All moving sim entities — **caravans** (merchant, villager, tax,
+edge-hub), **patrols**, **news carriers**, and **bandit raid
+parties** — render through a single shared layer
+(`viewer/map/unitLayer.ts`). Each entity is a PIXI sprite with a
+small owner-colored badge underneath and an optional white halo for
+the selected unit. Per-unit-type wrappers
+(`caravans.ts`, `patrols.ts`, `newsCarriers.ts`, `banditParties.ts`)
+just thread a `UnitKind` glyph + a `getEntities` callback through;
+the animation engine, faction colour hashing, sprite + badge + halo
+drawing, and tick-scaled visual duration are all in the shared
+module so every unit type moves and looks the same way.
+
+On each sim tick the unit's `position` may change by a full day of
+travel (~25 hex/day). The viewer interpolates the sprite over the
+**full tick interval** (`unitVisualDurationMs(state)` in
+`viewer/app.ts`), so the sprite glides continuously rather than
+sliding fast then sitting still. At high sim speeds the
+interpolation has a 160 ms minimum so animations don't compress
+below visibility.
+
+Two animation modes (chosen by whether the caller passes
+`pathPerEntity`):
+
+- **Path-driven** (caravans): the sim emits the explicit hex path
+  the unit walked during the day; the sprite follows it segment by
+  segment so multi-hex moves trace the planned route. If the next
+  sim day arrives before the current animation is finished, the
+  viewer keeps the unfinished route tail and appends the next
+  emitted path instead of replacing it with a straight catch-up
+  segment. The sim state remains authoritative; the visual layer
+  may trail it slightly rather than snapping units across the map.
+- **Straight-line fallback** (patrols, news carriers, bandit
+  parties): when no explicit path is provided, the layer
+  interpolates straight from the previous display position to the
+  new world position. Visually indistinguishable from path mode for
+  one-hex-per-day movers; for fast movers it's a straight slide
+  rather than a curved trace, which is fine since these units don't
+  have planned route data.
+
+If high-speed burn-in builds a long visual backlog the renderer
+drains the queued route at a bounded wall-clock speed and caps
+per-frame catch-up distance; it must degrade by trailing, not by
+teleporting.
+
+Per-type glyphs:
+
+| Unit                              | Glyph                                   |
+| --------------------------------- | --------------------------------------- |
+| Merchant / tax / edge-hub caravan | `caravan` (mules + amphora)             |
+| Villager caravan                  | `villager_caravan` (peasant + handcart) |
+| Patrol                            | `patrol`                                |
+| News carrier                      | `news_carrier`                          |
+| Bandit raid party                 | `bandit_raid`                           |
 
 Caravans carrying bandit-stolen cargo have a red outline.
 
 ## Bandit camp rendering
 
 A small black X glyph (5 px) on the camp's hex. Tooltip on hover:
-"Caelius's band — 18 bandits, 32 loot units". Camps moving via
-`move_camp` action animate the same way as caravans.
+"Caelius's band — 18 bandits, 32 loot units". Camps that have
+dispatched a raid party out: the party (rendered separately as a
+`bandit_raid` sprite per docs/15 §C32) walks toward the target and
+back.
 
 ## Time controls
 

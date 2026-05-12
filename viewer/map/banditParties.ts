@@ -1,27 +1,24 @@
 /**
- * Bandit-party sprite layer. Per docs/15 §C32: every camp-originated
- * bandit action (raid, fence, recruit, migrate, bribe) spawns a
- * movable party that physically walks to its target and back. The
- * existing `bandit_raid` art glyph (a raiding band) renders that
- * party on the map.
- *
- * Movement is one hex per day; the generic mover layer handles smooth
- * interpolation between ticks.
+ * Bandit-party sprite layer — thin wrapper around the unified
+ * `unitLayer`. Per docs/15 §C32: every camp-originated bandit action
+ * (raid, fence, recruit, migrate, bribe) spawns a movable party that
+ * physically walks to its target and back. The `bandit_raid` art
+ * glyph renders that party on the map.
  */
 
 import type { WorldState } from '../../src/procgen/seed.js';
 import type { ArtRegistry } from '../art/index.js';
-import { createMoverLayer, type MoverLayer, type MoverView } from './movers.js';
+import { createUnitLayer, type UnitLayer, type UnitView } from './unitLayer.js';
 
-export type BanditPartiesLayer = MoverLayer;
+export type BanditPartiesLayer = UnitLayer;
 
 export const createBanditPartiesLayer = (
   art: ArtRegistry,
   onSelect?: (id: string) => void,
 ): BanditPartiesLayer => {
-  return createMoverLayer(art, {
-    unitKind: 'bandit_raid',
-    getMovers: function* (world: WorldState): Iterable<MoverView> {
+  return createUnitLayer(art, {
+    defaultUnitKind: 'bandit_raid',
+    getEntities: function* (world: WorldState): Iterable<UnitView> {
       if (world.banditParties === undefined) return;
       for (const p of world.banditParties.values()) {
         if (p.banditCount <= 0) continue;

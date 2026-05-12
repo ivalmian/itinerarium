@@ -1,28 +1,23 @@
 /**
- * Patrol sprite layer. Renders `world.patrols` (provincial garrison,
- * city watch, family guards, caravan escorts) with the `patrol` glyph,
- * keyed by patrol id and tinted by owner-actor for faction colour.
- *
- * Patrols walk a cyclic route at one hex per tick (per docs/12), so
- * interpolation just needs to glide the sprite from the previous hex
- * to the current hex over the current tick window.
- *
- * docs/15 §C32: every moving sim entity must have a visible glyph.
+ * Patrol sprite layer — thin wrapper around the unified `unitLayer`.
+ * Renders `world.patrols` (provincial garrison, city watch, family
+ * guards, caravan escorts) with the `patrol` glyph. Movement
+ * interpolation + faction badge logic come from the shared layer.
  */
 
 import type { WorldState } from '../../src/procgen/seed.js';
 import type { ArtRegistry } from '../art/index.js';
-import { createMoverLayer, type MoverLayer, type MoverView } from './movers.js';
+import { createUnitLayer, type UnitLayer, type UnitView } from './unitLayer.js';
 
-export type PatrolsLayer = MoverLayer;
+export type PatrolsLayer = UnitLayer;
 
 export const createPatrolsLayer = (
   art: ArtRegistry,
   onSelect?: (id: string) => void,
 ): PatrolsLayer => {
-  return createMoverLayer(art, {
-    unitKind: 'patrol',
-    getMovers: function* (world: WorldState): Iterable<MoverView> {
+  return createUnitLayer(art, {
+    defaultUnitKind: 'patrol',
+    getEntities: function* (world: WorldState): Iterable<UnitView> {
       if (world.patrols === undefined) return;
       for (const p of world.patrols.values()) {
         if (p.unit.count <= 0) continue;
