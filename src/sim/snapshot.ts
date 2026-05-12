@@ -36,7 +36,7 @@ import type { NamedCharacter } from './politics/character.js';
 import { createCharacter } from './politics/character.js';
 import { createReputationTable, type ReputationTable } from './reputation/table.js';
 import { poolFromMap } from './population/cohort.js';
-import type { Settlement } from './world/settlement.js';
+import type { MarketBookLadder, Settlement } from './world/settlement.js';
 import { createSettlement } from './world/settlement.js';
 import { createGrid, type HexGrid } from './world/grid.js';
 import { hex, parseHexKey, type Hex } from './world/hex.js';
@@ -102,6 +102,22 @@ interface SerializedMarketSnapshot {
   readonly midPrice?: ReadonlyArray<readonly [string, number]>;
   readonly spread?: ReadonlyArray<readonly [string, number]>;
   readonly lastClearedDay?: ReadonlyArray<readonly [string, number]>;
+  readonly bookLadder?: ReadonlyArray<readonly [string, SerializedMarketBookLadder]>;
+  readonly lastBookSampleDay?: ReadonlyArray<readonly [string, number]>;
+}
+
+interface SerializedMarketBookOrder {
+  readonly actorId: string;
+  readonly actorKind: string;
+  readonly price: number;
+  readonly quantity: number;
+  readonly curve?: 'subsistence' | 'comfort' | 'status' | 'derived';
+  readonly buyerDisposition?: 'consume' | 'stockpile';
+}
+
+interface SerializedMarketBookLadder {
+  readonly asks: readonly SerializedMarketBookOrder[];
+  readonly bids: readonly SerializedMarketBookOrder[];
 }
 
 interface SerializedSettlementBuilding {
@@ -163,6 +179,10 @@ interface SerializedNamedCharacter {
 
 interface SerializedPriceObservation {
   readonly price: number;
+  readonly bidPrice?: number;
+  readonly askPrice?: number;
+  readonly bidDepth?: number;
+  readonly askDepth?: number;
   readonly observedOnDay: number;
 }
 
@@ -232,6 +252,59 @@ const stringMapToArray = <K extends string, V>(
   for (const [k, v] of m) out.push([String(k), v]);
   return out;
 };
+
+const marketBookLadderToArray = (
+  m: ReadonlyMap<ResourceId, MarketBookLadder>,
+): ReadonlyArray<readonly [string, SerializedMarketBookLadder]> => {
+  const out: [string, SerializedMarketBookLadder][] = [];
+  for (const [resource, ladder] of m) {
+    out.push([
+      String(resource),
+      {
+        asks: ladder.asks.map((order) => ({
+          actorId: String(order.actorId),
+          actorKind: order.actorKind,
+          price: order.price,
+          quantity: order.quantity,
+          ...(order.curve !== undefined ? { curve: order.curve } : {}),
+          ...(order.buyerDisposition !== undefined
+            ? { buyerDisposition: order.buyerDisposition }
+            : {}),
+        })),
+        bids: ladder.bids.map((order) => ({
+          actorId: String(order.actorId),
+          actorKind: order.actorKind,
+          price: order.price,
+          quantity: order.quantity,
+          ...(order.curve !== undefined ? { curve: order.curve } : {}),
+          ...(order.buyerDisposition !== undefined
+            ? { buyerDisposition: order.buyerDisposition }
+            : {}),
+        })),
+      },
+    ]);
+  }
+  return out;
+};
+
+const marketBookLadderFromSerialized = (ladder: SerializedMarketBookLadder): MarketBookLadder => ({
+  asks: ladder.asks.map((order) => ({
+    actorId: actorId(order.actorId),
+    actorKind: order.actorKind,
+    price: order.price,
+    quantity: order.quantity,
+    ...(order.curve !== undefined ? { curve: order.curve } : {}),
+    ...(order.buyerDisposition !== undefined ? { buyerDisposition: order.buyerDisposition } : {}),
+  })),
+  bids: ladder.bids.map((order) => ({
+    actorId: actorId(order.actorId),
+    actorKind: order.actorKind,
+    price: order.price,
+    quantity: order.quantity,
+    ...(order.curve !== undefined ? { curve: order.curve } : {}),
+    ...(order.buyerDisposition !== undefined ? { buyerDisposition: order.buyerDisposition } : {}),
+  })),
+});
 
 // --- Tile serialization -----------------------------------------------------
 
@@ -316,6 +389,8 @@ const serializeSettlement = (s: Settlement): SerializedSettlement => {
       midPrice: stringMapToArray(s.market.midPrice),
       spread: stringMapToArray(s.market.spread),
       lastClearedDay: stringMapToArray(s.market.lastClearedDay),
+      bookLadder: marketBookLadderToArray(s.market.bookLadder),
+      lastBookSampleDay: stringMapToArray(s.market.lastBookSampleDay),
     },
     catchmentBaselinePop: s.catchmentBaselinePop,
     catchmentDayLastChanged: s.catchmentDayLastChanged,
@@ -407,6 +482,12 @@ const deserializeSettlement = (s: SerializedSettlement): Settlement => {
   for (const [r, n] of s.market.lastClearedDay ?? []) {
     settlement.market.lastClearedDay.set(resourceId(r), n);
   }
+  for (const [r, ladder] of s.market.bookLadder ?? []) {
+    settlement.market.bookLadder.set(resourceId(r), marketBookLadderFromSerialized(ladder));
+  }
+  for (const [r, n] of s.market.lastBookSampleDay ?? []) {
+    settlement.market.lastBookSampleDay.set(resourceId(r), n);
+  }
   return settlement;
 };
 
@@ -482,7 +563,17 @@ const serializeCaravan = (c: Caravan): SerializedCaravan => {
   for (const [res, inner] of c.priceBook) {
     const innerArr: [string, SerializedPriceObservation][] = [];
     for (const [hexK, obs] of inner) {
-      innerArr.push([hexK, { price: obs.price, observedOnDay: obs.observedOnDay }]);
+      innerArr.push([
+        hexK,
+        {
+          price: obs.price,
+          ...(obs.bidPrice !== undefined ? { bidPrice: obs.bidPrice } : {}),
+          ...(obs.askPrice !== undefined ? { askPrice: obs.askPrice } : {}),
+          ...(obs.bidDepth !== undefined ? { bidDepth: obs.bidDepth } : {}),
+          ...(obs.askDepth !== undefined ? { askDepth: obs.askDepth } : {}),
+          observedOnDay: obs.observedOnDay,
+        },
+      ]);
     }
     priceBook.push([String(res), innerArr]);
   }
@@ -519,7 +610,14 @@ const deserializeCaravan = (c: SerializedCaravan): Caravan => {
   for (const [res, inner] of c.priceBook) {
     const innerMap = new Map<string, PriceObservation>();
     for (const [hexK, obs] of inner) {
-      innerMap.set(hexK, { price: obs.price, observedOnDay: obs.observedOnDay });
+      innerMap.set(hexK, {
+        price: obs.price,
+        ...(obs.bidPrice !== undefined ? { bidPrice: obs.bidPrice } : {}),
+        ...(obs.askPrice !== undefined ? { askPrice: obs.askPrice } : {}),
+        ...(obs.bidDepth !== undefined ? { bidDepth: obs.bidDepth } : {}),
+        ...(obs.askDepth !== undefined ? { askDepth: obs.askDepth } : {}),
+        observedOnDay: obs.observedOnDay,
+      });
     }
     caravan.priceBook.set(resourceId(res), innerMap);
   }

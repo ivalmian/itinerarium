@@ -940,7 +940,7 @@ describe('tick (per-day loop)', () => {
 
   describe('movement phase', () => {
     it('advances a caravan with a destination toward the destination', () => {
-      const w = buildOneSettlementWorld({ populationByClass: { plebeian: 100 } });
+      const w = buildOneSettlementWorld({ populationByClass: { plebeian: 0 } });
       // Add several plains hexes east of the anchor for the caravan to walk.
       for (let q = 3; q <= 10; q++) {
         w.grid.set(hex(q, 0), makeTile('plains'));
@@ -970,7 +970,7 @@ describe('tick (per-day loop)', () => {
     });
 
     it('emits caravan_arrived when a caravan reaches its destination', () => {
-      const w = buildOneSettlementWorld({ populationByClass: { plebeian: 100 } });
+      const w = buildOneSettlementWorld({ populationByClass: { plebeian: 0 } });
       const cId = caravanId('cara-arr');
       const c = createCaravan({
         id: cId,
@@ -989,7 +989,7 @@ describe('tick (per-day loop)', () => {
     });
 
     it('disbands caravans whose crew has already been wiped out', () => {
-      const w = buildOneSettlementWorld({ populationByClass: { plebeian: 100 } });
+      const w = buildOneSettlementWorld({ populationByClass: { plebeian: 0 } });
       const cId = caravanId('cara-zero-crew');
       const c = createCaravan({
         id: cId,
@@ -1243,7 +1243,9 @@ describe('tick (per-day loop)', () => {
     it('records a fallback ration price when a caravan buys food without an existing quote', () => {
       const w = buildEmptyWorld();
       const anchor = hex(0, 0);
-      w.grid.set(anchor, makeTile('plains'));
+      for (let q = -2; q <= 2; q++) {
+        for (let r = -2; r <= 2; r++) w.grid.set(hex(q, r), makeTile('plains'));
+      }
       const sId = settlementId('ration-market');
       const ownerId = actorId('ration-owner');
       const cId = caravanId('ration-caravan');
@@ -1754,7 +1756,7 @@ describe('tick (per-day loop)', () => {
     });
 
     it('sells arrived caravan cargo into the local market', () => {
-      const w = buildOneSettlementWorld({ populationByClass: { plebeian: 100 } });
+      const w = buildOneSettlementWorld({ populationByClass: { plebeian: 0 } });
       const settlement = w.settlements.get(settlementId('settle-1'))!;
       const buyer = w.actors.get(actorId('city-corp-1'))!;
       const tools = resourceId('goods.tools');
@@ -1793,6 +1795,130 @@ describe('tick (per-day loop)', () => {
       expect(c.treasury).toBeCloseTo(sale!.coin, 6);
       expect(buyer.treasury).toBeCloseTo(beforeTreasury - sale!.coin, 6);
       expect(buyer.stockpile.get(tools) ?? 0).toBeGreaterThan(1);
+    });
+
+    it('sells arrived caravan cargo into residual book bids before stale last prices', () => {
+      const w = buildOneSettlementWorld({ populationByClass: { plebeian: 0 } });
+      const settlement = w.settlements.get(settlementId('settle-1'))!;
+      const bookBuyerId = actorId('book-buyer');
+      const staleBuyerId = actorId('stale-buyer');
+      const tools = resourceId('goods.tools');
+
+      const bookBuyer = createActor({
+        id: bookBuyerId,
+        kind: 'patrician_family',
+        name: 'Book Buyer',
+        homeSettlement: settlement.id,
+        treasury: 10_000,
+      });
+      const staleBuyer = createActor({
+        id: staleBuyerId,
+        kind: 'city_corporation',
+        name: 'Stale Buyer',
+        homeSettlement: settlement.id,
+        treasury: 1_000,
+      });
+      w.actors.set(bookBuyerId, bookBuyer);
+      w.actors.set(staleBuyerId, staleBuyer);
+      settlement.stockpileOwners.push(bookBuyerId);
+      settlement.market.lastClearingPrice.set(tools, 100);
+      settlement.market.bestBid.set(tools, 7);
+      settlement.market.bidDepth.set(tools, 1);
+      settlement.market.bookLadder.set(tools, {
+        asks: [],
+        bids: [
+          {
+            actorId: bookBuyerId,
+            actorKind: 'patrician_family',
+            price: 7,
+            quantity: 1,
+            curve: 'derived',
+            buyerDisposition: 'stockpile',
+          },
+        ],
+      });
+      settlement.market.lastBookSampleDay.set(tools, 0);
+
+      const cId = caravanId('book-import-arrived');
+      const c = createCaravan({
+        id: cId,
+        ownerActor: actorId('off-map-house-test'),
+        position: hex(0, 0),
+        destination: hex(0, 0),
+        crew: [{ kind: 'merchant', count: 1, weapons: 0, armor: 0 }],
+        animals: { mule: 2 },
+        vehicles: {},
+      });
+      c.cargo.set(tools, 2);
+      w.caravans.set(cId, c);
+
+      const r = tick({ world: w, rng: createRng('caravan-book-sell') });
+      const sale = eventsOfType(r.events, 'caravan_traded').find(
+        (e) => e.caravan === cId && e.side === 'sold' && e.resource === tools,
+      );
+
+      expect(sale).toBeDefined();
+      expect(sale?.quantity ?? 0).toBeGreaterThan(0);
+      expect(sale!.coin / sale!.quantity).toBeCloseTo(7, 6);
+      expect(bookBuyer.stockpile.get(tools) ?? 0).toBeCloseTo(sale!.quantity, 6);
+      expect(staleBuyer.stockpile.get(tools) ?? 0).toBe(0);
+      expect(c.cargo.get(tools) ?? 0).toBeCloseTo(2 - sale!.quantity, 6);
+    });
+
+    it('routes caravan sales to consumer book bids as consumption', () => {
+      const w = buildOneSettlementWorld({ populationByClass: { plebeian: 0 } });
+      const settlement = w.settlements.get(settlementId('settle-1'))!;
+      const householdId = actorId('household-bidder');
+      const wine = resourceId('food.wine');
+      const household = createActor({
+        id: householdId,
+        kind: 'plebeian_household',
+        name: 'Household Bidder',
+        homeSettlement: settlement.id,
+        treasury: 100,
+      });
+      w.actors.set(householdId, household);
+      settlement.stockpileOwners.push(householdId);
+      settlement.market.bestBid.set(wine, 3);
+      settlement.market.bidDepth.set(wine, 2);
+      settlement.market.bookLadder.set(wine, {
+        asks: [],
+        bids: [
+          {
+            actorId: householdId,
+            actorKind: 'plebeian_household',
+            price: 3,
+            quantity: 2,
+            curve: 'comfort',
+            buyerDisposition: 'consume',
+          },
+        ],
+      });
+      settlement.market.lastBookSampleDay.set(wine, 0);
+
+      const cId = caravanId('consumer-import-arrived');
+      const c = createCaravan({
+        id: cId,
+        ownerActor: actorId('off-map-house-test'),
+        position: hex(0, 0),
+        destination: hex(0, 0),
+        crew: [{ kind: 'merchant', count: 1, weapons: 0, armor: 0 }],
+        animals: { mule: 2 },
+        vehicles: {},
+      });
+      c.cargo.set(wine, 3);
+      w.caravans.set(cId, c);
+
+      const r = tick({ world: w, rng: createRng('caravan-consumer-book-sell') });
+      const sale = eventsOfType(r.events, 'caravan_traded').find(
+        (e) => e.caravan === cId && e.side === 'sold' && e.resource === wine,
+      );
+
+      expect(sale).toBeDefined();
+      expect(sale?.quantity ?? 0).toBeGreaterThan(0);
+      expect(household.stockpile.get(wine) ?? 0).toBe(0);
+      expect(settlement.market.recentImports.get(wine) ?? 0).toBeCloseTo(sale!.quantity, 6);
+      expect(settlement.market.recentConsumption.get(wine) ?? 0).toBeCloseTo(sale!.quantity, 6);
     });
 
     it('consigns unsold off-map imports and routes them back to their edge gate', () => {

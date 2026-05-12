@@ -140,7 +140,20 @@ const RATION_KG_PER_CREW_PER_DAY = 0.4;
 // --- Caravan ---------------------------------------------------------------
 
 export interface PriceObservation {
+  /**
+   * Back-compat scalar price. For side-aware book observations this is the
+   * mid/last-trade quote; route planning prefers askPrice at origin and
+   * bidPrice at destination when those side quotes are present.
+   */
   readonly price: number;
+  /** Highest visible bid at the observed settlement/hex. */
+  readonly bidPrice?: number;
+  /** Lowest visible ask at the observed settlement/hex. */
+  readonly askPrice?: number;
+  /** Residual quantity behind the best bid. */
+  readonly bidDepth?: Quantity;
+  /** Residual quantity behind the best ask. */
+  readonly askDepth?: Quantity;
   readonly observedOnDay: Day;
 }
 

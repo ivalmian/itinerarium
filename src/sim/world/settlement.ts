@@ -150,6 +150,12 @@ export interface MarketBookOrder {
    * side because supply curves are uniform step functions.
    */
   readonly curve?: 'subsistence' | 'comfort' | 'status' | 'derived';
+  /**
+   * Demand-side disposition copied from DemandSource. Present only for bids.
+   * Lets caravans crossing the book route producer-input bids to stockpiles
+   * while leaving consumer bids as consumption demand.
+   */
+  readonly buyerDisposition?: 'consume' | 'stockpile';
 }
 
 export interface MarketBookLadder {

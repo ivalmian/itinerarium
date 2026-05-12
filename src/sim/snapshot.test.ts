@@ -52,6 +52,34 @@ const buildTinyWorld = (): WorldState => {
   settlement.population.set({ age: '20-24', sex: 'male', class: 'plebeian' }, 11);
   settlement.market.recentInflows.set(resourceId('food.grain'), 50);
   settlement.market.lastClearingPrice.set(resourceId('food.grain'), 4.5);
+  settlement.market.bestBid.set(resourceId('food.grain'), 4.25);
+  settlement.market.bidDepth.set(resourceId('food.grain'), 12);
+  settlement.market.bestAsk.set(resourceId('food.grain'), 4.75);
+  settlement.market.askDepth.set(resourceId('food.grain'), 20);
+  settlement.market.midPrice.set(resourceId('food.grain'), 4.5);
+  settlement.market.spread.set(resourceId('food.grain'), 0.5);
+  settlement.market.lastClearedDay.set(resourceId('food.grain'), 6);
+  settlement.market.bookLadder.set(resourceId('food.grain'), {
+    asks: [
+      {
+        actorId: actorId('a.headman'),
+        actorKind: 'free_village',
+        price: 4.75,
+        quantity: 20,
+      },
+    ],
+    bids: [
+      {
+        actorId: actorId('a.headman'),
+        actorKind: 'free_village',
+        price: 4.25,
+        quantity: 12,
+        curve: 'derived',
+        buyerDisposition: 'stockpile',
+      },
+    ],
+  });
+  settlement.market.lastBookSampleDay.set(resourceId('food.grain'), 7);
 
   const actor = createActor({
     id: actorId('a.headman'),
@@ -93,7 +121,19 @@ const buildTinyWorld = (): WorldState => {
   caravan.cargo.set(resourceId('food.grain'), 30);
   caravan.priceBook.set(
     resourceId('food.grain'),
-    new Map([[hexKey(hex(0, 0)), { price: 4.5, observedOnDay: 1 }]]),
+    new Map([
+      [
+        hexKey(hex(0, 0)),
+        {
+          price: 4.5,
+          bidPrice: 4.25,
+          askPrice: 4.75,
+          bidDepth: 12,
+          askDepth: 20,
+          observedOnDay: 1,
+        },
+      ],
+    ]),
   );
 
   const reputation = createReputationTable();
@@ -221,6 +261,14 @@ describe('deserializeWorld → round-trip', () => {
     if (restS === undefined) return;
     expect(restS.market.recentInflows.get(resourceId('food.grain'))).toBe(50);
     expect(restS.market.lastClearingPrice.get(resourceId('food.grain'))).toBe(4.5);
+    expect(restS.market.bestBid.get(resourceId('food.grain'))).toBe(4.25);
+    expect(restS.market.bestAsk.get(resourceId('food.grain'))).toBe(4.75);
+    expect(restS.market.bidDepth.get(resourceId('food.grain'))).toBe(12);
+    expect(restS.market.askDepth.get(resourceId('food.grain'))).toBe(20);
+    expect(restS.market.bookLadder.get(resourceId('food.grain'))?.bids[0]?.buyerDisposition).toBe(
+      'stockpile',
+    );
+    expect(restS.market.lastBookSampleDay.get(resourceId('food.grain'))).toBe(7);
   });
 
   it('preserves actor stockpile and treasury', () => {
@@ -246,6 +294,10 @@ describe('deserializeWorld → round-trip', () => {
     const pb = restC.priceBook.get(resourceId('food.grain'));
     expect(pb).toBeDefined();
     expect(pb?.get(hexKey(hex(0, 0)))?.price).toBe(4.5);
+    expect(pb?.get(hexKey(hex(0, 0)))?.bidPrice).toBe(4.25);
+    expect(pb?.get(hexKey(hex(0, 0)))?.askPrice).toBe(4.75);
+    expect(pb?.get(hexKey(hex(0, 0)))?.bidDepth).toBe(12);
+    expect(pb?.get(hexKey(hex(0, 0)))?.askDepth).toBe(20);
     expect(pb?.get(hexKey(hex(0, 0)))?.observedOnDay).toBe(1);
   });
 

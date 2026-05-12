@@ -69,6 +69,7 @@ import {
   totalCarryKg,
   totalCargoWeightKg,
   type Caravan,
+  type PriceObservation,
 } from './caravan/caravan.js';
 import { createNewsItem, createNewsCarrier } from './reputation/news.js';
 import { tickCarrierWithGrid } from './reputation/newsMovement.js';
@@ -1965,6 +1966,10 @@ const syncCaravanWithLocalGuild = (world: WorldState, c: Caravan, today: Day): v
     for (const [hexK, obs] of byHex) {
       depositObservation(ownerGuild, resource, hexK, {
         price: obs.price,
+        ...(obs.bidPrice !== undefined ? { bidPrice: obs.bidPrice } : {}),
+        ...(obs.askPrice !== undefined ? { askPrice: obs.askPrice } : {}),
+        ...(obs.bidDepth !== undefined ? { bidDepth: obs.bidDepth } : {}),
+        ...(obs.askDepth !== undefined ? { askDepth: obs.askDepth } : {}),
         observedOnDay: obs.observedOnDay,
       });
     }
@@ -1981,7 +1986,14 @@ const syncCaravanWithLocalGuild = (world: WorldState, c: Caravan, today: Day): v
       if (today - obs.observedOnDay > GUILD_LEDGER_MAX_AGE_DAYS) continue;
       const prev = book.get(hexK);
       if (prev === undefined || obs.observedOnDay > prev.observedOnDay) {
-        book.set(hexK, { price: obs.price, observedOnDay: obs.observedOnDay });
+        book.set(hexK, {
+          price: obs.price,
+          ...(obs.bidPrice !== undefined ? { bidPrice: obs.bidPrice } : {}),
+          ...(obs.askPrice !== undefined ? { askPrice: obs.askPrice } : {}),
+          ...(obs.bidDepth !== undefined ? { bidDepth: obs.bidDepth } : {}),
+          ...(obs.askDepth !== undefined ? { askDepth: obs.askDepth } : {}),
+          observedOnDay: obs.observedOnDay,
+        });
       }
     }
   }
@@ -3081,6 +3093,7 @@ const recordBookLadderFromClearing = (
     readonly peakQuantity: number;
     readonly maxWillingnessToPay: number;
     readonly buyerActor?: ActorId;
+    readonly buyerDisposition?: 'consume' | 'stockpile';
   }[],
   supplySources: readonly {
     readonly id: string;
@@ -3154,6 +3167,7 @@ const recordBookLadderFromClearing = (
         price: result.clearingPrice,
         quantity: remaining,
         curve: d.curve,
+        ...(d.buyerDisposition !== undefined ? { buyerDisposition: d.buyerDisposition } : {}),
       });
       continue;
     }
@@ -3166,6 +3180,7 @@ const recordBookLadderFromClearing = (
       price: d.maxWillingnessToPay,
       quantity: remaining,
       curve: d.curve,
+      ...(d.buyerDisposition !== undefined ? { buyerDisposition: d.buyerDisposition } : {}),
     });
   }
   bids.sort((a, b) => b.price - a.price);
@@ -4529,6 +4544,8 @@ interface LocalBuyerQuote {
   readonly settlement: Settlement;
   readonly actor: Actor;
   readonly price: number;
+  readonly quantity?: number;
+  readonly disposition?: 'consume' | 'stockpile';
 }
 
 interface LocalSellerQuote {
@@ -4544,6 +4561,36 @@ const localSellerQuotes = (
   resource: ResourceId,
 ): LocalSellerQuote[] => {
   const quotes: LocalSellerQuote[] = [];
+  let sawBook = false;
+  for (const settlement of settlements) {
+    const ladder = settlement.market.bookLadder.get(resource);
+    if (
+      ladder !== undefined ||
+      settlement.market.lastBookSampleDay.has(resource) ||
+      settlement.market.bestAsk.has(resource) ||
+      settlement.market.bestBid.has(resource)
+    ) {
+      sawBook = true;
+    }
+    if (ladder !== undefined && ladder.asks.length > 0) {
+      for (const ask of ladder.asks) {
+        const actor = world.actors.get(ask.actorId);
+        if (actor === undefined) continue;
+        const stock = Math.min(actor.stockpile.get(resource) ?? 0, ask.quantity);
+        if (stock <= 0) continue;
+        quotes.push({ settlement, actor, price: ask.price, stock });
+      }
+      continue;
+    }
+  }
+  if (sawBook) {
+    quotes.sort((a, b) => {
+      if (a.price !== b.price) return a.price - b.price;
+      if (b.stock !== a.stock) return b.stock - a.stock;
+      return String(a.actor.id).localeCompare(String(b.actor.id));
+    });
+    return quotes;
+  }
   for (const settlement of settlements) {
     const price = settlement.market.lastClearingPrice.get(resource);
     if (price === undefined || !Number.isFinite(price) || price <= 0) continue;
@@ -4652,6 +4699,40 @@ const bestLocalBuyer = (
   resource: ResourceId,
 ): LocalBuyerQuote | null => {
   let best: LocalBuyerQuote | null = null;
+  let sawBook = false;
+  for (const settlement of settlements) {
+    const ladder = settlement.market.bookLadder.get(resource);
+    if (
+      ladder !== undefined ||
+      settlement.market.lastBookSampleDay.has(resource) ||
+      settlement.market.bestAsk.has(resource) ||
+      settlement.market.bestBid.has(resource)
+    ) {
+      sawBook = true;
+    }
+    if (ladder !== undefined && ladder.bids.length > 0) {
+      for (const bid of ladder.bids) {
+        if (bid.actorId === caravan.ownerActor) continue;
+        const actor = world.actors.get(bid.actorId);
+        if (actor === undefined || actor.treasury <= 0 || bid.quantity <= 0) continue;
+        if (
+          best === null ||
+          bid.price > best.price ||
+          (bid.price === best.price && actor.treasury > best.actor.treasury)
+        ) {
+          best = {
+            settlement,
+            actor,
+            price: bid.price,
+            quantity: bid.quantity,
+            ...(bid.buyerDisposition !== undefined ? { disposition: bid.buyerDisposition } : {}),
+          };
+        }
+      }
+      continue;
+    }
+  }
+  if (sawBook) return best;
   for (const settlement of settlements) {
     const price = settlement.market.lastClearingPrice.get(resource);
     if (price === undefined || !Number.isFinite(price) || price <= 0) continue;
@@ -4683,7 +4764,8 @@ const sellCaravanCargoAtLocalMarkets = (
     const buyer = bestLocalBuyer(world, settlements, caravan, resource);
     if (buyer === null) continue;
     const maxByTreasury = buyer.actor.treasury / buyer.price;
-    const qty = Math.min(sellableQty, maxByTreasury);
+    const maxByBook = buyer.quantity ?? Number.POSITIVE_INFINITY;
+    const qty = Math.min(sellableQty, maxByTreasury, maxByBook);
     if (qty <= 1e-9) continue;
     const coin = qty * buyer.price;
     const remaining = currentQty - qty;
@@ -4691,7 +4773,8 @@ const sellCaravanCargoAtLocalMarkets = (
     else caravan.cargo.delete(resource);
     caravan.treasury += coin;
     buyer.actor.treasury -= coin;
-    increaseStockpile(buyer.actor, resource, qty);
+    if (buyer.disposition === 'consume') recordConsumption(buyer.settlement, resource, qty);
+    else increaseStockpile(buyer.actor, resource, qty);
     // Caravan sold cargo to the settlement: import for the settlement.
     recordImport(buyer.settlement, resource, qty);
     events.push({
@@ -5352,6 +5435,97 @@ const routeOffMapImportHomeIfDelivered = (
   return true;
 };
 
+interface MarketObservationAccumulator {
+  priceSum: number;
+  priceCount: number;
+  bidSum: number;
+  bidCount: number;
+  askSum: number;
+  askCount: number;
+  bidDepth: number;
+  askDepth: number;
+}
+
+const observedMarketResources = (settlement: Settlement): Set<ResourceId> => {
+  const out = new Set<ResourceId>();
+  for (const r of settlement.market.lastClearingPrice.keys()) out.add(r);
+  for (const r of settlement.market.midPrice.keys()) out.add(r);
+  for (const r of settlement.market.bestBid.keys()) out.add(r);
+  for (const r of settlement.market.bestAsk.keys()) out.add(r);
+  return out;
+};
+
+const representativeObservedPrice = (settlement: Settlement, resource: ResourceId): number => {
+  const mid = settlement.market.midPrice.get(resource);
+  if (mid !== undefined && Number.isFinite(mid) && mid > 0) return mid;
+  const last = settlement.market.lastClearingPrice.get(resource);
+  if (last !== undefined && Number.isFinite(last) && last > 0) return last;
+  const bid = settlement.market.bestBid.get(resource);
+  const ask = settlement.market.bestAsk.get(resource);
+  if (
+    bid !== undefined &&
+    ask !== undefined &&
+    Number.isFinite(bid) &&
+    Number.isFinite(ask) &&
+    bid > 0 &&
+    ask > 0
+  ) {
+    return Math.sqrt(bid * ask);
+  }
+  if (ask !== undefined && Number.isFinite(ask) && ask > 0) return ask;
+  if (bid !== undefined && Number.isFinite(bid) && bid > 0) return bid;
+  return 0;
+};
+
+const addSettlementMarketObservation = (
+  acc: Map<ResourceId, MarketObservationAccumulator>,
+  settlement: Settlement,
+  resource: ResourceId,
+): void => {
+  const price = representativeObservedPrice(settlement, resource);
+  if (!Number.isFinite(price) || price <= 0) return;
+  let entry = acc.get(resource);
+  if (entry === undefined) {
+    entry = {
+      priceSum: 0,
+      priceCount: 0,
+      bidSum: 0,
+      bidCount: 0,
+      askSum: 0,
+      askCount: 0,
+      bidDepth: 0,
+      askDepth: 0,
+    };
+    acc.set(resource, entry);
+  }
+  entry.priceSum += price;
+  entry.priceCount += 1;
+  const bid = settlement.market.bestBid.get(resource);
+  if (bid !== undefined && Number.isFinite(bid) && bid > 0) {
+    entry.bidSum += bid;
+    entry.bidCount += 1;
+    entry.bidDepth += settlement.market.bidDepth.get(resource) ?? 0;
+  }
+  const ask = settlement.market.bestAsk.get(resource);
+  if (ask !== undefined && Number.isFinite(ask) && ask > 0) {
+    entry.askSum += ask;
+    entry.askCount += 1;
+    entry.askDepth += settlement.market.askDepth.get(resource) ?? 0;
+  }
+};
+
+const averageObservedMarket = (
+  entry: MarketObservationAccumulator,
+  today: Day,
+): PriceObservation => ({
+  price: entry.priceSum / entry.priceCount,
+  ...(entry.bidCount > 0 ? { bidPrice: entry.bidSum / entry.bidCount } : {}),
+  ...(entry.askCount > 0 ? { askPrice: entry.askSum / entry.askCount } : {}),
+  ...(entry.bidDepth > 0 ? { bidDepth: entry.bidDepth } : {}),
+  ...(entry.askDepth > 0 ? { askDepth: entry.askDepth } : {}),
+  observedOnDay: today,
+});
+
 const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[]): void => {
   const settlementIndex = settlementAnchorIndexForWorld(world);
   const candidates = settlementIndex.candidates;
@@ -5400,26 +5574,20 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
     // which settlements were inserted into world.settlements does not
     // change what the caravan remembers.
     if (localBucket !== undefined && localBucket.length > 0) {
-      const sumByResource = new Map<ResourceId, { sum: number; count: number }>();
+      const observedByResource = new Map<ResourceId, MarketObservationAccumulator>();
       for (const local of localBucket) {
-        for (const [resource, price] of local.market.lastClearingPrice) {
-          if (!Number.isFinite(price) || price <= 0) continue;
-          const acc = sumByResource.get(resource);
-          if (acc === undefined) sumByResource.set(resource, { sum: price, count: 1 });
-          else {
-            acc.sum += price;
-            acc.count += 1;
-          }
+        for (const resource of observedMarketResources(local)) {
+          addSettlementMarketObservation(observedByResource, local, resource);
         }
       }
-      for (const [resource, { sum, count }] of sumByResource) {
-        const avg = sum / count;
+      for (const [resource, entry] of observedByResource) {
+        if (entry.priceCount === 0) continue;
         let book = c.priceBook.get(resource);
         if (book === undefined) {
-          book = new Map<string, { price: number; observedOnDay: Day }>();
+          book = new Map<string, PriceObservation>();
           c.priceBook.set(resource, book);
         }
-        book.set(`${c.position.q},${c.position.r}`, { price: avg, observedOnDay: today });
+        book.set(`${c.position.q},${c.position.r}`, averageObservedMarket(entry, today));
       }
       sellCaravanCargoAtLocalMarkets(world, c, localBucket, events);
       buyCaravanRationsAtLocalMarkets(world, c, localBucket, events);
@@ -7052,7 +7220,7 @@ const investmentPhase = (world: WorldState, _today: Day, events: TickEvent[]): v
 // farms running via in-kind grain wages, but they cannot bid on status /
 // comfort / capital goods.
 //
-// The fiscal redistribution fires QUARTERLY (every 91 days) alongside
+// The fiscal redistribution fires QUARTERLY (every 90 days) alongside
 // investmentPhase. Rates below are per-quarter:
 //   civic dividend  8% → ≈32% APR
 //   tenant rent     5% → ≈22% APR (capped at 15% of tenant treasury)
