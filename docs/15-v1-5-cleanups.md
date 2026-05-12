@@ -1176,16 +1176,29 @@ pillar §1 (no hidden hands) all of this needs to be physical.
      `lay_low` and `recruit_drive`'s pressure-multiplier side-effects
      still happen at the camp.
 6. **`banditPartyPhase`** — runs each tick (after `banditPhase`,
-   before `patrolPhase`). Steps each party one hex toward its
-   target (outbound) or home (returning); on hex-overlap with the
-   mission target it resolves the mission (reusing
-   `executeSettlementRaid` / `resolveAmbush` / `executeFenceTransaction`
-   via a temporary synthetic-camp adapter so the existing combat
-   maths stays canonical), then flips to `returning`. On arrival
-   back at home, merges the party's surviving roster + loot + coin
-   back into the home camp. If the home camp was destroyed while
-   the party was out (e.g. patrol wiped it), the party founds a
-   new camp at its current hex.
+   before `patrolPhase`). Advances each party up to **25 hex/day**
+   (`BANDIT_PARTY_MOVEMENT_HEXES_PER_DAY`) toward its target
+   (outbound) or home (returning) — comparable to a mule caravan
+   (docs/06) and faster than a refugee on foot (~20 hex/day).
+   With a ~1-week round-trip budget that puts plausible mission
+   targets up to ~75-100 hex one-way from the home camp. On
+   arrival at the mission hex it resolves the mission (reusing
+   `executeSettlementRaid` / `resolveAmbush` /
+   `executeFenceTransaction` via a temporary synthetic-camp
+   adapter so the existing combat maths stays canonical), then
+   flips to `returning`. On arrival back at home, merges the
+   party's surviving roster + loot + coin back into the home
+   camp. If the home camp was destroyed while the party was out
+   (e.g. patrol wiped it), the party founds a new camp at its
+   current hex.
+
+   **Patrols also move 25 hex/day**
+   (`PATROL_MOVEMENT_HEXES_PER_DAY`) so they aren't structurally
+   outpaced by the parties they're chasing. `patrolPhase` calls
+   `tickPatrol` up to 25 times per day, stopping the loop early on
+   the first iteration that produces a pending battle (combat eats
+   the rest of the day).
+
 7. **Bandit-party viewer layer** (`viewer/map/banditParties.ts`) —
    renders `world.banditParties` with the existing `bandit_raid`
    glyph so raid parties, fence trips, and migrating camps are all

@@ -7578,6 +7578,44 @@ const resolvePartyMissionAtTarget = (
   }
 };
 
+/**
+ * Per docs/15 §C32 + docs/06: bandits and patrols are foot-mobile but
+ * travel ~25 hex/day off-road — comparable to a mule caravan and faster
+ * than a refugee on foot (~20 hex/day). With this speed a 1-week round
+ * trip covers ~75-100 hex one-way, so a typical raid party fires
+ * against targets up to that distance from the home camp.
+ *
+ * The 2-hex "sight" radius the patrol uses to detect bandits is a
+ * separate concept; it's vision, not movement speed.
+ */
+const BANDIT_PARTY_MOVEMENT_HEXES_PER_DAY = 25;
+const PATROL_MOVEMENT_HEXES_PER_DAY = 25;
+/** Range at which patrols hear about / detect bandit camps. */
+const PATROL_DETECTION_HEXES = 15;
+
+/** Advance `from` up to `maxHexes` straight-line steps toward `to`. */
+const advanceTowardHex = (from: Hex, to: Hex, maxHexes: number, world: WorldState): Hex => {
+  let cur: Hex = { q: from.q, r: from.r };
+  for (let i = 0; i < maxHexes; i++) {
+    if (hexEquals(cur, to)) return cur;
+    const next = stepTowardHex(cur, to);
+    if (!world.grid.has(next)) return cur;
+    cur = next;
+  }
+  return cur;
+};
+
+/** Advance `from` up to `maxHexes` straight-line steps away from `away`. */
+const advanceAwayFromHex = (from: Hex, away: Hex, maxHexes: number, world: WorldState): Hex => {
+  let cur: Hex = { q: from.q, r: from.r };
+  for (let i = 0; i < maxHexes; i++) {
+    const next = stepAwayFromHex(cur, away);
+    if (!world.grid.has(next)) return cur;
+    cur = next;
+  }
+  return cur;
+};
+
 const banditPartyPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[]): void => {
   if (world.banditParties === undefined) return;
   for (const [partyId, party] of Array.from(world.banditParties.entries())) {
@@ -7597,17 +7635,30 @@ const banditPartyPhase = (world: WorldState, rng: Rng, today: Day, events: TickE
       world.banditParties.delete(partyId);
       continue;
     }
-    // Per-phase movement decision.
-    let nextHex = party.position;
+    // Per-phase movement decision — advance up to 25 hex toward the
+    // current waypoint (target / home) or away from a threat.
     if (party.phase === 'fleeing' && party.fleeingFromHex !== undefined) {
-      nextHex = stepAwayFromHex(party.position, party.fleeingFromHex);
+      party.position = advanceAwayFromHex(
+        party.position,
+        party.fleeingFromHex,
+        BANDIT_PARTY_MOVEMENT_HEXES_PER_DAY,
+        world,
+      );
     } else if (party.phase === 'outbound') {
-      nextHex = stepTowardHex(party.position, missionTargetHex(party.mission));
+      party.position = advanceTowardHex(
+        party.position,
+        missionTargetHex(party.mission),
+        BANDIT_PARTY_MOVEMENT_HEXES_PER_DAY,
+        world,
+      );
     } else if (party.phase === 'returning') {
-      nextHex = stepTowardHex(party.position, party.homeHex);
+      party.position = advanceTowardHex(
+        party.position,
+        party.homeHex,
+        BANDIT_PARTY_MOVEMENT_HEXES_PER_DAY,
+        world,
+      );
     }
-    // Confirm the next hex exists; clamp otherwise.
-    if (world.grid.has(nextHex)) party.position = nextHex;
 
     // Arrival logic.
     if (party.phase === 'outbound' && partyAtMissionTarget(party)) {
@@ -8139,7 +8190,6 @@ const patrolPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[
     const nextIndex = (patrol.routeIndex + 1) % patrol.route.length;
     const nextHex = patrol.route[nextIndex];
     if (nextHex === undefined) continue;
-    const PATROL_DETECTION_HEXES = 15;
     const known: { camp: BanditCamp; hex: Hex }[] = [];
     for (const camp of world.banditCamps.values()) {
       const dCurrent = hexDistance(camp.hex, patrol.position);
@@ -8166,24 +8216,78 @@ const patrolPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[
       }
     }
 
-    const result = tickPatrol({
+    // Per docs/15 §C32 + docs/06 movement: patrols cover ~25 hex/day on
+    // foot. We advance through `tickPatrol` up to N times per day,
+    // stopping early on the first iteration that produces a pending
+    // battle (combat takes the rest of the day). The result is the
+    // patrol's position+state at the END of the day.
+    const STEPS_PER_DAY = PATROL_MOVEMENT_HEXES_PER_DAY;
+    let result = tickPatrol({
       patrol,
-      rng: subRng.derive('tick'),
+      rng: subRng.derive('tick-0'),
       knownBanditCampsOnRoute: known,
       knownCaravansOnRoute: knownCaravans,
       reputation: world.reputation,
       today,
     });
+    let trailDistance = hexEquals(patrol.position, result.patrol.position) ? 0 : 1;
+    for (let step = 1; step < STEPS_PER_DAY && result.pendingBattles.length === 0; step++) {
+      // Refresh the "known camps" + "known caravans" lists from the new
+      // route hex. The patrol may have walked into a different
+      // detection neighborhood.
+      const nextIdx = (result.patrol.routeIndex + 1) % result.patrol.route.length;
+      const nextRouteHex = result.patrol.route[nextIdx];
+      if (nextRouteHex === undefined) break;
+      const stepKnown: { camp: BanditCamp; hex: Hex }[] = [];
+      for (const c of world.banditCamps.values()) {
+        const d = Math.min(
+          hexDistance(c.hex, result.patrol.position),
+          hexDistance(c.hex, nextRouteHex),
+        );
+        if (d <= PATROL_DETECTION_HEXES) stepKnown.push({ camp: c, hex: nextRouteHex });
+      }
+      const stepKnownCaravans: typeof knownCaravans = [];
+      for (const c of world.caravans.values()) {
+        if (hexDistance(c.position, nextRouteHex) <= 1) {
+          stepKnownCaravans.push({
+            caravanId: c.id,
+            ownerActor: c.ownerActor,
+            hex: c.position,
+            suspicious: false,
+          });
+        }
+      }
+      const prevPos = result.patrol.position;
+      const stepResult = tickPatrol({
+        patrol: result.patrol,
+        rng: subRng.derive(`tick-${step}`),
+        knownBanditCampsOnRoute: stepKnown,
+        knownCaravansOnRoute: stepKnownCaravans,
+        reputation: world.reputation,
+        today,
+      });
+      if (!hexEquals(prevPos, stepResult.patrol.position)) trailDistance += 1;
+      // Merge events + pendingBattles into the top-level result.
+      result = {
+        ...stepResult,
+        events: [...result.events, ...stepResult.events],
+        pendingBattles: [...result.pendingBattles, ...stepResult.pendingBattles],
+      };
+      // Stop early if the patrol's been wiped or stopped advancing.
+      if (result.patrol.unit.count <= 0) break;
+    }
 
     // Persist patrol mutations.
     world.patrols.set(patrolId, result.patrol);
 
-    // Trail wear from the patrol step. Soldier-on-foot weight per docs/06.
-    if (!hexEquals(patrol.position, result.patrol.position)) {
+    // Trail wear from the patrol's daily movement. We approximate by
+    // landing the total day's wear at the END-of-day hex; granular
+    // per-hex wear isn't load-bearing for the road model.
+    if (trailDistance > 0) {
       addRoadWear(
         world,
         result.patrol.position,
-        result.patrol.unit.count * WEAR_PER_PATROL_SOLDIER,
+        result.patrol.unit.count * WEAR_PER_PATROL_SOLDIER * trailDistance,
       );
     }
 
