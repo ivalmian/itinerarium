@@ -77,6 +77,7 @@ import {
 import { jobsForBuilding } from '../sim/jobs/buildingJobs.js';
 import type { HexGrid } from '../sim/world/grid.js';
 import { hexDistance, hexEquals, hexKey, hexesWithinRange, type Hex } from '../sim/world/hex.js';
+import { pickBestHex, type PlacementCandidate } from '../sim/buildings/placement.js';
 import { createCamp } from '../sim/bandit/camp.js';
 import { campaignerUnit } from '../sim/conflict/battle.js';
 import { createPatrol, type Patrol as PatrolType } from '../sim/conflict/patrol.js';
@@ -1615,11 +1616,19 @@ const claimNearbyMiningDeposits = (
 
 /**
  * Phase 9 building seeding. Per docs/07 §"Place starter production
- * buildings": every settlement gets a pasture + farm; towns/cities
- * additionally get mill + bakery + granary; cities also get smithy +
- * weaver_workshop. All sit in catchment hexes (production) or urban
- * hexes (workshops/storage). Hex picks are deterministic from the
- * settlement's existing hex order.
+ * buildings" + docs/05 §"Stage-1 seeding rules": every settlement
+ * gets pasture + farm; villages/towns/cities additionally get crafts,
+ * mines (where deposits exist), and refining; towns/cities add the
+ * grain refining chain and Mediterranean comfort foods.
+ *
+ * Hex selection is **terrain-aware** via `pickBestHex` from
+ * `src/sim/buildings/placement.ts`: each candidate hex is scored
+ * against the building's terrain affinity matrix and the highest-
+ * scoring free hex wins. A farm picks fertile valley over steppe; a
+ * vineyard picks a Mediterranean hill over plains; a forester camp
+ * picks the forest hex in the catchment over wilderness flatland.
+ * Ties are broken by deterministic (q, r) order so seeded worlds stay
+ * reproducible.
  */
 const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void => {
   const owner = pickBuildingOwner(ctx, settlement);
@@ -1629,134 +1638,138 @@ const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void =
 
   claimNearbyMiningDeposits(ctx, settlement, owner);
 
-  const catchment = settlement.catchmentHexes;
-
-  // Filter both hex pools for buildable terrain. Per the user's model
-  // (rivers <1 km wide, lakes fully occupy a hex), only lakes + high
-  // mountains + dense_forest block. Rivers are fine — riverbank land
-  // hosts plenty of cities.
-  const passable = (h: Hex): boolean => {
-    const t = ctx.grid.get(h);
-    if (t === undefined) return false;
-    return t.terrain !== 'lake' && t.terrain !== 'mountains' && t.terrain !== 'dense_forest';
-  };
-  const hasWaterAccess = (h: Hex): boolean => {
-    for (const n of hexesWithinRange(h, 1)) {
-      const t = ctx.grid.get(n);
-      if (t === undefined) continue;
-      if (t.hasRiver || t.terrain === 'river' || t.terrain === 'lake') return true;
+  // Build candidate pools once. Each candidate carries its tile and a
+  // pre-computed `waterAdjacent` + `isUrban` flag so the affinity
+  // scorer doesn't need to repeat neighbor lookups per building, and
+  // so urban hexes (which may keep their plains / fertile_valley
+  // terrain) still rank as urban for workshops / storage / civic.
+  const buildCandidate = (h: Hex, isUrban: boolean): PlacementCandidate | null => {
+    const tile = ctx.grid.get(h);
+    if (tile === undefined) return null;
+    let waterAdjacent = tile.hasRiver || tile.terrain === 'river' || tile.terrain === 'lake';
+    if (!waterAdjacent) {
+      for (const n of hexesWithinRange(h, 1)) {
+        const nt = ctx.grid.get(n);
+        if (nt === undefined) continue;
+        if (nt.hasRiver || nt.terrain === 'river' || nt.terrain === 'lake') {
+          waterAdjacent = true;
+          break;
+        }
+      }
     }
-    return false;
+    return { hex: h, tile, waterAdjacent, isUrban };
   };
-  const passableCatchment = catchment.filter(passable);
-  const passableUrban = settlement.urbanHexes.filter(passable);
-  if (passableUrban.length === 0) return;
-  // Same-hex hamlets and dense pagus clusters can lose all claimed
-  // catchment under the closer-wins rule. They still need a subsistence
-  // footprint (garden plots, common pasture, worked strips around the home
-  // hex), so farm/pasture/forester fall back to buildable urban/home land.
-  const subsistenceLand = passableCatchment.length > 0 ? passableCatchment : passableUrban;
 
-  const cHex = (i: number): Hex =>
-    (subsistenceLand[i % subsistenceLand.length] ?? (subsistenceLand[0] as Hex)) as Hex;
-  const catchmentHex = (i: number): Hex | undefined =>
-    passableCatchment.length > 0 ? passableCatchment[i % passableCatchment.length] : undefined;
-  const uHex = (i: number): Hex =>
-    (passableUrban[i % passableUrban.length] ?? (passableUrban[0] as Hex)) as Hex;
+  const catchmentCandidates = settlement.catchmentHexes
+    .map((h) => buildCandidate(h, false))
+    .filter((c): c is PlacementCandidate => c !== null);
+  const urbanCandidates = settlement.urbanHexes
+    .map((h) => buildCandidate(h, true))
+    .filter((c): c is PlacementCandidate => c !== null);
+  if (urbanCandidates.length === 0) return;
 
-  // Every settlement: pasture + farm + forester_camp need land.
-  // sawmill is a workshop — moved to urban (the user's note: "for kiln
-  // presumably it's just in the village; for forest camps/farms it makes
-  // sense to be in catchments").
-  tryAddBuilding(settlement, 'pasture', cHex(0), owner, capOf('pasture'));
-  tryAddBuilding(settlement, 'farm', cHex(1), owner, capOf('farm'));
-  tryAddBuilding(settlement, 'forester_camp', cHex(2), owner, capOf('forester_camp'));
-  tryAddBuilding(settlement, 'sawmill', uHex(0), owner, capOf('sawmill'));
-  const fisheryHex = [...passableUrban, ...passableCatchment].find(hasWaterAccess);
-  if (fisheryHex !== undefined) {
-    tryAddBuilding(settlement, 'fishery', fisheryHex, owner, capOf('fishery'));
-  }
+  // Hamlets without claimed catchment fall back to urban land for
+  // subsistence buildings (garden plots, common pasture worked from
+  // the home hex).
+  const subsistenceCandidates =
+    catchmentCandidates.length > 0
+      ? [...catchmentCandidates, ...urbanCandidates]
+      : urbanCandidates;
 
-  const mineHexes = mineableDepositHexes(ctx, catchment);
-  const hasOreForSmelting = hasSmeltableOreDeposit(ctx, catchment);
+  // Track which hexes already host this building kind so the picker
+  // doesn't choose a duplicate.
+  const placeBest = (
+    kind: string,
+    pool: readonly PlacementCandidate[],
+    capacity: number,
+  ): boolean => {
+    const free = pool.filter((c) => !buildingExistsAt(settlement, kind, c.hex));
+    const pick = pickBestHex(buildingId(kind), free);
+    if (pick === null) return false;
+    tryAddBuilding(settlement, kind, pick.hex, owner, capacity);
+    return true;
+  };
 
-  // Village+: add charcoal_kiln so smithies have fuel. Mines are only seeded
-  // on actual mineral deposits; bloomeries are only seeded where smeltable ore
-  // exists locally. The earlier fake-mine bootstrap fabricated ore everywhere
-  // and created province-wide charcoal demand unrelated to geography.
-  // Dairy stays broad because milk/cheese is a normal local hinterland chain.
+  // Every settlement: subsistence floor.
+  placeBest('pasture', subsistenceCandidates, capOf('pasture'));
+  placeBest('farm', subsistenceCandidates, capOf('farm'));
+  placeBest('forester_camp', subsistenceCandidates, capOf('forester_camp'));
+  // Sawmill prefers river-adjacent land; fall back to urban.
+  placeBest('sawmill', [...urbanCandidates, ...catchmentCandidates], capOf('sawmill'));
+  // Fishery requires water-adjacent — placement scorer returns 0
+  // otherwise, so `placeBest` no-ops when nothing qualifies.
+  placeBest('fishery', [...urbanCandidates, ...catchmentCandidates], capOf('fishery'));
+
+  const mineHexes = mineableDepositHexes(ctx, settlement.catchmentHexes);
+  const hasOreForSmelting = hasSmeltableOreDeposit(ctx, settlement.catchmentHexes);
+
   if (
     settlement.tier === 'village' ||
     settlement.tier === 'town' ||
     settlement.tier === 'small_city' ||
     settlement.tier === 'large_city'
   ) {
-    // charcoal_kiln and craft shops sit in the village outskirts; mine +
-    // quarry + vineyards/olive groves need catchment land. Rural workshops
-    // matter because most cloth, pottery, wine, and oil are estate/village
-    // production, not only urban corporation output.
-    tryAddBuilding(settlement, 'charcoal_kiln', uHex(1), owner, capOf('charcoal_kiln'));
+    // Charcoal kiln likes forest-edge land; fall back to urban.
+    placeBest(
+      'charcoal_kiln',
+      [...urbanCandidates, ...catchmentCandidates],
+      capOf('charcoal_kiln'),
+    );
+    // Mines are deposit-gated; place one per deposit hex (the deposit
+    // already enforces the terrain).
     for (const mineHex of mineHexes) {
       tryAddBuilding(settlement, 'mine', mineHex, owner, capOf('mine'));
     }
     if (hasOreForSmelting) {
-      tryAddBuilding(settlement, 'bloomery', uHex(2), owner, capOf('bloomery'));
+      placeBest('bloomery', urbanCandidates, capOf('bloomery'));
     }
-    tryAddBuilding(settlement, 'smithy', uHex(3), owner, capOf('smithy'));
-    tryAddBuilding(settlement, 'dairy', uHex(4), owner, capOf('dairy'));
-    tryAddBuilding(settlement, 'weaver_workshop', uHex(5), owner, capOf('weaver_workshop'));
-    tryAddBuilding(settlement, 'tannery', uHex(6), owner, capOf('tannery'));
-    tryAddBuilding(settlement, 'tailor_shop', uHex(7), owner, capOf('tailor_shop'));
-    tryAddBuilding(settlement, 'kiln', uHex(8), owner, capOf('kiln'));
-    tryAddBuilding(settlement, 'pottery', uHex(9), owner, capOf('pottery'));
-    const oliveHex = catchmentHex(5);
-    if (oliveHex !== undefined) {
-      tryAddBuilding(settlement, 'olive_grove', oliveHex, owner, capOf('olive_grove'));
-    }
-    const vineyardHex = catchmentHex(6);
-    if (vineyardHex !== undefined) {
-      tryAddBuilding(settlement, 'vineyard', vineyardHex, owner, capOf('vineyard'));
-    }
-    tryAddBuilding(settlement, 'oil_press', uHex(10), owner, capOf('oil_press'));
-    tryAddBuilding(settlement, 'winery', uHex(11), owner, capOf('winery'));
-    const quarryHex = catchmentHex(4);
-    if (quarryHex !== undefined) {
-      tryAddBuilding(settlement, 'quarry', quarryHex, owner, capOf('quarry'));
-    }
+    placeBest('smithy', urbanCandidates, capOf('smithy'));
+    placeBest('dairy', urbanCandidates, capOf('dairy'));
+    placeBest('weaver_workshop', urbanCandidates, capOf('weaver_workshop'));
+    // Tannery wants water-adjacency for the soaking pits.
+    placeBest('tannery', [...urbanCandidates, ...catchmentCandidates], capOf('tannery'));
+    placeBest('tailor_shop', urbanCandidates, capOf('tailor_shop'));
+    placeBest('kiln', urbanCandidates, capOf('kiln'));
+    placeBest('pottery', urbanCandidates, capOf('pottery'));
+    placeBest('olive_grove', catchmentCandidates, capOf('olive_grove'));
+    placeBest('vineyard', catchmentCandidates, capOf('vineyard'));
+    placeBest('oil_press', urbanCandidates, capOf('oil_press'));
+    placeBest('winery', urbanCandidates, capOf('winery'));
+    placeBest('quarry', catchmentCandidates, capOf('quarry'));
   }
 
-  // Town+: refining chain (mill + bakery + granary) and weaver_workshop.
-  // Plus comfort-food production (olive grove + vineyard + winery + oil
-  // press) so wine and olive oil exist on the market — they're a real
-  // share of per-capita demand in any Mediterranean province per
-  // docs/02 §"Demand stratification". The steady-state analyzer
-  // (scripts/analyze-steady-state.ts) flagged these as unseeded for
-  // ~700k pop.
   if (
     settlement.tier === 'town' ||
     settlement.tier === 'small_city' ||
     settlement.tier === 'large_city'
   ) {
-    // Refining + storage workshops in the urban core; olive grove +
-    // vineyard need catchment land.
-    tryAddBuilding(settlement, 'mill', uHex(5), owner, capOf('mill'));
-    tryAddBuilding(settlement, 'bakery', uHex(6), owner, capOf('bakery'));
-    tryAddBuilding(settlement, 'granary', uHex(7), owner, capOf('granary'));
-    tryAddBuilding(settlement, 'weaver_workshop', uHex(8), owner, capOf('weaver_workshop'));
-    tryAddBuilding(settlement, 'tannery', uHex(9), owner, capOf('tannery'));
-    tryAddBuilding(settlement, 'oil_press', uHex(10), owner, capOf('oil_press'));
-    tryAddBuilding(settlement, 'winery', uHex(11), owner, capOf('winery'));
-    tryAddBuilding(settlement, 'kiln', uHex(12), owner, capOf('kiln'));
-    tryAddBuilding(settlement, 'pottery', uHex(13), owner, capOf('pottery'));
-    tryAddBuilding(settlement, 'tailor_shop', uHex(14), owner, capOf('tailor_shop'));
-    tryAddBuilding(settlement, 'cart_wright', uHex(15), owner, capOf('cart_wright'));
-    // Institutional buyers: forums, temples, and barracks do not produce
-    // cargo, but they create real procurement demand for admin stipends,
-    // offerings, and garrison upkeep.
-    tryAddBuilding(settlement, 'forum_market', uHex(16), owner, 1);
-    tryAddBuilding(settlement, 'temple', uHex(17), owner, 1);
-    tryAddBuilding(settlement, 'barracks', uHex(18), owner, 1);
+    // Mill loves river-adjacent land; sawmill already placed above.
+    placeBest('mill', [...urbanCandidates, ...catchmentCandidates], capOf('mill'));
+    placeBest('bakery', urbanCandidates, capOf('bakery'));
+    placeBest('granary', urbanCandidates, capOf('granary'));
+    // Town/city duplicates of village workshops — only place if the
+    // village pass missed (lower-tier hamlets don't get to the village
+    // block at all, and these are no-ops for towns/cities which
+    // already placed them).
+    placeBest('weaver_workshop', urbanCandidates, capOf('weaver_workshop'));
+    placeBest('tannery', [...urbanCandidates, ...catchmentCandidates], capOf('tannery'));
+    placeBest('oil_press', urbanCandidates, capOf('oil_press'));
+    placeBest('winery', urbanCandidates, capOf('winery'));
+    placeBest('kiln', urbanCandidates, capOf('kiln'));
+    placeBest('pottery', urbanCandidates, capOf('pottery'));
+    placeBest('tailor_shop', urbanCandidates, capOf('tailor_shop'));
+    placeBest('cart_wright', urbanCandidates, capOf('cart_wright'));
+    placeBest('forum_market', urbanCandidates, 1);
+    placeBest('temple', urbanCandidates, 1);
+    placeBest('barracks', urbanCandidates, 1);
   }
+};
+
+const buildingExistsAt = (s: Settlement, kind: string, hex: Hex): boolean => {
+  for (const b of s.buildings) {
+    if (String(b.buildingId) === kind && hexEquals(b.hex, hex)) return true;
+  }
+  return false;
 };
 
 /**
