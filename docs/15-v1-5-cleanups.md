@@ -745,14 +745,14 @@ indefinitely, draining their owner's treasury on rations forever.
      `CARAVAN_MIN_NET_PROFIT_COIN = 5`.
    - `minNetProfitFraction` — fractional floor relative to travel
      cost. Default 0. tick.ts wires
-     `CARAVAN_MIN_NET_PROFIT_FRACTION = 0.10` (≥10% margin over
-     travel cost).
+     `CARAVAN_MIN_NET_PROFIT_FRACTION = 0.05` (≥5% margin over
+     travel cost; loosened from 10% in §C28 — see below).
 2. `planCaravanRoute` rejects evaluations failing either floor.
 3. `Caravan` gains optional `noProfitableRouteDays` counter.
    `caravanReplanPhase` resets to 0 on a successful plan, increments
-   when the planner returns null. After
-   `CARAVAN_NO_PROFITABLE_ROUTE_DISBAND_DAYS = 45` consecutive ticks
-   without a plan, the caravan disbands.
+   every tick the planner returns null. After
+   `CARAVAN_NO_PROFITABLE_ROUTE_DISBAND_DAYS = 45` consecutive ticks,
+   the caravan disbands.
 4. New `disbandUnprofitableCaravan` helper returns the caravan's
    treasury + cargo to the owner, refunds equine herd-units +
    carts to the owner's stockpile, and emits a
@@ -873,6 +873,51 @@ directly without the competing bloomery / quarry buildings.
 `docs/15-v1-5-cleanups.md` §C23 + §C26,
 `src/sim/market/scheduleBuilder.ts` `marketMakerDemandSources`,
 `minFiniteWtpForConcreteSources`.
+
+## C28 — Softer caravan margin gate (landed)
+
+**Diagnosed during the §C27 burn-in audit:** even after §C27 fixed
+MM's starvation issue, the 3-year burn-in still ended with only 15
+caravans active (vs ~36 baseline) and famine deaths ~6% above
+baseline. The 10% fractional profit floor
+(`CARAVAN_MIN_NET_PROFIT_FRACTION = 0.10` from §C25) was rejecting
+marginal routes that would have moved real food between
+settlements — with prices closer to marginal cost after §C26 +
+§C27, a 10% margin is unusually wide.
+
+**v1.5 mechanics (landed):**
+
+- `CARAVAN_MIN_NET_PROFIT_FRACTION` lowered from 0.10 → 0.05. A 5%
+  margin still rejects 0.5%-spread "noise trades" but accepts
+  legitimate marginal flows that move real food between
+  settlements.
+- Day-based 45-tick disband counter
+  (`CARAVAN_NO_PROFITABLE_ROUTE_DISBAND_DAYS = 45`) unchanged from
+  §C25.
+- 3-year burn-in: famine deaths 6622 (vs baseline 8543, **-22%**);
+  ~19 caravans active at end (vs baseline 36, §C27 15).
+
+**Variants prototyped and dropped:**
+
+- _Stop-based disband counter_ — only count "no-profit" ticks
+  when the caravan is at a settlement anchor, allowing N free
+  scouting stops before disband. In burn-in this produced FEWER
+  caravans and HIGHER famine than the day-based counter. Long-trip
+  caravans got too many free stops + the loosened 5% margin meant
+  they took marginal trades that bled resources. The day-based
+  45-tick counter more reliably catches caravans that bleed
+  without finding a route.
+- _Explicit `'insolvent'` disband_ (treasury=0 + cargo=0) — caught
+  caravans in transient gaps (just-sold, about-to-buy) and bumped
+  famine +14%. The natural failure path is: insolvent caravan
+  can't buy rations → health depletes → the existing
+  `zero_health` disband fires. That chain is forgiving enough to
+  let owner top-ups or trade with passing caravans rescue the
+  unit before assets return.
+
+**Cross-refs:** `docs/06-caravans.md` §"NPC caravan AI",
+`src/sim/tick.ts` `caravanReplanPhase`, `disbandUnprofitableCaravan`,
+`docs/15-v1-5-cleanups.md` §C25.
 
 ## C16 — Cascading consequences of price explosion [TODO]
 

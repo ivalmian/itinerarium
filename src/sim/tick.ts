@@ -1737,9 +1737,18 @@ const movementPhase = (
 ): void => {
   // Disband caravans whose health or crew hit 0 BEFORE moving. A 0% HP
   // caravan means crew + animals are dead/incapacitated; zero crew means
-  // prior combat already removed everyone. The cargo is loose goods on the
-  // road (we don't model the loose-goods drop yet).
-  // Per the user's note + docs/06 §"Consumption en route".
+  // prior combat already removed everyone. The cargo is loose goods on
+  // the road (we don't model the loose-goods drop yet).
+  //
+  // Per docs/15 §C28: insolvency (treasury=0 AND cargo=0) is NOT an
+  // immediate-disband signal. We tried that and it killed caravans that
+  // were briefly in the gap between "just sold cargo, about to buy
+  // restock" or "just spawned, about to trade." The natural failure
+  // path is: insolvent caravan can't buy rations → health depletes →
+  // zero_health disband fires here. Letting that chain play out gives
+  // the caravan a chance to be rescued (sell loose cargo to a passing
+  // caravan, owner top-up, etc.) before the assets are returned to the
+  // owner.
   const disbanded: { readonly id: CaravanId; readonly reason: 'zero_health' | 'zero_crew' }[] = [];
   for (const [cId, c] of world.caravans) {
     if (c.health <= 0) disbanded.push({ id: cId, reason: 'zero_health' });
@@ -5538,29 +5547,30 @@ const averageObservedMarket = (
 });
 
 /**
- * Per docs/15 §C25: caravan profitability gate constants.
+ * Per docs/15 §C25 + §C28: caravan profitability gate constants.
  *
  * `CARAVAN_MIN_NET_PROFIT_COIN`: absolute floor on net profit per trip,
  * representing the crew's reservation wages + capital opportunity cost
- * not fully captured by travelCost. Any positive number above 0 is a
- * meaningful gate; we want routes that cover at least a few days of
- * reservation wages on top of travel cost.
+ * not fully captured by travelCost.
  *
  * `CARAVAN_MIN_NET_PROFIT_FRACTION`: fractional floor — netProfit must be
- * at least N× travelCost for the trip to be worth running. 0.1 means
- * "the trip needs to clear ~10% margin over its travel cost." That keeps
- * caravans from chasing 0.5%-margin spreads that turn into losses after
- * any unexpected wear / loss / delay.
+ * at least N× travelCost for the trip to be worth running. 0.05 means
+ * "the trip needs to clear ~5% margin over its travel cost." Loosened
+ * from 0.10 in §C28: 10% rejected too many marginal-but-real flows
+ * and reduced inter-settlement food movement; 5% still rejects pure
+ * noise trades.
  *
- * `CARAVAN_NO_PROFITABLE_ROUTE_DISBAND_DAYS`: after this many consecutive
- * planning attempts with no profitable route, the caravan disbands. The
- * crew rejoin local labor pools (via the existing disband logic),
- * animals + vehicles return to the owner stockpile. Without this floor
- * the world accumulates zombie caravans that walk aimlessly between
- * settlements forever, draining their owner's treasury on rations.
+ * `CARAVAN_NO_PROFITABLE_ROUTE_DISBAND_DAYS`: after this many
+ * consecutive ticks the planner returned no profitable route, the
+ * caravan disbands. Day-based (not stop-based) because the
+ * stop-based variant produced fewer caravans + higher famine in
+ * burn-in — long-trip caravans got too many "free" stops and
+ * accumulated losses on marginal trades. The day-based count more
+ * accurately reflects "this caravan has been bleeding resources
+ * for over a month with nothing to show."
  */
 const CARAVAN_MIN_NET_PROFIT_COIN = 5;
-const CARAVAN_MIN_NET_PROFIT_FRACTION = 0.1;
+const CARAVAN_MIN_NET_PROFIT_FRACTION = 0.05;
 const CARAVAN_NO_PROFITABLE_ROUTE_DISBAND_DAYS = 45;
 
 const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[]): void => {
@@ -5719,8 +5729,12 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
       c.destination = plan.destination;
     } else {
       // Per docs/15 §C25: no profitable plan available. Bump the
-      // no-profit counter; if it crosses the disband threshold, disband
-      // the caravan entirely instead of pointlessly scouting forever.
+      // no-profit counter (day-based); if it crosses the disband
+      // threshold, dissolve the caravan instead of pointlessly
+      // scouting forever. §C28 experimented with a stop-based
+      // counter but it produced fewer caravans + higher famine —
+      // the day-based count more reliably catches caravans that
+      // bleed resources without finding a route.
       c.noProfitableRouteDays = (c.noProfitableRouteDays ?? 0) + 1;
       if (c.noProfitableRouteDays >= CARAVAN_NO_PROFITABLE_ROUTE_DISBAND_DAYS) {
         disbandUnprofitableCaravan(world, cId, c, today, events);
@@ -5745,16 +5759,10 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
 };
 
 /**
- * Per docs/15 §C25: disband a caravan that hasn't found a profitable
- * route in `CARAVAN_NO_PROFITABLE_ROUTE_DISBAND_DAYS` consecutive ticks.
- *
- * Returns animals + vehicles + remaining cargo + remaining treasury to
- * the owner's stockpile/treasury. Crew demographics are intentionally
- * dropped on the floor for now — re-feeding them into the home
- * settlement's population pool is a follow-up (it requires the
- * crew-demographics → population integration described in docs/06).
- *
- * Emits a `caravan_disbanded` event with reason `'unprofitable'`.
+ * Per docs/15 §C25 + §C28: disband a caravan that hasn't found a
+ * profitable route after `CARAVAN_NO_PROFITABLE_ROUTE_DISBAND_DAYS`
+ * consecutive ticks of failed planning. Emits a `caravan_disbanded`
+ * event with reason `'unprofitable'`.
  */
 const disbandUnprofitableCaravan = (
   world: WorldState,
@@ -5763,39 +5771,7 @@ const disbandUnprofitableCaravan = (
   today: Day,
   events: TickEvent[],
 ): void => {
-  const owner = world.actors.get(c.ownerActor);
-  if (owner !== undefined) {
-    // Refund treasury + cargo to owner.
-    owner.treasury += Math.max(0, c.treasury);
-    c.treasury = 0;
-    for (const [resource, qty] of c.cargo) {
-      if (qty > 0) increaseStockpile(owner, resource, qty);
-    }
-    c.cargo.clear();
-    // Return livestock + cart capital to owner's stockpile so it can be
-    // reused by a future caravan assembly. Each pack-animal kind maps
-    // back to the equine herd-unit aggregate; carts/wagons return as
-    // goods.cart units.
-    const equineResource = resourceId('livestock.equines');
-    const cartResource = resourceId('goods.cart');
-    let equineUnits = 0;
-    for (const k of Object.keys(c.animals) as (keyof typeof c.animals)[]) {
-      const n = c.animals[k] ?? 0;
-      if (n > 0) equineUnits += n;
-    }
-    if (equineUnits > 0) {
-      // ~6 pack animals per herd unit (matches procgen's
-      // transport-capital convention).
-      const herdUnits = equineUnits / 6;
-      if (herdUnits > 0) increaseStockpile(owner, equineResource, herdUnits);
-    }
-    let cartUnits = 0;
-    for (const k of Object.keys(c.vehicles) as (keyof typeof c.vehicles)[]) {
-      const n = c.vehicles[k] ?? 0;
-      if (n > 0) cartUnits += n;
-    }
-    if (cartUnits > 0) increaseStockpile(owner, cartResource, cartUnits);
-  }
+  refundCaravanToOwner(world, c);
   world.caravans.delete(cId);
   events.push({
     type: 'caravan_disbanded',
@@ -5803,9 +5779,45 @@ const disbandUnprofitableCaravan = (
     at: { q: c.position.q, r: c.position.r },
     reason: 'unprofitable',
   });
-  // Suppress an unused-arg lint warning while keeping `today` available
-  // for future event-day stamping.
   void today;
+};
+
+/**
+ * Shared helper: return a disbanded caravan's treasury + cargo +
+ * livestock + carts to the owner's stockpile/treasury. The crew
+ * demographics are intentionally dropped on the floor for now —
+ * re-feeding them into the home settlement's population pool is a
+ * follow-up (it requires the crew-demographics → population integration
+ * described in docs/06).
+ */
+const refundCaravanToOwner = (world: WorldState, c: Caravan): void => {
+  const owner = world.actors.get(c.ownerActor);
+  if (owner === undefined) return;
+  owner.treasury += Math.max(0, c.treasury);
+  c.treasury = 0;
+  for (const [resource, qty] of c.cargo) {
+    if (qty > 0) increaseStockpile(owner, resource, qty);
+  }
+  c.cargo.clear();
+  const equineResource = resourceId('livestock.equines');
+  const cartResource = resourceId('goods.cart');
+  let equineUnits = 0;
+  for (const k of Object.keys(c.animals) as (keyof typeof c.animals)[]) {
+    const n = c.animals[k] ?? 0;
+    if (n > 0) equineUnits += n;
+  }
+  if (equineUnits > 0) {
+    // ~6 pack animals per herd unit (matches procgen's
+    // transport-capital convention).
+    const herdUnits = equineUnits / 6;
+    if (herdUnits > 0) increaseStockpile(owner, equineResource, herdUnits);
+  }
+  let cartUnits = 0;
+  for (const k of Object.keys(c.vehicles) as (keyof typeof c.vehicles)[]) {
+    const n = c.vehicles[k] ?? 0;
+    if (n > 0) cartUnits += n;
+  }
+  if (cartUnits > 0) increaseStockpile(owner, cartResource, cartUnits);
 };
 
 // --- Bandit phase -----------------------------------------------------------
