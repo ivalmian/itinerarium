@@ -35,6 +35,23 @@ export interface UnitPopupContent {
   readonly title: string;
 }
 
+/**
+ * Italic "doing X from Y to Z" callout used by every unit popup.
+ * Caravan, patrol, news-carrier, and bandit-party popups all open
+ * with one of these so the player can read what the unit is doing
+ * at a glance — without parsing the kv-table below.
+ */
+const buildActivityLine = (parts: readonly Node[]): HTMLElement => {
+  const box = document.createElement('div');
+  box.style.margin = '0 0 8px 0';
+  box.style.padding = '6px 10px';
+  box.style.background = 'var(--panel-2)';
+  box.style.borderLeft = '3px solid var(--accent)';
+  box.style.fontStyle = 'italic';
+  for (const part of parts) box.appendChild(part);
+  return box;
+};
+
 // --- Patrols ---------------------------------------------------------------
 
 export interface PatrolPopupOpts {
@@ -81,6 +98,11 @@ const renderPatrolOverview = (
   const section = popupSection('Overview');
   const owner = world.actors.get(p.ownerActor);
   const ownerLabel = owner?.name ?? '(unknown)';
+
+  // Lead with a single-line "doing X from Y to Z" so the player can
+  // see what this unit is up to without parsing the kv-grid below.
+  section.appendChild(buildActivityLine(buildPatrolActivity(world, p, state)));
+
   section.appendChild(
     popupKv([
       ['Kind', patrolKindLabel(p.kind)],
@@ -117,24 +139,41 @@ const renderPatrolOverview = (
     section.appendChild(row);
   }
 
-  if (p.pursuit !== undefined) {
-    const row = document.createElement('div');
-    row.style.marginTop = '6px';
-    row.style.padding = '6px 10px';
-    row.style.background = 'var(--panel-2)';
-    row.style.borderLeft = '3px solid var(--accent)';
-    row.style.fontStyle = 'italic';
-    const lbl = document.createElement('span');
-    lbl.textContent = `Pursuing target at `;
-    row.appendChild(lbl);
-    row.appendChild(hexDestinationNode(world, state, p.pursuit.targetHex));
-    const tail = document.createElement('span');
-    tail.textContent = ` (day ${p.pursuit.daysActive}).`;
-    row.appendChild(tail);
-    section.appendChild(row);
-  }
-
   return section;
+};
+
+/**
+ * Build the leading "doing X from Y to Z" activity line for a patrol.
+ * Same pattern as the caravan popup's `describeWhy` so the experience
+ * is consistent across unit types.
+ */
+const buildPatrolActivity = (
+  world: WorldState,
+  p: Patrol,
+  state: ViewerState,
+): Node[] => {
+  const out: Node[] = [];
+  const text = (s: string): Text => document.createTextNode(s);
+  if (p.pursuit !== undefined) {
+    // Per user feedback: "Patrol from X chasing Y" reads more
+    // naturally than "Patrol pursuing target at (q, r)".
+    out.push(text(`${patrolKindLabel(p.kind)} from `));
+    out.push(settlementLink(world, state, p.basedAt));
+    out.push(text(` chasing `));
+    out.push(hexDestinationNode(world, state, p.pursuit.targetHex));
+    out.push(text(` (day ${p.pursuit.daysActive} of chase).`));
+    return out;
+  }
+  out.push(text(`${patrolKindLabel(p.kind)} from `));
+  out.push(settlementLink(world, state, p.basedAt));
+  const nextIdx = (p.routeIndex + 1) % p.route.length;
+  const next = p.route[nextIdx];
+  if (next !== undefined) {
+    out.push(text(' patrolling toward '));
+    out.push(hexDestinationNode(world, state, next));
+  }
+  out.push(text('.'));
+  return out;
 };
 
 const renderPatrolRoute = (
@@ -189,6 +228,22 @@ const renderNewsCarrierOverview = (
 ): HTMLElement => {
   const section = popupSection('Overview');
   const dist = hexDistance(c.position, c.destination);
+
+  // Lead with "Carrying news from <event hex> to <destination>" so the
+  // player can read the carrier's purpose at a glance.
+  const activity: Node[] = [];
+  const text = (s: string): Text => document.createTextNode(s);
+  activity.push(text('Carrying news from '));
+  activity.push(hexDestinationNode(world, state, c.carrying.occurredAtHex));
+  activity.push(text(' to '));
+  activity.push(hexDestinationNode(world, state, c.destination));
+  if (c.arrived) {
+    activity.push(text(' (arrived).'));
+  } else {
+    activity.push(text('.'));
+  }
+  section.appendChild(buildActivityLine(activity));
+
   section.appendChild(
     popupKv([
       ['Position', `(${c.position.q}, ${c.position.r})`],
@@ -198,16 +253,6 @@ const renderNewsCarrierOverview = (
       ['Status', c.arrived ? 'arrived' : 'walking'],
     ]),
   );
-
-  const row = document.createElement('div');
-  row.style.marginTop = '6px';
-  const lbl = document.createElement('span');
-  lbl.style.color = 'var(--muted)';
-  lbl.style.marginRight = '6px';
-  lbl.textContent = 'Destination:';
-  row.appendChild(lbl);
-  row.appendChild(hexDestinationNode(world, state, c.destination));
-  section.appendChild(row);
   return section;
 };
 
@@ -335,6 +380,9 @@ const renderBanditPartyOverview = (
 ): HTMLElement => {
   const section = popupSection('Overview');
   const owner = world.actors.get(p.ownerActor);
+
+  section.appendChild(buildActivityLine(buildBanditPartyActivity(world, p, state)));
+
   section.appendChild(
     popupKv([
       ['Mission', missionLabel(p.mission.type)],
@@ -374,6 +422,83 @@ const renderBanditPartyOverview = (
     section.appendChild(row);
   }
   return section;
+};
+
+/**
+ * Build the leading "doing X from Y to Z" activity line for a bandit
+ * party. Mission resolution + phase produce a different framing per
+ * phase: outbound = "raiding X from camp Y", returning = "going home
+ * to camp Y after X", fleeing = "running away from <pursuer hex>".
+ */
+const buildBanditPartyActivity = (
+  world: WorldState,
+  p: BanditParty,
+  state: ViewerState,
+): Node[] => {
+  const out: Node[] = [];
+  const text = (s: string): Text => document.createTextNode(s);
+
+  // Identify the mission target as a named entity where possible.
+  let targetSettlement: SettlementId | null = null;
+  switch (p.mission.type) {
+    case 'raid_settlement':
+      targetSettlement = p.mission.target;
+      break;
+    case 'fence_loot':
+      targetSettlement = p.mission.through;
+      break;
+    case 'recruit_drive':
+      targetSettlement = p.mission.fromSettlement;
+      break;
+    case 'bribe_settlement':
+      targetSettlement = p.mission.settlement;
+      break;
+    default:
+      break;
+  }
+  const homeCamp = p.homeCamp !== null ? world.banditCamps?.get(p.homeCamp) : undefined;
+
+  if (p.phase === 'fleeing') {
+    // Threat hex is recorded on the party — show "running away from"
+    // that, with the safe destination implicit (home camp).
+    out.push(text('Running away from '));
+    if (p.fleeingFromHex !== undefined) {
+      out.push(hexDestinationNode(world, state, p.fleeingFromHex));
+    } else {
+      out.push(text('a pursuer'));
+    }
+    if (homeCamp !== undefined) {
+      out.push(text(' toward '));
+      out.push(banditCampLink(world, state, homeCamp.id));
+    }
+    out.push(text('.'));
+    return out;
+  }
+  if (p.phase === 'returning') {
+    out.push(text('Returning to '));
+    if (homeCamp !== undefined) {
+      out.push(banditCampLink(world, state, homeCamp.id));
+    } else {
+      out.push(hexDestinationNode(world, state, p.homeHex));
+    }
+    out.push(text('.'));
+    return out;
+  }
+  // outbound / executing — describe the mission.
+  out.push(text(`${missionLabel(p.mission.type)} from `));
+  if (homeCamp !== undefined) {
+    out.push(banditCampLink(world, state, homeCamp.id));
+  } else {
+    out.push(hexDestinationNode(world, state, p.homeHex));
+  }
+  out.push(text(' targeting '));
+  if (targetSettlement !== null) {
+    out.push(settlementLink(world, state, targetSettlement));
+  } else {
+    out.push(hexDestinationNode(world, state, missionTargetHex(p.mission)));
+  }
+  out.push(text('.'));
+  return out;
 };
 
 const renderBanditPartyMission = (
