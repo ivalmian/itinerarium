@@ -352,7 +352,7 @@ describe('renderSettlementSummary', () => {
       name: 'Corp of Aquileia',
       homeSettlement: s.id,
     });
-    corp.stockpile.set(resourceId('food.grain'), 4000);
+    corp.stockpile.set(s.id, new Map([[resourceId('food.grain'), 4000]]));
     s.stockpileOwners.push(corp.id);
 
     const fA = createFaction({

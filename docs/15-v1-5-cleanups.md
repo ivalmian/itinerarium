@@ -1034,6 +1034,17 @@ modius counted in exactly one settlement's "Stock" column);
 `debug-stockpile-accounting.ts` reconciles `Δstock = produced +
 imported − consumed − exported` within 0.1% per settlement per day.
 
+**Known follow-up — famine regression:** the 3-year watchdog burn-in
+(80×80, 3 cities) shows famine deaths rise from ~6.6k (post-§C29) to
+~22k after §C30. This is **expected** behaviour, not a bug: before
+§C30 a patron's grain pool was implicitly accessible at every market
+they were registered at, which masked food-distribution friction.
+The honest physical model exposes that the trade system doesn't
+yet move enough grain from village granaries to city subsistence
+markets. Population still settles at ~87% over 3 years (pass) and
+no fatal invariants fire. Real fix lives in trade/caravan tuning,
+not in re-introducing the hidden hand.
+
 **Cross-refs:** `docs/11-politics-and-ownership.md` §"Hex-level
 ownership", `src/sim/politics/actor.ts`,
 `docs/15-v1-5-cleanups.md` §C29.

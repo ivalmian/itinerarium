@@ -37,13 +37,17 @@ const world = seedWorld({ seed: 'watchdog|world', grid, settlementSites: sites }
 seedCaravans({ seed: 'watchdog|caravans', world });
 
 const settlementStockpile = (sId: SettlementId): Map<ResourceId, number> => {
+  // Per docs/15 §C30: each owner has a slice keyed by SettlementId; sum only
+  // the slice physically at THIS settlement.
   const out = new Map<ResourceId, number>();
   const s = world.settlements.get(sId);
   if (s === undefined) return out;
   for (const ownerId of s.stockpileOwners) {
     const a = world.actors.get(ownerId);
     if (a === undefined) continue;
-    for (const [r, q] of a.stockpile) {
+    const slice = a.stockpile.get(sId);
+    if (slice === undefined) continue;
+    for (const [r, q] of slice) {
       if (q <= 0) continue;
       out.set(r, (out.get(r) ?? 0) + q);
     }

@@ -94,11 +94,15 @@ export const createResourcePanel = (opts: ResourcePanelOpts): ResourcePanel => {
   const update = (world: WorldState): void => {
     if (!expanded) return;
 
-    // Aggregate stockpiles across every actor.
+    // Aggregate stockpiles across every actor across every settlement
+    // (each modius is counted exactly once because actor.stockpile is now
+    // keyed by SettlementId per docs/15 §C30).
     const stocks = new Map<string, number>();
     for (const a of world.actors.values()) {
-      for (const [r, q] of a.stockpile) {
-        stocks.set(String(r), (stocks.get(String(r)) ?? 0) + q);
+      for (const slice of a.stockpile.values()) {
+        for (const [r, q] of slice) {
+          stocks.set(String(r), (stocks.get(String(r)) ?? 0) + q);
+        }
       }
     }
     // Camp loot also counts toward global stock.

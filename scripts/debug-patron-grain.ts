@@ -11,6 +11,7 @@
  * physically in the city.
  */
 import { generateTerrain } from '../src/procgen/terrain.ts';
+import { actorTotalStock } from '../src/sim/politics/actor.ts';
 import { siteSettlements } from '../src/procgen/settlements.ts';
 import { seedWorld } from '../src/procgen/seed.ts';
 import { seedCaravans } from '../src/procgen/seedCaravans.ts';
@@ -46,12 +47,13 @@ const city = cities[0]!;
 
 console.log(`After ${DAYS} days — ${city.name} (${city.tier}, pop=${city.population.total()})`);
 
-// Settlement-aggregate grain (the viewer's "Stock" column).
+// Settlement-aggregate grain (the viewer's "Stock" column). Per docs/15 §C30
+// each owner contributes only their slice physically at this settlement.
 let citySettAgg = 0;
 for (const ownerId of city.stockpileOwners) {
   const a = world.actors.get(ownerId);
   if (a === undefined) continue;
-  citySettAgg += a.stockpile.get(grain) ?? 0;
+  citySettAgg += a.stockpile.get(city.id)?.get(grain) ?? 0;
 }
 console.log(`  viewer-displayed city stockpile (sum of all owners): ${citySettAgg.toFixed(0)} grain\n`);
 
@@ -63,7 +65,7 @@ const patricians = city.stockpileOwners
 console.log(`  ${patricians.length} patrician families home here.\n`);
 
 for (const p of patricians) {
-  const ownInv = p.stockpile.get(grain) ?? 0;
+  const ownInv = actorTotalStock(p, grain);
   // Find every settlement that lists this actor as a stockpile owner.
   const memberOf: string[] = [];
   for (const s of world.settlements.values()) {
@@ -77,19 +79,20 @@ for (const p of patricians) {
   console.log();
 }
 
-// Sanity: same patrician's pool counted in N settlement aggregates means
-// summing settlement-aggregates double-counts.
+// Sanity check: settlement-aggregate vs world-aggregate. After docs/15 §C29
+// + §C30 these should match exactly (1.00× inflation) because inventory is
+// keyed by SettlementId — each modius is reported at its physical location.
 let worldSettAgg = 0;
 for (const s of world.settlements.values()) {
   for (const ownerId of s.stockpileOwners) {
     const a = world.actors.get(ownerId);
     if (a === undefined) continue;
-    worldSettAgg += a.stockpile.get(grain) ?? 0;
+    worldSettAgg += a.stockpile.get(s.id)?.get(grain) ?? 0;
   }
 }
 let worldActorAgg = 0;
 for (const a of world.actors.values()) {
-  worldActorAgg += a.stockpile.get(grain) ?? 0;
+  worldActorAgg += actorTotalStock(a, grain);
 }
 console.log(`Sanity check world-wide:`);
 console.log(`  Σ over all settlements (sum-of-owners): ${worldSettAgg.toFixed(0)}`);

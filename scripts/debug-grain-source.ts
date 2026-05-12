@@ -3,6 +3,7 @@
  * actor accumulates the silent inflow.
  */
 import { generateTerrain } from '../src/procgen/terrain.ts';
+import { actorTotalStock } from '../src/sim/politics/actor.ts';
 import { siteSettlements } from '../src/procgen/settlements.ts';
 import { seedWorld } from '../src/procgen/seed.ts';
 import { seedCaravans } from '../src/procgen/seedCaravans.ts';
@@ -32,7 +33,7 @@ const grainByActor: Map<ActorId, number> = new Map();
 for (const ownerId of city.stockpileOwners) {
   const a = world.actors.get(ownerId);
   if (a === undefined) continue;
-  grainByActor.set(ownerId, a.stockpile.get(grain) ?? 0);
+  grainByActor.set(ownerId, actorTotalStock(a, grain));
 }
 
 const tickRng = createRng('watchdog|tick');
@@ -47,7 +48,7 @@ for (const ownerId of city.stockpileOwners) {
   const a = world.actors.get(ownerId);
   if (a === undefined) continue;
   const before = grainByActor.get(ownerId) ?? 0;
-  const after = a.stockpile.get(grain) ?? 0;
+  const after = actorTotalStock(a, grain);
   totalBefore += before;
   totalAfter += after;
   if (Math.abs(after - before) > 0.5) {

@@ -16,7 +16,7 @@ import { createGrid } from './world/grid.js';
 import { hex } from './world/hex.js';
 import type { HexTile } from './world/terrain.js';
 import { createSettlement, type Settlement } from './world/settlement.js';
-import { createActor, type Actor } from './politics/actor.js';
+import { addStockAt, createActor, getStockAt, type Actor } from './politics/actor.js';
 import { createReputationTable } from './reputation/table.js';
 import {
   actorId,
@@ -136,8 +136,8 @@ const buildPairWorld = (opts: PairOpts): WorldState => {
     homeSettlement: sBId,
     treasury: opts.treasuryB ?? 1000,
   });
-  if ((opts.stockA ?? 0) > 0) ownerA.stockpile.set(resId, opts.stockA!);
-  if ((opts.stockB ?? 0) > 0) ownerB.stockpile.set(resId, opts.stockB!);
+  if ((opts.stockA ?? 0) > 0) addStockAt(ownerA, sAId, resId, opts.stockA!);
+  if ((opts.stockB ?? 0) > 0) addStockAt(ownerB, sBId, resId, opts.stockB!);
   w.actors.set(ownerAId, ownerA);
   w.actors.set(ownerBId, ownerB);
   w.settlements.set(sAId, sA);
@@ -210,8 +210,8 @@ describe('localTradePhase (docs/06 §"Local trade between nearby settlements")',
     const trade = trades.find((t) => String(t.resource) === 'food.grain');
 
     expect(trade).toBeDefined();
-    expect(miller.stockpile.get(resourceId('food.grain')) ?? 0).toBeGreaterThan(0);
-    expect(patrician.stockpile.get(resourceId('food.grain')) ?? 0).toBe(0);
+    expect(getStockAt(miller, buyerSettlement.id, resourceId('food.grain'))).toBeGreaterThan(0);
+    expect(getStockAt(patrician, buyerSettlement.id, resourceId('food.grain'))).toBe(0);
   });
 
   it('routes consumer arbitrage to household consumption instead of arbitrary stockpiling', () => {
@@ -252,8 +252,8 @@ describe('localTradePhase (docs/06 §"Local trade between nearby settlements")',
 
     expect(trade).toBeDefined();
     expect(household.treasury).toBeLessThan(100_000);
-    expect(household.stockpile.get(bread) ?? 0).toBe(0);
-    expect(patrician.stockpile.get(bread) ?? 0).toBe(0);
+    expect(getStockAt(household, buyerSettlement.id, bread)).toBe(0);
+    expect(getStockAt(patrician, buyerSettlement.id, bread)).toBe(0);
     expect(buyerSettlement.market.recentInflows.get(bread) ?? 0).toBeGreaterThan(0);
     expect(buyerSettlement.market.recentOutflows.get(bread) ?? 0).toBeGreaterThan(0);
   });
@@ -509,14 +509,14 @@ describe('localTradePhase (docs/06 §"Local trade between nearby settlements")',
     const ownerB = w.actors.get(actorId('owner-b'))!;
     const grain = resourceId('food.grain');
     const stockBefore = {
-      a: ownerA.stockpile.get(grain) ?? 0,
-      b: ownerB.stockpile.get(grain) ?? 0,
+      a: getStockAt(ownerA, sA.id, grain),
+      b: getStockAt(ownerB, sB.id, grain),
     };
     tick({ world: w, rng: createRng('lt-smooth') });
     // A's grain stockpile should have fallen (sold some); B's should have
     // risen (received some). This is the directly observable smoothing.
-    expect(ownerA.stockpile.get(grain) ?? 0).toBeLessThan(stockBefore.a);
-    expect(ownerB.stockpile.get(grain) ?? 0).toBeGreaterThan(stockBefore.b);
+    expect(getStockAt(ownerA, sA.id, grain)).toBeLessThan(stockBefore.a);
+    expect(getStockAt(ownerB, sB.id, grain)).toBeGreaterThan(stockBefore.b);
     // Both markets retain a recorded price — the regional gradient narrows
     // mechanically each tick because supply/demand are equalizing.
     expect(sA.market.lastClearingPrice.has(grain)).toBe(true);

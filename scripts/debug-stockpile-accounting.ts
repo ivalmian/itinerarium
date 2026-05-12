@@ -15,6 +15,7 @@
  * vs current is the day's recorded gross flow.
  */
 import { generateTerrain } from '../src/procgen/terrain.ts';
+import { actorTotalStock } from '../src/sim/politics/actor.ts';
 import { siteSettlements } from '../src/procgen/settlements.ts';
 import { seedWorld } from '../src/procgen/seed.ts';
 import { seedCaravans } from '../src/procgen/seedCaravans.ts';
@@ -49,13 +50,15 @@ const grain = resourceId('food.grain');
 const DECAY = Math.exp(-1 / 30);
 
 const settlementStock = (sId: SettlementId, r: ResourceId): number => {
+  // Per docs/15 §C30: sum only the slice physically here, not the actor's
+  // full cross-settlement total.
   let total = 0;
   const s = world.settlements.get(sId);
   if (s === undefined) return 0;
   for (const ownerId of s.stockpileOwners) {
     const a = world.actors.get(ownerId);
     if (a === undefined) continue;
-    total += a.stockpile.get(r) ?? 0;
+    total += a.stockpile.get(sId)?.get(r) ?? 0;
   }
   return total;
 };

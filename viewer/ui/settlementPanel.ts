@@ -108,12 +108,16 @@ export const createSettlementPanel = (opts: SettlementPanelOpts): SettlementPane
       root.appendChild(facList);
     }
 
-    // Aggregate stockpiles across all stockpile owners.
+    // Aggregate stockpiles across all stockpile owners — only their slice
+    // AT this settlement, per docs/15 §C30 (no cross-settlement double
+    // counting).
     const totals = new Map<string, number>();
     for (const ownerId of s.stockpileOwners) {
       const a = world.actors.get(ownerId);
       if (a === undefined) continue;
-      for (const [res, qty] of a.stockpile) {
+      const slice = a.stockpile.get(s.id);
+      if (slice === undefined) continue;
+      for (const [res, qty] of slice) {
         totals.set(String(res), (totals.get(String(res)) ?? 0) + qty);
       }
     }

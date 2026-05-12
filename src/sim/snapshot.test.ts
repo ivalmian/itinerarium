@@ -6,7 +6,7 @@ import { hex, hexKey } from './world/hex.js';
 import { createGrid } from './world/grid.js';
 import type { HexTile } from './world/terrain.js';
 import { createSettlement } from './world/settlement.js';
-import { createActor } from './politics/actor.js';
+import { addStockAt, createActor } from './politics/actor.js';
 import { createFaction } from './politics/faction.js';
 import { createCharacter } from './politics/character.js';
 import { createCaravan } from './caravan/caravan.js';
@@ -88,8 +88,8 @@ const buildTinyWorld = (): WorldState => {
     homeSettlement: settlement.id,
     treasury: 200,
   });
-  actor.stockpile.set(resourceId('food.grain'), 100);
-  actor.stockpile.set(resourceId('goods.tools'), 4);
+  addStockAt(actor, settlement.id, resourceId('food.grain'), 100);
+  addStockAt(actor, settlement.id, resourceId('goods.tools'), 4);
 
   const faction = createFaction({
     id: factionId('f.headman'),
@@ -279,8 +279,11 @@ describe('deserializeWorld → round-trip', () => {
     expect(restA).toBeDefined();
     if (restA === undefined) return;
     expect(restA.treasury).toBe(200);
-    expect(restA.stockpile.get(resourceId('food.grain'))).toBe(100);
-    expect(restA.stockpile.get(resourceId('goods.tools'))).toBe(4);
+    // Per docs/15 §C30: stockpile is keyed by SettlementId. Look up the
+    // slice at the original homeSettlement.
+    const homeSlice = restA.stockpile.get(settlementId('s.tiny'));
+    expect(homeSlice?.get(resourceId('food.grain'))).toBe(100);
+    expect(homeSlice?.get(resourceId('goods.tools'))).toBe(4);
   });
 
   it('preserves caravan cargo and priceBook nested maps', () => {

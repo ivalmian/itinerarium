@@ -11,7 +11,7 @@ import {
   ACTOR_KINDS,
   addToStockpile,
   createActor,
-  getStockpile,
+  getStockAt,
   removeFromStockpile,
   type Actor,
   type ActorKind,
@@ -97,73 +97,88 @@ describe('stockpile accounting', () => {
       homeSettlement: aquileia,
     });
 
-  it('getStockpile returns 0 for unknown resource', () => {
+  it('getStockAt returns 0 for unknown resource', () => {
     const a = fresh();
-    expect(getStockpile(a, grain)).toBe(0);
+    expect(getStockAt(a, aquileia, grain)).toBe(0);
   });
 
-  it('addToStockpile then getStockpile returns the added quantity', () => {
+  it('addToStockpile then getStockAt returns the added quantity', () => {
     const a = fresh();
-    addToStockpile(a, grain, 50);
-    expect(getStockpile(a, grain)).toBe(50);
+    addToStockpile(a, aquileia, grain, 50);
+    expect(getStockAt(a, aquileia, grain)).toBe(50);
   });
 
   it('addToStockpile is cumulative', () => {
     const a = fresh();
-    addToStockpile(a, grain, 50);
-    addToStockpile(a, grain, 30);
-    expect(getStockpile(a, grain)).toBe(80);
+    addToStockpile(a, aquileia, grain, 50);
+    addToStockpile(a, aquileia, grain, 30);
+    expect(getStockAt(a, aquileia, grain)).toBe(80);
   });
 
   it('removeFromStockpile subtracts and balances to 0', () => {
     const a = fresh();
-    addToStockpile(a, grain, 50);
-    removeFromStockpile(a, grain, 50);
-    expect(getStockpile(a, grain)).toBe(0);
+    addToStockpile(a, aquileia, grain, 50);
+    removeFromStockpile(a, aquileia, grain, 50);
+    expect(getStockAt(a, aquileia, grain)).toBe(0);
   });
 
   it('removeFromStockpile past zero throws', () => {
     const a = fresh();
-    addToStockpile(a, grain, 5);
-    expect(() => removeFromStockpile(a, grain, 6)).toThrow();
+    addToStockpile(a, aquileia, grain, 5);
+    expect(() => removeFromStockpile(a, aquileia, grain, 6)).toThrow();
     // Failed remove must not have mutated state.
-    expect(getStockpile(a, grain)).toBe(5);
+    expect(getStockAt(a, aquileia, grain)).toBe(5);
   });
 
   it('removing exactly to zero leaves no entry behind', () => {
     const a = fresh();
-    addToStockpile(a, grain, 7);
-    removeFromStockpile(a, grain, 7);
-    expect(a.stockpile.has(grain)).toBe(false);
+    addToStockpile(a, aquileia, grain, 7);
+    removeFromStockpile(a, aquileia, grain, 7);
+    // Both the inner resource entry and the (now-empty) settlement slice
+    // are pruned per docs/15 §C30.
+    expect(a.stockpile.has(aquileia)).toBe(false);
   });
 
   it('rejects non-positive add quantity', () => {
     const a = fresh();
-    expect(() => addToStockpile(a, grain, 0)).toThrow();
-    expect(() => addToStockpile(a, grain, -1)).toThrow();
+    expect(() => addToStockpile(a, aquileia, grain, 0)).toThrow();
+    expect(() => addToStockpile(a, aquileia, grain, -1)).toThrow();
   });
 
   it('rejects non-positive remove quantity', () => {
     const a = fresh();
-    addToStockpile(a, grain, 10);
-    expect(() => removeFromStockpile(a, grain, 0)).toThrow();
-    expect(() => removeFromStockpile(a, grain, -1)).toThrow();
+    addToStockpile(a, aquileia, grain, 10);
+    expect(() => removeFromStockpile(a, aquileia, grain, 0)).toThrow();
+    expect(() => removeFromStockpile(a, aquileia, grain, -1)).toThrow();
   });
 
   it('handles multiple resource types independently', () => {
     const a = fresh();
-    addToStockpile(a, grain, 100);
-    addToStockpile(a, oil, 25);
-    expect(getStockpile(a, grain)).toBe(100);
-    expect(getStockpile(a, oil)).toBe(25);
-    removeFromStockpile(a, grain, 40);
-    expect(getStockpile(a, grain)).toBe(60);
-    expect(getStockpile(a, oil)).toBe(25);
+    addToStockpile(a, aquileia, grain, 100);
+    addToStockpile(a, aquileia, oil, 25);
+    expect(getStockAt(a, aquileia, grain)).toBe(100);
+    expect(getStockAt(a, aquileia, oil)).toBe(25);
+    removeFromStockpile(a, aquileia, grain, 40);
+    expect(getStockAt(a, aquileia, grain)).toBe(60);
+    expect(getStockAt(a, aquileia, oil)).toBe(25);
   });
 
   it('rejects fractional quantities', () => {
     const a = fresh();
-    expect(() => addToStockpile(a, grain, 1.5)).toThrow();
+    expect(() => addToStockpile(a, aquileia, grain, 1.5)).toThrow();
+  });
+
+  it('per-settlement: same actor, different slices at two settlements', () => {
+    const a = fresh();
+    const patavium = settlementId('patavium');
+    addToStockpile(a, aquileia, grain, 100);
+    addToStockpile(a, patavium, grain, 50);
+    expect(getStockAt(a, aquileia, grain)).toBe(100);
+    expect(getStockAt(a, patavium, grain)).toBe(50);
+    // Drain at one settlement leaves the other untouched.
+    removeFromStockpile(a, aquileia, grain, 40);
+    expect(getStockAt(a, aquileia, grain)).toBe(60);
+    expect(getStockAt(a, patavium, grain)).toBe(50);
   });
 });
 
@@ -204,7 +219,7 @@ describe('resourceId/quantity types', () => {
   it('typed ResourceId/Quantity round-trip cleanly', () => {
     const a = createActor({ id: id('a'), kind: 'temple', name: 'T' });
     const r: ResourceId = grain;
-    addToStockpile(a, r, 1);
-    expect(getStockpile(a, r)).toBe(1);
+    addToStockpile(a, aquileia, r, 1);
+    expect(getStockAt(a, aquileia, r)).toBe(1);
   });
 });

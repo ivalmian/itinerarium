@@ -7,10 +7,15 @@
 export type { Actor, ActorKind, CreateActorInput } from './actor.js';
 export {
   ACTOR_KINDS,
+  actorSettlementsWithStock,
+  actorStockEntriesAt,
+  actorTotalStock,
+  addStockAt,
   addToStockpile,
   createActor,
-  getStockpile,
+  getStockAt,
   removeFromStockpile,
+  removeStockAt,
 } from './actor.js';
 
 export type { CreateFactionInput, Faction } from './faction.js';

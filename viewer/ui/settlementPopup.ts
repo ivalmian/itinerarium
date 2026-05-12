@@ -461,12 +461,15 @@ const renderStockpileSection = (
 ): HTMLElement => {
   const section = popupSection('Stockpile & market goods');
 
-  // Aggregate quantities across stockpile owners.
+  // Aggregate quantities across stockpile owners — only their slice AT
+  // this settlement, per docs/15 §C30.
   const totals = new Map<string, number>();
   for (const ownerId of s.stockpileOwners) {
     const a = world.actors.get(ownerId);
     if (a === undefined) continue;
-    for (const [res, qty] of a.stockpile) {
+    const slice = a.stockpile.get(s.id);
+    if (slice === undefined) continue;
+    for (const [res, qty] of slice) {
       totals.set(String(res), (totals.get(String(res)) ?? 0) + qty);
     }
   }

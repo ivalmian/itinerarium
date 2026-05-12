@@ -171,7 +171,9 @@ describe('stockpileNonNegative', () => {
       kind: 'patrician_family',
       name: 'Vibian',
     });
-    actor.stockpile.set(resourceId('food.grain'), -5);
+    // Manually inject a negative entry so the invariant has something to
+    // catch. Per docs/15 §C30 the outer key is SettlementId.
+    actor.stockpile.set(settlementId('s1'), new Map([[resourceId('food.grain'), -5]]));
     const world = makeWorld({ actors: new Map([[actor.id, actor]]) });
     const violations = stockpileNonNegative({ world, day: 0 as Day });
     expect(violations.length).toBe(1);
@@ -694,7 +696,7 @@ describe('checkInvariants', () => {
 
   it('aggregates violations across multiple invariants', () => {
     const owner = createActor({ id: actorId('a1'), kind: 'caravan_owner', name: 'O' });
-    owner.stockpile.set(resourceId('food.grain'), -1);
+    owner.stockpile.set(settlementId('s1'), new Map([[resourceId('food.grain'), -1]]));
     owner.treasury = -100;
     const c = baseCaravan();
     c.crew = [];

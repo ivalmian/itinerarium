@@ -26,6 +26,7 @@ import type { Settlement } from '../sim/world/settlement.js';
 import type { HexTile, RoadGrade, Terrain } from '../sim/world/terrain.js';
 import { resourceId, type SettlementId } from '../sim/types.js';
 import type { WorldState } from '../procgen/seed.js';
+import { getStockAt } from '../sim/politics/actor.js';
 
 export interface AsciiMapBounds {
   readonly qMin: number;
@@ -262,11 +263,11 @@ const grainDaysOfReserve = (world: WorldState, settlement: Settlement): number =
   const totalPop = settlement.population.total();
   if (totalPop <= 0) return 0;
   let totalModii = 0;
+  const grainId = resourceId('food.grain');
   for (const ownerId of settlement.stockpileOwners) {
     const actor = world.actors.get(ownerId);
     if (actor === undefined) continue;
-    const grain = actor.stockpile.get(resourceId('food.grain')) ?? 0;
-    totalModii += grain;
+    totalModii += getStockAt(actor, settlement.id, grainId);
   }
   const kg = totalModii * KG_PER_MODIUS;
   const dailyKg = totalPop * GRAIN_KG_PER_DAY;

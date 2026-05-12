@@ -4,6 +4,7 @@
  * the collapse is happening.
  */
 import { runBurnIn } from '../src/burnin/runner.ts';
+import { actorTotalStock } from '../src/sim/politics/actor.ts';
 import { resourceId } from '../src/sim/types.ts';
 
 async function main(): Promise<void> {
@@ -63,7 +64,7 @@ async function main(): Promise<void> {
   const sumStockpile = (resourceLookup: ReturnType<typeof resourceId>): number => {
     let total = 0;
     for (const a of world.actors.values()) {
-      total += a.stockpile.get(resourceLookup) ?? 0;
+      total += actorTotalStock(a, resourceLookup);
     }
     return total;
   };

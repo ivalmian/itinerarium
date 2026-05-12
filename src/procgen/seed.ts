@@ -37,6 +37,7 @@ import {
 import { drawDemographicsFromPool, ROLE_BIASES } from '../sim/population/demographics.js';
 import {
   ACTOR_KINDS,
+  addStockAt,
   createActor,
   createCharacter,
   createFaction,
@@ -392,16 +393,16 @@ const woodCordsForPopulation = (totalPop: number, minCords: number): number =>
 const toolsForPopulation = (totalPop: number, minTools: number): number =>
   Math.max(minTools, totalPop * STARTER_TOOLS_PER_CAPITA);
 
-const grantStockpile = (actor: Actor, resource: string, qty: number): void => {
+const grantStockpile = (
+  actor: Actor,
+  settlement: SettlementId,
+  resource: string,
+  qty: number,
+): void => {
   if (qty <= 0) return;
-  // ADD to existing stockpile (not replace) so a patron family granted
-  // reserves by multiple of their client villages accumulates the total.
-  // The previous .set() silently dropped earlier grants, leaving multi-
-  // village patrons with only their last village's grant — the root
-  // cause of the burn-in famine cascade.
-  const id = resourceId(resource);
-  const existing = actor.stockpile.get(id) ?? 0;
-  actor.stockpile.set(id, existing + qty);
+  // Per docs/15 §C30 the grant lands at the actor's slice for the named
+  // settlement. ADD to existing slice so multiple grants accumulate.
+  addStockAt(actor, settlement, resourceId(resource), qty);
 };
 
 const grantStarterMarketInventory = (actor: Actor, settlement: Settlement, scale = 1): void => {
@@ -422,7 +423,7 @@ const grantStarterMarketInventory = (actor: Actor, settlement: Settlement, scale
     ['goods.furniture', pop * 0.0001 * 180 * scale],
     ['material.pottery', pop * 0.001 * 120 * scale],
   ];
-  for (const [resource, qty] of grants) grantStockpile(actor, resource, qty);
+  for (const [resource, qty] of grants) grantStockpile(actor, settlement.id, resource, qty);
 };
 
 // --- Hex ownership ----------------------------------------------------------
@@ -616,10 +617,15 @@ const seedCityCorporation = (
   // higher because pottery production has a long bake_bread / wine /
   // oil cycle and amphora is durable.
   const pop = settlement.population.total();
-  grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
-  grantStockpile(actor, 'material.wood', woodCordsForPopulation(pop, 20));
-  grantStockpile(actor, 'material.amphora', Math.max(20, Math.floor(pop / 5)));
-  grantStockpile(actor, 'goods.tools', toolsForPopulation(pop, 50));
+  grantStockpile(
+    actor,
+    settlement.id,
+    'food.grain',
+    grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE),
+  );
+  grantStockpile(actor, settlement.id, 'material.wood', woodCordsForPopulation(pop, 20));
+  grantStockpile(actor, settlement.id, 'material.amphora', Math.max(20, Math.floor(pop / 5)));
+  grantStockpile(actor, settlement.id, 'goods.tools', toolsForPopulation(pop, 50));
   grantStarterMarketInventory(actor, settlement, 1.25);
   return actor;
 };
@@ -717,10 +723,15 @@ const seedFreeVillage = (
   // per docs/15 §C5. Local farms + the village smithy have to come
   // online within the first month; trade fills any remaining gap.
   const pop = settlement.population.total();
-  grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
-  grantStockpile(actor, 'goods.tools', toolsForPopulation(pop, 10));
-  grantStockpile(actor, 'material.wood', woodCordsForPopulation(pop, 5));
-  grantStockpile(actor, 'material.amphora', Math.max(10, Math.floor(pop / 10)));
+  grantStockpile(
+    actor,
+    settlement.id,
+    'food.grain',
+    grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE),
+  );
+  grantStockpile(actor, settlement.id, 'goods.tools', toolsForPopulation(pop, 10));
+  grantStockpile(actor, settlement.id, 'material.wood', woodCordsForPopulation(pop, 5));
+  grantStockpile(actor, settlement.id, 'material.amphora', Math.max(10, Math.floor(pop / 10)));
   grantStarterMarketInventory(actor, settlement, 0.7);
   return actor;
 };
@@ -768,10 +779,15 @@ const seedClientVillage = (ctx: BuildContext, settlement: Settlement, patron: Ac
   // per docs/15 §C5 + §C29. Local farms + the village smithy have to come
   // online within the first month; trade fills any remaining gap.
   const pop = settlement.population.total();
-  grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
-  grantStockpile(actor, 'goods.tools', toolsForPopulation(pop, 10));
-  grantStockpile(actor, 'material.wood', woodCordsForPopulation(pop, 5));
-  grantStockpile(actor, 'material.amphora', Math.max(10, Math.floor(pop / 10)));
+  grantStockpile(
+    actor,
+    settlement.id,
+    'food.grain',
+    grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE),
+  );
+  grantStockpile(actor, settlement.id, 'goods.tools', toolsForPopulation(pop, 10));
+  grantStockpile(actor, settlement.id, 'material.wood', woodCordsForPopulation(pop, 5));
+  grantStockpile(actor, settlement.id, 'material.amphora', Math.max(10, Math.floor(pop / 10)));
   grantStarterMarketInventory(actor, settlement, 0.7);
   return actor;
 };
@@ -810,9 +826,14 @@ const seedHamlet = (ctx: BuildContext, settlement: Settlement, settlementName: s
   settlement.factions.push(fId);
   settlement.stockpileOwners.push(aId);
   const pop = settlement.population.total();
-  grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
-  grantStockpile(actor, 'goods.tools', toolsForPopulation(pop, 10));
-  grantStockpile(actor, 'material.wood', woodCordsForPopulation(pop, 5));
+  grantStockpile(
+    actor,
+    settlement.id,
+    'food.grain',
+    grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE),
+  );
+  grantStockpile(actor, settlement.id, 'goods.tools', toolsForPopulation(pop, 10));
+  grantStockpile(actor, settlement.id, 'material.wood', woodCordsForPopulation(pop, 5));
   grantStarterMarketInventory(actor, settlement, 0.25);
   return actor;
 };

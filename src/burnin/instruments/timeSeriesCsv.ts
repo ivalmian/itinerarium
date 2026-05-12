@@ -50,6 +50,7 @@ import { join } from 'node:path';
 import type { Day, ResourceId, SettlementId } from '../../sim/types.js';
 import type { WorldState } from '../../procgen/seed.js';
 import type { Settlement } from '../../sim/world/settlement.js';
+import { actorStockEntriesAt, getStockAt } from '../../sim/politics/actor.js';
 
 export interface TimeSeriesInstrumentOpts {
   /** Directory CSVs are written to. Created (recursive) if missing. */
@@ -94,7 +95,7 @@ const sumStockpileAcrossOwners = (
   for (const ownerId of settlement.stockpileOwners) {
     const actor = world.actors.get(ownerId);
     if (actor === undefined) continue;
-    total += actor.stockpile.get(resource) ?? 0;
+    total += getStockAt(actor, settlement.id, resource);
   }
   return total;
 };
@@ -113,7 +114,7 @@ const initialResourcesForSettlement = (
   for (const ownerId of settlement.stockpileOwners) {
     const actor = world.actors.get(ownerId);
     if (actor === undefined) continue;
-    for (const [r, qty] of actor.stockpile) {
+    for (const [r, qty] of actorStockEntriesAt(actor, settlement.id)) {
       if (qty > 0) set.add(r);
     }
   }
@@ -206,7 +207,7 @@ export const createTimeSeriesInstrument = (
       for (const ownerId of settlement.stockpileOwners) {
         const actor = world.actors.get(ownerId);
         if (actor === undefined) continue;
-        for (const [r, qty] of actor.stockpile) {
+        for (const [r, qty] of actorStockEntriesAt(actor, settlement.id)) {
           if (qty > 0) ensureSeries(settlement.id, r, day);
         }
       }

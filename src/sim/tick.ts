@@ -36,7 +36,13 @@ import { tickCaravanMovement } from './caravan/movement.js';
 import { MAX_ACTIVE_WORLD_CARAVANS } from './caravan/limits.js';
 import { expectedRiskOnApproximatePath, planCaravanRoute } from './caravan/ai.js';
 import { createCamp, decideCampAction, recruit, type BanditCamp } from './bandit/camp.js';
-import { createActor } from './politics/actor.js';
+import {
+  actorStockEntriesAt,
+  addStockAt,
+  createActor,
+  getStockAt,
+  removeStockAt,
+} from './politics/actor.js';
 import { createCharacter, generateFullName } from './politics/character.js';
 import { createFaction } from './politics/faction.js';
 import {
@@ -636,7 +642,9 @@ const productionPhase = (
     const laborClassContext = laborContextForSettlement(settlement);
     const laborPools = laborPoolsForSettlement(settlement, laborClassContext);
     const laborAvailabilityByOwnerKind = new Map<Actor['kind'], ReadonlyMap<JobId, number>>();
-    const laborAvailabilityForOwnerKind = (ownerKind: Actor['kind']): ReadonlyMap<JobId, number> => {
+    const laborAvailabilityForOwnerKind = (
+      ownerKind: Actor['kind'],
+    ): ReadonlyMap<JobId, number> => {
       let view = laborAvailabilityByOwnerKind.get(ownerKind);
       if (view === undefined) {
         view = laborAvailabilityViewForOwner(laborPools, ownerKind);
@@ -673,6 +681,7 @@ const productionPhase = (
           }
           const inventoryCapacity = productionOutputInventoryCapacityForRecipe(
             ownerActor,
+            settlement.id,
             recipe,
             buildings,
           );
@@ -710,7 +719,7 @@ const productionPhase = (
             },
             ownerActor: b.ownerActor,
             laborAvailable: laborForOwner,
-            inputStocks: ownerActor.stockpile,
+            inputStocks: ownerActor.stockpile.get(settlement.id) ?? EMPTY_RESOURCE_MAP,
             season,
           });
           if (result.shortfall !== undefined && result.ranAtFraction === 0) {
@@ -726,11 +735,12 @@ const productionPhase = (
           }
           if (result.ranAtFraction > 0) {
             const fraction = result.ranAtFraction;
-            // Apply the deltas to the owner's stockpile.
+            // Apply the deltas to the owner's stockpile AT THIS SETTLEMENT
+            // (docs/15 §C30 — inventory is keyed by physical location).
             for (const [resId, qtyPerRun] of recipe.inputs) {
               const qty = qtyPerRun * fraction;
               if (qty <= 0) continue;
-              decreaseStockpile(ownerActor, resId, qty);
+              decreaseStockpile(ownerActor, settlement.id, resId, qty);
               // Recipe-input drain is local consumption: the resource was
               // used UP in this settlement to make something else.
               if (!isServiceResource(resId)) {
@@ -741,7 +751,7 @@ const productionPhase = (
               const qty = qtyPerRun * fraction;
               if (qty <= 0) continue;
               if (isServiceResource(resId)) continue;
-              receiveResourceOrCoin(ownerActor, resId, qty);
+              receiveResourceOrCoin(ownerActor, settlement.id, resId, qty);
               recordProduction(settlement, resId, qty);
             }
             depleteMineDeposit(world, b, recipe, fraction);
@@ -921,7 +931,7 @@ const wageAffordableCapacityForRecipe = (
   );
   if (paidWorkerDaysPerRun <= 0) return Infinity;
   if (!hasAnyWageRecipient(world, settlement, payer)) return Infinity;
-  const liquidBudget = payer.treasury + inKindWageBudget(payer, prices);
+  const liquidBudget = payer.treasury + inKindWageBudget(payer, settlement.id, prices);
   return Math.max(0, liquidBudget / (paidWorkerDaysPerRun * wagePerDay));
 };
 
@@ -976,7 +986,7 @@ const payProductionWagesForWorkerDaysByClass = (
       recipient.treasury += paidCoin;
       remaining -= paidCoin;
     }
-    if (remaining > 1e-9) payInKindWages(payer, recipient, remaining, prices);
+    if (remaining > 1e-9) payInKindWages(payer, recipient, settlement.id, remaining, prices);
   }
 };
 
@@ -986,12 +996,16 @@ const WAGE_IN_KIND_RESOURCES: readonly ResourceId[] = [
   resourceId('food.bread'),
 ];
 
-const inKindWageBudget = (payer: Actor, prices: ReadonlyMap<ResourceId, number>): number => {
+const inKindWageBudget = (
+  payer: Actor,
+  settlement: SettlementId,
+  prices: ReadonlyMap<ResourceId, number>,
+): number => {
   let value = 0;
   for (const resource of WAGE_IN_KIND_RESOURCES) {
     const price = prices.get(resource) ?? 0;
     if (price <= 0) continue;
-    value += (payer.stockpile.get(resource) ?? 0) * price;
+    value += getStockAt(payer, settlement, resource) * price;
   }
   return value;
 };
@@ -999,6 +1013,7 @@ const inKindWageBudget = (payer: Actor, prices: ReadonlyMap<ResourceId, number>)
 const payInKindWages = (
   payer: Actor,
   recipient: Actor,
+  settlement: SettlementId,
   targetValue: number,
   prices: ReadonlyMap<ResourceId, number>,
 ): void => {
@@ -1007,12 +1022,12 @@ const payInKindWages = (
     if (remainingValue <= 1e-9) break;
     const price = prices.get(resource) ?? 0;
     if (price <= 0) continue;
-    const stock = payer.stockpile.get(resource) ?? 0;
+    const stock = getStockAt(payer, settlement, resource);
     if (stock <= 0) continue;
     const units = Math.min(stock, remainingValue / price);
     if (units <= 1e-9) continue;
-    decreaseStockpile(payer, resource, units);
-    increaseStockpile(recipient, resource, units);
+    decreaseStockpile(payer, settlement, resource, units);
+    increaseStockpile(recipient, settlement, resource, units);
     remainingValue -= units * price;
   }
 };
@@ -1351,6 +1366,13 @@ const productionOrderForSettlement = (
   return ranked.map((entry) => entry.recipe);
 };
 
+/**
+ * Sentinel empty map for the production engine's `inputStocks` parameter
+ * when an actor has no slice of inventory at the recipe's settlement.
+ * Read-only; engine only consults via `.get()`.
+ */
+const EMPTY_RESOURCE_MAP: ReadonlyMap<ResourceId, Quantity> = new Map();
+
 const DEFAULT_PRODUCTION_OUTPUT_STOCK_TARGET_DAYS = 30;
 const PRODUCTION_OUTPUT_STOCK_TARGET_DAYS_BY_RESOURCE: ReadonlyMap<string, number> = new Map([
   ['food.grain', 180],
@@ -1377,6 +1399,7 @@ const productionOutputStockTargetDays = (resource: ResourceId): number => {
 
 const productionOutputInventoryCapacityForRecipe = (
   ownerActor: Actor,
+  settlement: SettlementId,
   recipe: RecipeDef,
   buildingsForRecipe: readonly SettlementBuilding[],
 ): number => {
@@ -1393,7 +1416,9 @@ const productionOutputInventoryCapacityForRecipe = (
     const targetStock =
       ownerInstalledCapacity * qtyPerRun * productionOutputStockTargetDays(resource);
     const currentStock =
-      resource === COIN_RESOURCE ? ownerActor.treasury : (ownerActor.stockpile.get(resource) ?? 0);
+      resource === COIN_RESOURCE
+        ? ownerActor.treasury
+        : getStockAt(ownerActor, settlement, resource);
     const gap = targetStock - currentStock;
     if (gap <= 0) return 0;
     capacity = Math.min(capacity, gap / qtyPerRun);
@@ -1402,30 +1427,36 @@ const productionOutputInventoryCapacityForRecipe = (
   return Number.isFinite(capacity) ? Math.max(0, capacity) : Infinity;
 };
 
-const decreaseStockpile = (actor: Actor, resource: ResourceId, qty: Quantity): void => {
-  if (qty <= 0) return;
-  const current = actor.stockpile.get(resource) ?? 0;
-  const remaining = current - qty;
-  if (remaining <= 1e-9) {
-    actor.stockpile.delete(resource);
-  } else {
-    actor.stockpile.set(resource, remaining);
-  }
+const decreaseStockpile = (
+  actor: Actor,
+  settlement: SettlementId,
+  resource: ResourceId,
+  qty: Quantity,
+): void => {
+  removeStockAt(actor, settlement, resource, qty);
 };
 
-const increaseStockpile = (actor: Actor, resource: ResourceId, qty: Quantity): void => {
-  if (qty <= 0) return;
-  const current = actor.stockpile.get(resource) ?? 0;
-  actor.stockpile.set(resource, current + qty);
+const increaseStockpile = (
+  actor: Actor,
+  settlement: SettlementId,
+  resource: ResourceId,
+  qty: Quantity,
+): void => {
+  addStockAt(actor, settlement, resource, qty);
 };
 
-const receiveResourceOrCoin = (actor: Actor, resource: ResourceId, qty: Quantity): void => {
+const receiveResourceOrCoin = (
+  actor: Actor,
+  settlement: SettlementId,
+  resource: ResourceId,
+  qty: Quantity,
+): void => {
   if (qty <= 0) return;
   if (resource === COIN_RESOURCE) {
     actor.treasury += qty;
     return;
   }
-  increaseStockpile(actor, resource, qty);
+  increaseStockpile(actor, settlement, resource, qty);
 };
 
 const isServiceResource = (resource: ResourceId): boolean =>
@@ -1614,7 +1645,7 @@ const buyFallbackRationsFromOwner = (
   let remaining = wantModii;
   for (const id of FOOD_PRIORITY) {
     if (remaining <= 0) break;
-    const have = seller.stockpile.get(id) ?? 0;
+    const have = getStockAt(seller, settlement.id, id);
     if (have <= 0) continue;
     // Convert each food line to grain-equivalent modii using its kg weight.
     const grainEqPerUnit = grainEquivalentModiiPerUnit(id);
@@ -1650,7 +1681,7 @@ const buyFallbackRationsFromOwner = (
 
     takeUnits = unitsConsumed;
     takeAsModii = modiiConsumed;
-    decreaseStockpile(seller, id, takeUnits);
+    decreaseStockpile(seller, settlement.id, id, takeUnits);
     const prev = fallbackMarkets.get(id);
     if (prev === undefined) {
       fallbackMarkets.set(id, { quantity: takeUnits, price });
@@ -1995,14 +2026,15 @@ const demolitionPhase = (world: WorldState, _today: Day, events: TickEvent[]): v
           // Already gone (raced); ignore.
         }
       }
-      // Refund 50% of materials.
+      // Refund 50% of materials, landing back in the owner's slice at
+      // THIS settlement (where the building stood) per docs/15 §C30.
       const def = getBuilding(pd.buildingId);
       const owner = world.actors.get(pd.ownerActor);
       if (owner !== undefined) {
         for (const [r, qty] of def.constructionCost) {
           const refund = qty * 0.5;
           if (refund <= 0) continue;
-          owner.stockpile.set(r, (owner.stockpile.get(r) ?? 0) + refund);
+          addStockAt(owner, settlement.id, r, refund);
         }
       }
       events.push({
@@ -2242,13 +2274,11 @@ const civilUnrestPhase = (world: WorldState, _today: Day, events: TickEvent[]): 
           const a = world.actors.get(oId);
           if (a === undefined) continue;
           if (a.kind !== 'patrician_family' && a.kind !== 'city_corporation') continue;
-          const have = a.stockpile.get(grainResource) ?? 0;
+          const have = getStockAt(a, settlement.id, grainResource);
           if (have <= 0) continue;
           const looted = have * LOOTING_FRACTION;
           if (looted < 1) continue;
-          const remaining = have - looted;
-          if (remaining > 1e-9) a.stockpile.set(grainResource, remaining);
-          else a.stockpile.delete(grainResource);
+          removeStockAt(a, settlement.id, grainResource, looted);
           events.push({
             type: 'mob_looting',
             settlement: settlement.id,
@@ -2433,7 +2463,7 @@ const storageSpoilagePhase = (world: WorldState, events: TickEvent[]): void => {
     for (const oId of settlement.stockpileOwners) {
       const a = world.actors.get(oId);
       if (a === undefined) continue;
-      for (const [r, qty] of a.stockpile) {
+      for (const [r, qty] of actorStockEntriesAt(a, settlement.id)) {
         if (qty <= 0) continue;
         totalByResource.set(r, (totalByResource.get(r) ?? 0) + qty);
         let arr = ownersWithStock.get(r);
@@ -2458,7 +2488,7 @@ const storageSpoilagePhase = (world: WorldState, events: TickEvent[]): void => {
       if (total <= limit) continue;
       const excess = total - limit;
       const spoil = excess * SPOILAGE_RATE_PER_DAY;
-      drainSpoilageProportional(ownersWithStock.get(r) ?? [], r, spoil);
+      drainSpoilageProportional(ownersWithStock.get(r) ?? [], settlement.id, r, spoil);
       events.push({
         type: 'storage_spoilage',
         settlement: settlement.id,
@@ -2485,7 +2515,7 @@ const storageSpoilagePhase = (world: WorldState, events: TickEvent[]): void => {
         if (!isPerishable(r)) continue;
         const spoil = total * spoilFraction;
         if (spoil <= 0) continue;
-        drainSpoilageProportional(ownersWithStock.get(r) ?? [], r, spoil);
+        drainSpoilageProportional(ownersWithStock.get(r) ?? [], settlement.id, r, spoil);
         events.push({
           type: 'storage_spoilage',
           settlement: settlement.id,
@@ -2506,7 +2536,7 @@ const naturalShortPerishableSpoilagePhase = (world: WorldState, events: TickEven
     for (const oId of settlement.stockpileOwners) {
       const actor = world.actors.get(oId);
       if (actor === undefined) continue;
-      for (const [resource, qty] of actor.stockpile) {
+      for (const [resource, qty] of actorStockEntriesAt(actor, settlement.id)) {
         if (qty <= 0) continue;
         const fraction = naturalSpoilageFractionForResource(resource);
         if (fraction <= 0) continue;
@@ -2524,7 +2554,12 @@ const naturalShortPerishableSpoilagePhase = (world: WorldState, events: TickEven
       const fraction = naturalSpoilageFractionForResource(resource);
       const spoil = total * fraction;
       if (spoil <= 1e-9) continue;
-      drainSpoilageProportional(ownersWithStock.get(resource) ?? [], resource, spoil);
+      drainSpoilageProportional(
+        ownersWithStock.get(resource) ?? [],
+        settlement.id,
+        resource,
+        spoil,
+      );
       events.push({
         type: 'storage_spoilage',
         settlement: settlement.id,
@@ -2543,21 +2578,20 @@ const naturalSpoilageFractionForResource = (resource: ResourceId): number => {
 
 const drainSpoilageProportional = (
   owners: readonly Actor[],
+  settlement: SettlementId,
   resource: ResourceId,
   totalSpoil: number,
 ): void => {
   if (owners.length === 0 || totalSpoil <= 1e-9) return;
   // Weighted by current stock. Spoil more from the bigger holders.
   let totalStock = 0;
-  for (const a of owners) totalStock += a.stockpile.get(resource) ?? 0;
+  for (const a of owners) totalStock += getStockAt(a, settlement, resource);
   if (totalStock <= 0) return;
   for (const a of owners) {
-    const have = a.stockpile.get(resource) ?? 0;
+    const have = getStockAt(a, settlement, resource);
     if (have <= 0) continue;
     const share = (have / totalStock) * totalSpoil;
-    const remaining = have - share;
-    if (remaining > 1e-9) a.stockpile.set(resource, remaining);
-    else a.stockpile.delete(resource);
+    if (share > 0) removeStockAt(a, settlement, resource, share);
   }
 };
 
@@ -2615,10 +2649,10 @@ const drainTaxAssessment = (world: WorldState, assessment: TaxAssessment): numbe
     owner.treasury -= drain;
     return drain;
   }
-  const have = owner.stockpile.get(assessment.resource) ?? 0;
+  const have = getStockAt(owner, assessment.fromSettlement, assessment.resource);
   const drain = Math.min(have, assessment.quantityOwed);
   if (drain <= 0) return 0;
-  decreaseStockpile(owner, assessment.resource, drain);
+  decreaseStockpile(owner, assessment.fromSettlement, assessment.resource, drain);
   return drain;
 };
 
@@ -2866,7 +2900,7 @@ const edgeHubPhase = (
       hex: s.anchor,
       ownerActor: owner.id,
       localPrices: s.market.lastClearingPrice,
-      availableForExport: owner.stockpile,
+      availableForExport: owner.stockpile.get(s.id) ?? EMPTY_RESOURCE_MAP,
     });
   }
   if (cityImportTargets.length === 0 && cityExportSources.length === 0) return;
@@ -2902,18 +2936,19 @@ const edgeHubPhase = (
   // Add new caravans into world.caravans. The export-side cargo was
   // implicitly drawn from the owner's stockpile by tickEdgeHubs (per
   // docs/06 §"Exports" — the owner intends to fund the trip), so we
-  // drain it here.
+  // drain it here. Per docs/15 §C30 the drain is keyed to the owner's
+  // home settlement (the export source city).
   for (const c of result.newCaravans) {
     ensureCaravanOwnerActor(world, c);
     world.caravans.set(c.id, c);
-    // For exports, drain the cargo from the owner's stockpile.
+    // For exports, drain the cargo from the owner's slice at their
+    // home city (the city that supplied the export goods).
     const owner = world.actors.get(c.ownerActor);
     if (owner === undefined) continue;
+    const sourceSettlement = owner.homeSettlement;
+    if (sourceSettlement === undefined) continue;
     for (const [res, qty] of c.cargo) {
-      const have = owner.stockpile.get(res) ?? 0;
-      const remaining = have - qty;
-      if (remaining > 1e-9) owner.stockpile.set(res, remaining);
-      else owner.stockpile.delete(res);
+      removeStockAt(owner, sourceSettlement, res, qty);
     }
   }
 
@@ -3416,14 +3451,15 @@ const tradePhase = (
   for (const settlement of world.settlements.values()) {
     if (settlement.population.total() === 0) continue;
 
-    // Stockpiles by owner — buildSettlementSchedules expects this shape.
+    // Stockpiles by owner — buildSettlementSchedules expects each owner's
+    // slice AT THIS SETTLEMENT (docs/15 §C30 — inventory is physical).
     const stockpilesByOwner = new Map<ActorId, ReadonlyMap<ResourceId, Quantity>>();
     const actorTreasuryByActor = new Map<ActorId, number>();
     const owners: Actor[] = [];
     for (const oId of settlement.stockpileOwners) {
       const a = world.actors.get(oId);
       if (a === undefined) continue;
-      stockpilesByOwner.set(a.id, a.stockpile);
+      stockpilesByOwner.set(a.id, a.stockpile.get(settlement.id) ?? EMPTY_RESOURCE_MAP);
       actorTreasuryByActor.set(a.id, a.treasury);
       owners.push(a);
     }
@@ -3435,7 +3471,7 @@ const tradePhase = (
     // are the signal that attracts caravans into shortages.
     const presentResources = new Set<ResourceId>();
     for (const o of owners) {
-      for (const [res, qty] of o.stockpile) {
+      for (const [res, qty] of actorStockEntriesAt(o, settlement.id)) {
         if (qty > 0) presentResources.add(res);
       }
     }
@@ -3553,13 +3589,15 @@ const tradePhase = (
         const concreteBuyer = buyer;
         const buyerPaysSeller = concreteBuyer.id !== seller.id;
         const maxByBuyerTreasury =
-          buyerPaysSeller && trade.price > 0 ? concreteBuyer.treasury / trade.price : trade.quantity;
+          buyerPaysSeller && trade.price > 0
+            ? concreteBuyer.treasury / trade.price
+            : trade.quantity;
         const qty = Math.min(trade.quantity, maxByBuyerTreasury);
         if (qty <= 1e-9) continue;
 
         const coin = buyerPaysSeller ? Math.min(qty * trade.price, concreteBuyer.treasury) : 0;
         const serviceTrade = isServiceResource(resId);
-        if (!serviceTrade) decreaseStockpile(seller, resId, qty);
+        if (!serviceTrade) decreaseStockpile(seller, settlement.id, resId, qty);
         if (buyerPaysSeller) {
           if (coin > 0) {
             concreteBuyer.treasury -= coin;
@@ -3567,7 +3605,7 @@ const tradePhase = (
           }
         }
         if (demandSource?.buyerDisposition === 'stockpile' && !serviceTrade) {
-          increaseStockpile(concreteBuyer, resId, qty);
+          increaseStockpile(concreteBuyer, settlement.id, resId, qty);
         }
         if (demandSource?.buyerDisposition !== 'stockpile') {
           // Buyer is consuming immediately (not adding to stockpile),
@@ -3857,8 +3895,7 @@ const localTradePhase = (
     const bResources = pricedLocalTradeResourcesForSettlement(b, pricedResourceCache);
     const smaller =
       aResources.resources.length <= bResources.resources.length ? aResources : bResources;
-    const other =
-      smaller === aResources ? bResources.resourcesById : aResources.resourcesById;
+    const other = smaller === aResources ? bResources.resourcesById : aResources.resourcesById;
     for (const resId of smaller.resources) {
       if (!other.has(resId)) continue;
       if (dist > localTradeMaxHexDistanceForResource(resId)) continue;
@@ -4045,7 +4082,7 @@ const tryLocalTrade = (
   const buyerActor = buyerIntent.actor;
   if (buyerActor.id === sellerActor.id) return;
 
-  const sellerStock = sellerActor.stockpile.get(resId) ?? 0;
+  const sellerStock = getStockAt(sellerActor, seller.id, resId);
   if (sellerStock <= 0) return;
   const maxByLoad = localTradeLoadKgForResource(resId) / weightKgPerUnit;
   const maxByTreasury = buyerActor.treasury / midPrice;
@@ -4062,10 +4099,12 @@ const tryLocalTrade = (
   if (qty <= 1e-9) return;
 
   const coinPaid = qty * midPrice;
-  // Apply the transfer.
-  decreaseStockpile(sellerActor, resId, qty);
+  // Apply the transfer. Per docs/15 §C30 the seller's slice is at THEIR
+  // settlement and the buyer's slice is at THEIR settlement — local
+  // trade physically moves the goods between settlements.
+  decreaseStockpile(sellerActor, seller.id, resId, qty);
   if (buyerIntent.disposition === 'stockpile') {
-    increaseStockpile(buyerActor, resId, qty);
+    increaseStockpile(buyerActor, buyer.id, resId, qty);
   }
   sellerActor.treasury = sellerActor.treasury + coinPaid;
   buyerActor.treasury = buyerActor.treasury - coinPaid;
@@ -4136,7 +4175,9 @@ const localTradeScheduleBaseForSettlement = (
     const actor = world.actors.get(ownerId);
     if (actor === undefined) continue;
     owners.push(actor);
-    stockpilesByOwner.set(actor.id, actor.stockpile);
+    // Per docs/15 §C30: schedule sees only the owner's slice AT this
+    // settlement, not their full cross-settlement pool.
+    stockpilesByOwner.set(actor.id, actor.stockpile.get(settlement.id) ?? EMPTY_RESOURCE_MAP);
   }
   const base = {
     owners,
@@ -4297,7 +4338,7 @@ const pickSellerActor = (
   for (const id of settlement.stockpileOwners) {
     const actor = world.actors.get(id);
     if (actor === undefined) continue;
-    const stock = actor.stockpile.get(resId) ?? 0;
+    const stock = getStockAt(actor, settlement.id, resId);
     if (stock > 0) return actor;
   }
   return null;
@@ -4891,7 +4932,7 @@ const localSellerQuotes = (
       for (const ask of ladder.asks) {
         const actor = world.actors.get(ask.actorId);
         if (actor === undefined) continue;
-        const stock = Math.min(actor.stockpile.get(resource) ?? 0, ask.quantity);
+        const stock = Math.min(getStockAt(actor, settlement.id, resource), ask.quantity);
         if (stock <= 0) continue;
         quotes.push({ settlement, actor, price: ask.price, stock });
       }
@@ -4912,7 +4953,7 @@ const localSellerQuotes = (
     for (const ownerId of settlement.stockpileOwners) {
       const actor = world.actors.get(ownerId);
       if (actor === undefined) continue;
-      const stock = actor.stockpile.get(resource) ?? 0;
+      const stock = getStockAt(actor, settlement.id, resource);
       if (stock <= 0) continue;
       quotes.push({ settlement, actor, price, stock });
     }
@@ -4945,7 +4986,7 @@ const localRationSellerQuotes = (
       seen.add(key);
       const actor = world.actors.get(ownerId);
       if (actor === undefined) continue;
-      const stock = actor.stockpile.get(resource) ?? 0;
+      const stock = getStockAt(actor, settlement.id, resource);
       if (stock <= 0) continue;
       quotes.push({ settlement, actor, price, stock });
     }
@@ -4999,7 +5040,7 @@ const localSupplyAvailabilityByResource = (
       for (const ownerId of settlement.stockpileOwners) {
         const actor = world.actors.get(ownerId);
         if (actor === undefined) continue;
-        total += Math.max(0, actor.stockpile.get(resource) ?? 0);
+        total += Math.max(0, getStockAt(actor, settlement.id, resource));
       }
       if (total > 0) out.set(resource, (out.get(resource) ?? 0) + total);
     }
@@ -5089,7 +5130,7 @@ const sellCaravanCargoAtLocalMarkets = (
     caravan.treasury += coin;
     buyer.actor.treasury -= coin;
     if (buyer.disposition === 'consume') recordConsumption(buyer.settlement, resource, qty);
-    else increaseStockpile(buyer.actor, resource, qty);
+    else increaseStockpile(buyer.actor, buyer.settlement.id, resource, qty);
     // Caravan sold cargo to the settlement: import for the settlement.
     recordImport(buyer.settlement, resource, qty);
     events.push({
@@ -5127,7 +5168,7 @@ const buyPlannedCargoAtLocalMarkets = (
       const qty = Math.min(remainingTarget, seller.stock, maxByCapacity, maxByTreasury);
       if (qty <= 1e-9) continue;
       const coin = sameOwner ? 0 : qty * seller.price;
-      decreaseStockpile(seller.actor, resource, qty);
+      decreaseStockpile(seller.actor, seller.settlement.id, resource, qty);
       increaseCaravanCargo(caravan, resource, qty);
       if (!sameOwner) {
         caravan.treasury -= coin;
@@ -5202,7 +5243,7 @@ const buyCaravanRationsAtLocalMarkets = (
     const qty = Math.min(maxByNeed, maxByCapacity, maxByTreasury, quote.seller.stock);
     if (qty <= 1e-9) continue;
     const coin = sameOwner ? 0 : qty * quote.seller.price;
-    decreaseStockpile(quote.seller.actor, quote.resource, qty);
+    decreaseStockpile(quote.seller.actor, quote.seller.settlement.id, quote.resource, qty);
     increaseCaravanCargo(caravan, quote.resource, qty);
     if (!sameOwner) {
       caravan.treasury -= coin;
@@ -5382,13 +5423,13 @@ const completeTaxShipmentIfArrived = (
   if (!hexEquals(caravan.position, caravan.destination)) return false;
 
   const owner = world.actors.get(caravan.ownerActor);
-  if (owner !== undefined) {
+  const destination = settlements[0];
+  if (owner !== undefined && destination !== undefined) {
     for (const [resource, qty] of caravan.cargo) {
-      receiveResourceOrCoin(owner, resource, qty);
-      const settlement = settlements[0];
+      receiveResourceOrCoin(owner, destination.id, resource, qty);
       // Tax shipment unloaded its cargo at the capital: an import for
       // the capital from the perspective of the receiving settlement.
-      if (settlement !== undefined) recordImport(settlement, resource, qty);
+      recordImport(destination, resource, qty);
     }
   }
   world.caravans.delete(caravanId);
@@ -5429,7 +5470,7 @@ const consignOffMapImportCargo = (
     const remaining = currentQty - qty;
     if (remaining > 1e-9) caravan.cargo.set(resource, remaining);
     else caravan.cargo.delete(resource);
-    increaseStockpile(factor.actor, resource, qty);
+    increaseStockpile(factor.actor, factor.settlement.id, resource, qty);
     // Off-map factor consignment lands at this settlement: import.
     recordImport(factor.settlement, resource, qty);
     consigned += qty;
@@ -5511,7 +5552,7 @@ const buyOwnerAssemblyStockAtLocalMarket = (
   resource: ResourceId,
   targetQty: number,
 ): number => {
-  let remaining = Math.max(0, targetQty - (buyer.stockpile.get(resource) ?? 0));
+  let remaining = Math.max(0, targetQty - getStockAt(buyer, settlement.id, resource));
   if (remaining <= 1e-9) return 0;
   let bought = 0;
   for (const seller of localSellerQuotes(world, [settlement], resource)) {
@@ -5523,8 +5564,8 @@ const buyOwnerAssemblyStockAtLocalMarket = (
     const qty = Math.min(remaining, seller.stock, maxByTreasury);
     if (qty <= 1e-9) continue;
     const coin = qty * seller.price;
-    decreaseStockpile(seller.actor, resource, qty);
-    increaseStockpile(buyer, resource, qty);
+    decreaseStockpile(seller.actor, seller.settlement.id, resource, qty);
+    increaseStockpile(buyer, settlement.id, resource, qty);
     buyer.treasury -= coin;
     seller.actor.treasury += coin;
     remaining -= qty;
@@ -5550,7 +5591,7 @@ const createReplacementMerchantCaravan = (
     MERCHANT_CARAVAN_PREFERRED_EQUINE_UNITS,
   );
   const availablePackAnimals = Math.floor(
-    (owner.stockpile.get(MERCHANT_CARAVAN_EQUINES_RESOURCE) ?? 0) * EQUINE_ANIMALS_PER_HERD_UNIT,
+    getStockAt(owner, origin.id, MERCHANT_CARAVAN_EQUINES_RESOURCE) * EQUINE_ANIMALS_PER_HERD_UNIT,
   );
   if (availablePackAnimals < MERCHANT_CARAVAN_MIN_PACK_ANIMALS) return null;
   let muleCount = rng.int(8, 14);
@@ -5563,7 +5604,7 @@ const createReplacementMerchantCaravan = (
   const equineUnitsNeeded = (muleCount + donkeyCount) / EQUINE_ANIMALS_PER_HERD_UNIT;
   const lightCartCount = Math.min(
     MERCHANT_CARAVAN_MAX_LIGHT_CARTS,
-    Math.floor(owner.stockpile.get(MERCHANT_CARAVAN_CART_RESOURCE) ?? 0),
+    Math.floor(getStockAt(owner, origin.id, MERCHANT_CARAVAN_CART_RESOURCE)),
   );
   const operatingTreasury = Math.min(owner.treasury, rng.int(250, 750));
   if (operatingTreasury < MERCHANT_CARAVAN_MIN_OPERATING_TREASURY) return null;
@@ -5591,9 +5632,9 @@ const createReplacementMerchantCaravan = (
   ) {
     return null;
   }
-  decreaseStockpile(owner, MERCHANT_CARAVAN_EQUINES_RESOURCE, equineUnitsNeeded);
+  decreaseStockpile(owner, origin.id, MERCHANT_CARAVAN_EQUINES_RESOURCE, equineUnitsNeeded);
   if (lightCartCount > 0) {
-    decreaseStockpile(owner, MERCHANT_CARAVAN_CART_RESOURCE, lightCartCount);
+    decreaseStockpile(owner, origin.id, MERCHANT_CARAVAN_CART_RESOURCE, lightCartCount);
   }
   owner.treasury -= operatingTreasury;
   buyCaravanRationsAtLocalMarkets(world, caravan, [origin], events);
@@ -6028,7 +6069,9 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
         // spending the caravan into starvation.
         maxSpendCoin: Math.max(0, c.treasury - missingRationKg),
         reserveTripOperatingCost: true,
-        ...(originAvailability !== undefined ? { originAvailableQuantity: originAvailability } : {}),
+        ...(originAvailability !== undefined
+          ? { originAvailableQuantity: originAvailability }
+          : {}),
         destinationBidDepth,
       },
       minNetProfitCoin: CARAVAN_MIN_NET_PROFIT_COIN,
@@ -6142,8 +6185,17 @@ const refundCaravanToOwner = (world: WorldState, c: Caravan): void => {
   if (owner === undefined) return;
   owner.treasury += Math.max(0, c.treasury);
   c.treasury = 0;
+  // Cargo + livestock + carts refund to the owner's slice at their home
+  // settlement (per docs/15 §C30 — inventory must land at a specific
+  // settlement). Off-map owners with no homeSettlement just lose the
+  // physical assets; their treasury is already refunded above.
+  const refundSettlement = owner.homeSettlement;
+  if (refundSettlement === undefined) {
+    c.cargo.clear();
+    return;
+  }
   for (const [resource, qty] of c.cargo) {
-    if (qty > 0) increaseStockpile(owner, resource, qty);
+    if (qty > 0) increaseStockpile(owner, refundSettlement, resource, qty);
   }
   c.cargo.clear();
   const equineResource = resourceId('livestock.equines');
@@ -6157,14 +6209,14 @@ const refundCaravanToOwner = (world: WorldState, c: Caravan): void => {
     // ~6 pack animals per herd unit (matches procgen's
     // transport-capital convention).
     const herdUnits = equineUnits / 6;
-    if (herdUnits > 0) increaseStockpile(owner, equineResource, herdUnits);
+    if (herdUnits > 0) increaseStockpile(owner, refundSettlement, equineResource, herdUnits);
   }
   let cartUnits = 0;
   for (const k of Object.keys(c.vehicles) as (keyof typeof c.vehicles)[]) {
     const n = c.vehicles[k] ?? 0;
     if (n > 0) cartUnits += n;
   }
-  if (cartUnits > 0) increaseStockpile(owner, cartResource, cartUnits);
+  if (cartUnits > 0) increaseStockpile(owner, refundSettlement, cartResource, cartUnits);
 };
 
 // --- Bandit phase -----------------------------------------------------------
@@ -6486,7 +6538,7 @@ const aggregateSettlementStockpile = (
   for (const oId of settlement.stockpileOwners) {
     const a = world.actors.get(oId);
     if (a === undefined) continue;
-    for (const [res, qty] of a.stockpile) {
+    for (const [res, qty] of actorStockEntriesAt(a, settlement.id)) {
       out.set(res, (out.get(res) ?? 0) + qty);
     }
   }
@@ -6498,19 +6550,19 @@ const drainSettlementStockpile = (
   settlement: Settlement,
   loot: ReadonlyMap<ResourceId, Quantity>,
 ): void => {
-  // Drain each resource proportionally across stockpile owners.
+  // Drain each resource proportionally across stockpile owners' slices at
+  // THIS settlement (per docs/15 §C30 — loot comes from goods physically
+  // here, not from the owner's holdings elsewhere).
   for (const [res, qty] of loot) {
     let remaining = qty;
     for (const oId of settlement.stockpileOwners) {
       if (remaining <= 1e-9) break;
       const a = world.actors.get(oId);
       if (a === undefined) continue;
-      const have = a.stockpile.get(res) ?? 0;
+      const have = getStockAt(a, settlement.id, res);
       if (have <= 0) continue;
       const take = Math.min(have, remaining);
-      const newQty = have - take;
-      if (newQty > 1e-9) a.stockpile.set(res, newQty);
-      else a.stockpile.delete(res);
+      removeStockAt(a, settlement.id, res, take);
       remaining -= take;
     }
   }
@@ -6744,7 +6796,7 @@ const executeFenceTransaction = (
     const newCampQty = have - moveQty;
     if (newCampQty > 1e-9) camp.loot.set(t.res, newCampQty);
     else camp.loot.delete(t.res);
-    fence.stockpile.set(t.res, (fence.stockpile.get(t.res) ?? 0) + moveQty);
+    addStockAt(fence, through.id, t.res, moveQty);
   }
   fence.treasury -= coinPaid;
   camp.treasury += coinPaid;
@@ -7481,10 +7533,7 @@ const constructionPhase = (
     let masonBudget = settlement.jobAllocations.get(MASON_JOB) ?? 0;
     let carpenterBudget = settlement.jobAllocations.get(CARPENTER_JOB) ?? 0;
     if (shouldCapByClass) {
-      masonBudget = Math.min(
-        masonBudget,
-        allocatedWorkersForJob(laborClassContext, MASON_JOB),
-      );
+      masonBudget = Math.min(masonBudget, allocatedWorkersForJob(laborClassContext, MASON_JOB));
       carpenterBudget = Math.min(
         carpenterBudget,
         allocatedWorkersForJob(laborClassContext, CARPENTER_JOB),
@@ -7621,14 +7670,11 @@ const investmentPhase = (world: WorldState, _today: Day, events: TickEvent[]): v
 
     const def = getBuilding(best.buildingId);
 
-    // Pay construction: drain inputs from owner's stockpile. We've already
-    // confirmed sufficiency in scoreInvestmentCandidates; do it
-    // unconditionally here.
+    // Pay construction: drain inputs from owner's slice at this settlement
+    // (per docs/15 §C30). We've already confirmed sufficiency in
+    // scoreInvestmentCandidates; do it unconditionally here.
     for (const [resId, qty] of def.constructionCost) {
-      const have = owner.stockpile.get(resId) ?? 0;
-      const remaining = have - qty;
-      if (remaining > 1e-9) owner.stockpile.set(resId, remaining);
-      else owner.stockpile.delete(resId);
+      removeStockAt(owner, settlement.id, resId, qty);
     }
 
     // Per docs/08 §"Construction is heavy" + docs/15 §C8: don't add the
@@ -7935,12 +7981,13 @@ const scoreInvestmentCandidates = (
     const profitPerDay = revenue - cost;
     if (profitPerDay <= 0) continue;
 
-    // Construction cost in coin (using local prices).
+    // Construction cost in coin (using local prices). Per docs/15 §C30
+    // construction materials must be at THIS settlement to be usable.
     const def = getBuilding(recipe.building);
     let coinCost = 0;
     let payable = true;
     for (const [resId, qty] of def.constructionCost) {
-      const have = owner.stockpile.get(resId) ?? 0;
+      const have = getStockAt(owner, settlement.id, resId);
       if (have < qty) {
         payable = false;
         break;
@@ -8039,7 +8086,9 @@ const localStockForResource = (
 ): number => {
   let total = 0;
   for (const ownerId of settlement.stockpileOwners) {
-    total += world.actors.get(ownerId)?.stockpile.get(resource) ?? 0;
+    const a = world.actors.get(ownerId);
+    if (a === undefined) continue;
+    total += getStockAt(a, settlement.id, resource);
   }
   return total;
 };
@@ -8064,7 +8113,7 @@ const investmentResourceGate = (
 
   for (const ore of recipeOreInputs(recipe)) {
     const needed = recipe.inputs.get(ore) ?? 0;
-    const ownerHasOre = (owner.stockpile.get(ore) ?? 0) >= needed;
+    const ownerHasOre = getStockAt(owner, settlement.id, ore) >= needed;
     const localHasOre = localStockForResource(world, settlement, ore) >= needed;
     const mineCanFeedOre = settlementHasDepositBackedMine(world, settlement, ore);
     if (!ownerHasOre && !localHasOre && !mineCanFeedOre) return null;

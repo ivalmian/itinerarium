@@ -9,12 +9,16 @@
  * Actors.
  *
  * This module owns the ledger surface: an Actor holds a stockpile
- * (a Map<ResourceId, Quantity>) and a treasury. Reputation,
- * succession, faction membership, and policy are layered on top
- * (factions in `faction.ts`; reputation in T-future).
+ * (a `Map<SettlementId, Map<ResourceId, Quantity>>` per docs/15 §C30
+ * — inventory is keyed by the settlement where it physically lives,
+ * so the same actor can hold goods at multiple settlements but the
+ * pools are distinct) and a treasury. Reputation, succession,
+ * faction membership, and policy are layered on top (factions in
+ * `faction.ts`; reputation in T-future).
  *
  * Design references:
  *   docs/11-politics-and-ownership.md
+ *   docs/15-v1-5-cleanups.md §C30
  */
 
 import type { ActorId, Coin, Quantity, ResourceId, SettlementId } from '../types.js';
@@ -87,8 +91,20 @@ export interface Actor {
    * settlement) and tracked elsewhere.
    */
   readonly homeSettlement?: SettlementId;
-  /** Resource holdings. Zeroed entries are pruned. */
-  readonly stockpile: Map<ResourceId, Quantity>;
+  /**
+   * Per docs/15 §C30: actor inventory is keyed by the settlement where it
+   * physically lives. The outer key is a SettlementId; the inner Map holds
+   * resource quantities. Empty inner maps are pruned (an actor with no
+   * slice at S has `stockpile.has(S) === false`). Zero entries inside
+   * each inner map are also pruned by the helpers below.
+   *
+   * For actors with `homeSettlement` defined this map will typically have
+   * a single key. Actors that legitimately hold inventory at multiple
+   * settlements (e.g., off-map factor consignments, future merchant
+   * warehouses) have multiple keys; the same modius is never counted
+   * twice because each key holds its own physical slice.
+   */
+  readonly stockpile: Map<SettlementId, Map<ResourceId, Quantity>>;
   /** Liquid coin. Mutable by design; ledger movements are at the call site. */
   treasury: Coin;
 }
@@ -115,8 +131,46 @@ export const createActor = (input: CreateActorInput): Actor => {
   };
 };
 
-export const getStockpile = (actor: Actor, resource: ResourceId): Quantity => {
-  return actor.stockpile.get(resource) ?? 0;
+// --- Per-settlement stockpile accessors (docs/15 §C30) ---------------------
+
+/** Quantity an actor holds of `resource` at `settlement`. 0 if absent. */
+export const getStockAt = (
+  actor: Actor,
+  settlement: SettlementId,
+  resource: ResourceId,
+): Quantity => {
+  return actor.stockpile.get(settlement)?.get(resource) ?? 0;
+};
+
+/**
+ * Sum of an actor's holdings of `resource` across every settlement they
+ * keep inventory at. Intended for debug / UI / invariants — production
+ * code should normally use `getStockAt` with an explicit settlement.
+ */
+export const actorTotalStock = (actor: Actor, resource: ResourceId): Quantity => {
+  let total = 0;
+  for (const slice of actor.stockpile.values()) {
+    total += slice.get(resource) ?? 0;
+  }
+  return total;
+};
+
+/** Iterate the settlements at which the actor currently keeps any inventory. */
+export const actorSettlementsWithStock = function* (actor: Actor): IterableIterator<SettlementId> {
+  for (const s of actor.stockpile.keys()) yield s;
+};
+
+/**
+ * Iterate (resource, quantity) at a single settlement slice. Yields nothing
+ * if the actor has no inventory at that settlement.
+ */
+export const actorStockEntriesAt = function* (
+  actor: Actor,
+  settlement: SettlementId,
+): IterableIterator<readonly [ResourceId, Quantity]> {
+  const slice = actor.stockpile.get(settlement);
+  if (slice === undefined) return;
+  for (const entry of slice) yield entry;
 };
 
 const requirePositiveInteger = (qty: Quantity, label: string): void => {
@@ -128,24 +182,80 @@ const requirePositiveInteger = (qty: Quantity, label: string): void => {
   }
 };
 
-export const addToStockpile = (actor: Actor, resource: ResourceId, qty: Quantity): void => {
+/**
+ * Add to an actor's stockpile at `settlement`. Use this in seed / test
+ * code where the qty is an integer; sim code that mutates fractional
+ * quantities should use `addStockAt` (no integer check).
+ */
+export const addToStockpile = (
+  actor: Actor,
+  settlement: SettlementId,
+  resource: ResourceId,
+  qty: Quantity,
+): void => {
   requirePositiveInteger(qty, 'addToStockpile qty');
-  const current = actor.stockpile.get(resource) ?? 0;
-  actor.stockpile.set(resource, current + qty);
+  addStockAt(actor, settlement, resource, qty);
 };
 
-export const removeFromStockpile = (actor: Actor, resource: ResourceId, qty: Quantity): void => {
+/** Add to an actor's stockpile at `settlement`. Tolerates fractional qty. */
+export const addStockAt = (
+  actor: Actor,
+  settlement: SettlementId,
+  resource: ResourceId,
+  qty: Quantity,
+): void => {
+  if (qty <= 0) return;
+  let slice = actor.stockpile.get(settlement);
+  if (slice === undefined) {
+    slice = new Map();
+    actor.stockpile.set(settlement, slice);
+  }
+  slice.set(resource, (slice.get(resource) ?? 0) + qty);
+};
+
+/**
+ * Remove `qty` from an actor's stockpile at `settlement`. Asserts that
+ * the actor actually has enough; throws otherwise so the caller catches
+ * the bug rather than silently going negative.
+ */
+export const removeFromStockpile = (
+  actor: Actor,
+  settlement: SettlementId,
+  resource: ResourceId,
+  qty: Quantity,
+): void => {
   requirePositiveInteger(qty, 'removeFromStockpile qty');
-  const current = actor.stockpile.get(resource) ?? 0;
+  const slice = actor.stockpile.get(settlement);
+  const current = slice?.get(resource) ?? 0;
   if (current < qty) {
     throw new Error(
-      `Cannot remove ${qty} of ${String(resource)} from actor ${String(actor.id)}: only ${current} available`,
+      `Cannot remove ${qty} of ${String(resource)} from actor ${String(actor.id)} at ${String(settlement)}: only ${current} available`,
     );
   }
+  removeStockAt(actor, settlement, resource, qty);
+};
+
+/**
+ * Remove up to `qty` from an actor's stockpile at `settlement`. Clamps
+ * fractional-precision drift to zero; if the resulting slice is empty
+ * the inner map is pruned, and if the settlement key has no resources
+ * left the outer key is also pruned.
+ */
+export const removeStockAt = (
+  actor: Actor,
+  settlement: SettlementId,
+  resource: ResourceId,
+  qty: Quantity,
+): void => {
+  if (qty <= 0) return;
+  const slice = actor.stockpile.get(settlement);
+  if (slice === undefined) return;
+  const current = slice.get(resource) ?? 0;
   const remaining = current - qty;
-  if (remaining === 0) {
-    actor.stockpile.delete(resource);
+  if (remaining <= 1e-9) {
+    slice.delete(resource);
+    if (slice.size === 0) actor.stockpile.delete(settlement);
   } else {
-    actor.stockpile.set(resource, remaining);
+    slice.set(resource, remaining);
   }
 };
