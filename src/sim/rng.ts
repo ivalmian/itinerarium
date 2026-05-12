@@ -53,7 +53,7 @@ const mixKey = (seed: string, key: number[]): string => {
 
 class SeedrandomRng implements Rng {
   readonly #seed: string;
-  readonly #s: number[] = [];
+  readonly #s = new Uint8Array(RNG_WIDTH);
   #i = 0;
   #j = 0;
 
@@ -138,12 +138,51 @@ class SeedrandomRng implements Rng {
     if (p >= 1) return n;
     const trials = Math.floor(n);
     if (trials <= 0) return 0;
+    let i = this.#i;
+    let j = this.#j;
+    const s = this.#s;
     let remaining = trials;
     let count = 0;
     while (remaining > 0) {
       remaining--;
-      if (this.next() < p) count++;
+      let n = 0;
+      let chunks = RNG_CHUNKS;
+      while (chunks > 0) {
+        chunks--;
+        const t = s[(i = RNG_MASK & (i + 1))] as number;
+        j = RNG_MASK & (j + t);
+        const sj = s[j] as number;
+        s[i] = sj;
+        s[j] = t;
+        n = n * RNG_WIDTH + (s[RNG_MASK & (sj + t)] as number);
+      }
+      let d = RNG_START_DENOM * RNG_WIDTH;
+      let t = s[(i = RNG_MASK & (i + 1))] as number;
+      j = RNG_MASK & (j + t);
+      let sj = s[j] as number;
+      s[i] = sj;
+      s[j] = t;
+      let x = s[RNG_MASK & (sj + t)] as number;
+      n *= RNG_WIDTH;
+      while (n < RNG_SIGNIFICANCE) {
+        n = (n + x) * RNG_WIDTH;
+        d *= RNG_WIDTH;
+        t = s[(i = RNG_MASK & (i + 1))] as number;
+        j = RNG_MASK & (j + t);
+        sj = s[j] as number;
+        s[i] = sj;
+        s[j] = t;
+        x = s[RNG_MASK & (sj + t)] as number;
+      }
+      while (n >= RNG_OVERFLOW) {
+        n /= 2;
+        d /= 2;
+        x >>>= 1;
+      }
+      if (n + x < p * d) count++;
     }
+    this.#i = i;
+    this.#j = j;
     return count;
   }
 

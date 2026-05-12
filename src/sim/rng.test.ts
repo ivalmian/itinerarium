@@ -104,6 +104,24 @@ describe('rng', () => {
     });
   });
 
+  describe('countBelow', () => {
+    it('matches repeated next() rolls and leaves the stream aligned', () => {
+      const repeated = createRng('count-below-exact');
+      const batched = createRng('count-below-exact');
+      const trials = 400;
+      const p = 0.37;
+      let expected = 0;
+      for (let i = 0; i < trials; i++) {
+        if (repeated.next() < p) expected++;
+      }
+
+      expect(batched.countBelow(trials, p)).toBe(expected);
+      const repeatedTail = Array.from({ length: 30 }, () => repeated.next());
+      const batchedTail = Array.from({ length: 30 }, () => batched.next());
+      expect(batchedTail).toEqual(repeatedTail);
+    });
+  });
+
   describe('pick', () => {
     it('returns one of the input items', () => {
       const r = createRng('pick');

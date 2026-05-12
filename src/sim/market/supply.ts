@@ -70,6 +70,14 @@ export interface SupplySchedule {
   breakpoints(): readonly SupplyBreakpoint[];
 }
 
+interface MutableSupplySource {
+  id: string;
+  ownerActor: ActorId;
+  reservationPrice: number;
+  availableToSell: number;
+  quantityAt(price: number): number;
+}
+
 let autoId = 0;
 const nextId = (): string => `supply#${++autoId}`;
 
@@ -85,47 +93,81 @@ const computeSpoilagePressure = (
   return Math.max(0, Math.min(1, fraction));
 };
 
-export const ownerSupply = (opts: OwnerSupplyOpts): SupplySource => {
-  const id = opts.id ?? nextId();
-  const availableToSell = Math.max(0, opts.stockpile - opts.reservedForOwnUse);
-  const raw = Math.max(opts.productionCost, opts.expectedFuturePrice);
-  const spoilagePressure = computeSpoilagePressure(
-    opts.spoilageDaysRemaining,
-    opts.storageHoldingDays,
-  );
-  const divisor = 1 + Math.max(0, opts.ownerUrgencyFactor) + spoilagePressure;
-  const urgencyAdjusted = divisor > 0 ? raw / divisor : raw;
-  const floor = Math.max(0, opts.productionCost, opts.minimumReservationPrice ?? 0);
-  const reservationPrice = Math.max(floor, urgencyAdjusted);
-  return {
-    id,
-    ownerActor: opts.ownerActor,
-    reservationPrice,
-    availableToSell,
-    quantityAt(price: number): number {
-      if (availableToSell <= 0) return 0;
-      return price >= reservationPrice ? availableToSell : 0;
-    },
-  };
+const supplySourceQuantityAt = function (this: SupplySource, price: number): number {
+  if (this.availableToSell <= 0) return 0;
+  return price >= this.reservationPrice ? this.availableToSell : 0;
 };
 
-export const aggregateSupply = (sources: readonly SupplySource[]): SupplySchedule => {
-  return {
-    sources,
-    totalAt(price: number): number {
-      let sum = 0;
-      for (const s of sources) sum += s.quantityAt(price);
-      return sum;
-    },
-    breakpoints(): readonly SupplyBreakpoint[] {
-      const bps: SupplyBreakpoint[] = [];
-      for (const s of sources) {
-        if (s.availableToSell > 0) {
-          bps.push({ price: s.reservationPrice, quantityChange: s.availableToSell });
-        }
-      }
-      bps.sort((a, b) => a.price - b.price);
-      return bps;
-    },
-  };
+export const ownerSupply = (opts: OwnerSupplyOpts): SupplySource => {
+  return ownerSupplyDirect(
+    opts.id ?? nextId(),
+    opts.ownerActor,
+    opts.stockpile,
+    opts.reservedForOwnUse,
+    opts.productionCost,
+    opts.minimumReservationPrice,
+    opts.expectedFuturePrice,
+    opts.spoilageDaysRemaining,
+    opts.ownerUrgencyFactor,
+    opts.storageHoldingDays,
+  );
 };
+
+export const ownerSupplyDirect = (
+  id: string,
+  ownerActor: ActorId,
+  stockpile: number,
+  reservedForOwnUse: number,
+  productionCost: number,
+  minimumReservationPrice: number | undefined,
+  expectedFuturePrice: number,
+  spoilageDaysRemaining: number | undefined,
+  ownerUrgencyFactor: number,
+  storageHoldingDays: number,
+): SupplySource => {
+  const availableToSell = Math.max(0, stockpile - reservedForOwnUse);
+  const raw = Math.max(productionCost, expectedFuturePrice);
+  const spoilagePressure = computeSpoilagePressure(
+    spoilageDaysRemaining,
+    storageHoldingDays,
+  );
+  const divisor = 1 + Math.max(0, ownerUrgencyFactor) + spoilagePressure;
+  const urgencyAdjusted = divisor > 0 ? raw / divisor : raw;
+  const floor = Math.max(0, productionCost, minimumReservationPrice ?? 0);
+  const source: MutableSupplySource = {
+    id,
+    ownerActor,
+    reservationPrice: Math.max(floor, urgencyAdjusted),
+    availableToSell,
+    quantityAt: supplySourceQuantityAt,
+  };
+  return source;
+};
+
+export const quantityAtSupplySource = (source: SupplySource, price: number): number => {
+  if (source.availableToSell <= 0) return 0;
+  return price >= source.reservationPrice ? source.availableToSell : 0;
+};
+
+const supplyTotalAt = function (this: SupplySchedule, price: number): number {
+  let sum = 0;
+  for (const s of this.sources) sum += quantityAtSupplySource(s, price);
+  return sum;
+};
+
+const supplyBreakpoints = function (this: SupplySchedule): readonly SupplyBreakpoint[] {
+  const bps: SupplyBreakpoint[] = [];
+  for (const s of this.sources) {
+    if (s.availableToSell > 0) {
+      bps.push({ price: s.reservationPrice, quantityChange: s.availableToSell });
+    }
+  }
+  bps.sort((a, b) => a.price - b.price);
+  return bps;
+};
+
+export const aggregateSupply = (sources: readonly SupplySource[]): SupplySchedule => ({
+  sources,
+  totalAt: supplyTotalAt,
+  breakpoints: supplyBreakpoints,
+});

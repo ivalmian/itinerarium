@@ -88,18 +88,6 @@ const dailyMortalityFor = (key: CohortKey, rates: VitalRates): number => {
   return annualToDaily(annualP);
 };
 
-/**
- * Sample a binomial(n, p) outcome by counting Bernoulli trials.
- * Cheap and deterministic at our cohort sizes (a settlement
- * cohort is at most a few thousand people).
- *
- * For very large n we trade exactness for speed via a normal
- * approximation, but at v1 cohort sizes the loop is fine.
- */
-const sampleBinomial = (n: number, p: number, rng: Rng): number => {
-  return rng.countBelow(n, p);
-};
-
 const totalPopulation = (pool: PopulationPool): number => pool.total();
 
 /**
@@ -129,7 +117,7 @@ const allocateNewbornsByClass = (
     const isLast = share === remainingFertile;
     const allotted = isLast
       ? remainingNewborns
-      : sampleBinomial(remainingNewborns, share / remainingFertile, rng);
+      : rng.countBelow(remainingNewborns, share / remainingFertile);
     if (allotted > 0) out.set(cls, allotted);
     remainingNewborns -= allotted;
     remainingFertile -= share;
@@ -146,7 +134,7 @@ export const tickDaily = (pool: PopulationPool, rates: VitalRates, rng: Rng): vo
     if (count <= 0) return;
     const dailyP = dailyMortalityFor(key, rates);
     if (dailyP <= 0) return;
-    const deaths = sampleBinomial(count, dailyP, rng);
+    const deaths = rng.countBelow(count, dailyP);
     if (deaths > 0) {
       pool.set(key, count - deaths);
     }
@@ -158,7 +146,7 @@ export const tickDaily = (pool: PopulationPool, rates: VitalRates, rng: Rng): vo
   if (totalAfterDeaths === 0 || fertileFemaleTotal === 0) return;
 
   const dailyBirthP = annualPer1000ToDaily(rates.crudeBirthRatePer1000PerYear);
-  const newborns = sampleBinomial(totalAfterDeaths, dailyBirthP, rng);
+  const newborns = rng.countBelow(totalAfterDeaths, dailyBirthP);
   if (newborns === 0) return;
 
   const newbornsByClass = allocateNewbornsByClass(pool, newborns, fertileFemaleTotal, rng);

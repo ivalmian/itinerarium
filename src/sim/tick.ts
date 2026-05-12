@@ -197,6 +197,12 @@ import type { WorldState } from '../procgen/seed.js';
 export interface TickInputs {
   readonly world: WorldState;
   readonly rng: Rng;
+  /**
+   * When false, tick suppresses returned diagnostic events while retaining
+   * the small internal subset needed by same-tick systems such as worker
+   * reallocation. Simulation state and stats are unchanged. Defaults to true.
+   */
+  readonly collectEvents?: boolean;
 }
 
 export type TickEvent =
@@ -518,6 +524,33 @@ export interface TickStats {
   epidemicsTriggered: number;
 }
 
+class TickEventBuffer implements Iterable<TickEvent> {
+  private readonly collected: TickEvent[] = [];
+  private readonly internalLaborEvents: TickEvent[] = [];
+
+  constructor(private readonly collectAll: boolean) {}
+
+  push(event: TickEvent): number {
+    if (this.collectAll) {
+      this.collected.push(event);
+      return this.collected.length;
+    }
+    if (event.type === 'recipe_blocked') {
+      this.internalLaborEvents.push(event);
+      return this.internalLaborEvents.length;
+    }
+    return 0;
+  }
+
+  [Symbol.iterator](): Iterator<TickEvent> {
+    return (this.collectAll ? this.collected : this.internalLaborEvents)[Symbol.iterator]();
+  }
+
+  resultEvents(): readonly TickEvent[] {
+    return this.collectAll ? this.collected : [];
+  }
+}
+
 /** One-day reputation half-life: 90 days. Tunable per docs/13. */
 const REPUTATION_HALF_LIFE_DAYS = 90;
 
@@ -534,7 +567,8 @@ const COIN_RESOURCE = resourceId('goods.coin');
  */
 export const tick = (inputs: TickInputs): TickResult => {
   const { world, rng } = inputs;
-  const events: TickEvent[] = [];
+  const eventBuffer = new TickEventBuffer(inputs.collectEvents !== false);
+  const events = eventBuffer as unknown as TickEvent[];
   const stats: TickStats = {
     recipeRuns: 0,
     marketsCleared: 0,
@@ -670,7 +704,7 @@ export const tick = (inputs: TickInputs): TickResult => {
   // matched the season they ran in.
   world.day = today + 1;
 
-  return { world, events, stats };
+  return { world, events: eventBuffer.resultEvents(), stats };
 };
 
 // --- Phase 1: Production ----------------------------------------------------
@@ -2395,6 +2429,7 @@ const roadMaintenancePhase = (world: WorldState, events: TickEvent[]): void => {
         tile.road = 'dirt';
         tile.roadWear = 100; // start at the upgrade threshold so daily decay doesn't reclaim it instantly
         tile.romanQuartersUnmaintained = 0;
+        world.grid.markTileChanged(h);
         events.push({ type: 'road_unmaintained', hex: { q: h.q, r: h.r } });
       }
     }
@@ -3161,10 +3196,12 @@ const trailWearTickPhase = (world: WorldState, events: TickEvent[]): void => {
       const t = tile.terrain;
       if (t === 'lake' || t === 'river' || t === 'mountains') continue;
       tile.road = 'dirt';
+      world.grid.markTileChanged(h);
       events.push({ type: 'road_upgraded', hex: { q: h.q, r: h.r }, toGrade: 'dirt' });
     } else if (tile.road === 'dirt' && wear < DIRT_DOWNGRADE_THRESHOLD) {
       tile.road = 'none';
       tile.roadWear = 0;
+      world.grid.markTileChanged(h);
       events.push({ type: 'road_downgraded', hex: { q: h.q, r: h.r }, fromGrade: 'dirt' });
     }
   }

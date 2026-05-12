@@ -33,6 +33,10 @@ export interface DemandSource {
   quantityAt(price: number): number;
   readonly peakQuantity: number;
   readonly maxWillingnessToPay: number;
+  /** Internal fast-path parameter: wealth/budget backing standard curves. */
+  readonly curveBudget?: number;
+  /** Internal fast-path parameter: exponential scale for comfort curves. */
+  readonly curveScale?: number;
   /** Concrete actor whose treasury/stockpile should receive purchases. */
   readonly buyerActor?: ActorId;
   /** Consumer purchases are consumed immediately; producer inputs are stored. */
@@ -51,6 +55,18 @@ export interface DemandSchedule {
   breakpoints(): readonly DemandBreakpoint[];
 }
 
+interface MutableDemandSource {
+  id: string;
+  curve: DemandCurveKind;
+  quantityAt(price: number): number;
+  peakQuantity: number;
+  maxWillingnessToPay: number;
+  curveBudget?: number;
+  curveScale?: number;
+  buyerActor?: ActorId;
+  buyerDisposition?: 'consume' | 'stockpile';
+}
+
 let autoId = 0;
 const nextId = (prefix: string): string => `${prefix}#${++autoId}`;
 
@@ -64,27 +80,48 @@ export interface SubsistenceOpts {
   readonly buyerDisposition?: 'consume' | 'stockpile';
 }
 
+const subsistenceQuantityAt = function (this: DemandSource, price: number): number {
+  const need = this.peakQuantity;
+  if (need <= 0) return 0;
+  if (price <= 0) return need;
+  const wealth = this.curveBudget ?? 0;
+  const threshold = wealth / need; // p above this point causes spending cap.
+  if (price <= threshold) return need;
+  return wealth / price;
+};
+
 export const subsistenceDemand = (opts: SubsistenceOpts): DemandSource => {
-  const need = Math.max(0, opts.needPerDay);
-  const wealth = Math.max(0, opts.segmentWealth);
-  const id = opts.id ?? nextId('subsistence');
-  return {
+  return subsistenceDemandDirect(
+    opts.id ?? nextId('subsistence'),
+    opts.needPerDay,
+    opts.segmentWealth,
+    opts.buyerActor,
+    opts.buyerDisposition,
+  );
+};
+
+export const subsistenceDemandDirect = (
+  id: string,
+  needPerDay: number,
+  segmentWealth: number,
+  buyerActor?: ActorId,
+  buyerDisposition?: 'consume' | 'stockpile',
+): DemandSource => {
+  const need = Math.max(0, needPerDay);
+  const wealth = Math.max(0, segmentWealth);
+  const source: MutableDemandSource = {
     id,
     curve: 'subsistence',
     peakQuantity: need,
-    ...(opts.buyerActor !== undefined ? { buyerActor: opts.buyerActor } : {}),
-    ...(opts.buyerDisposition !== undefined ? { buyerDisposition: opts.buyerDisposition } : {}),
+    curveBudget: wealth,
     // Households will starve before they refuse to pay; the curve is
     // hyperbolic above the wealth/need threshold, never reaching zero.
     maxWillingnessToPay: Number.POSITIVE_INFINITY,
-    quantityAt(price: number): number {
-      if (need <= 0) return 0;
-      if (price <= 0) return need;
-      const threshold = wealth / need; // p above this point causes spending cap.
-      if (price <= threshold) return need;
-      return wealth / price;
-    },
+    quantityAt: subsistenceQuantityAt,
   };
+  if (buyerActor !== undefined) source.buyerActor = buyerActor;
+  if (buyerDisposition !== undefined) source.buyerDisposition = buyerDisposition;
+  return source;
 };
 
 // --- Comfort ----------------------------------------------------------------
@@ -105,30 +142,54 @@ export interface ComfortOpts {
   readonly cutoffMultiplier?: number;
 }
 
+const comfortQuantityAt = function (this: DemandSource, price: number): number {
+  const want = this.peakQuantity;
+  if (want <= 0) return 0;
+  if (price <= 0) return want;
+  const budget = this.curveBudget ?? 0;
+  if (budget <= 0) return 0;
+  const x = price / budget;
+  return want * Math.exp(-x * (this.curveScale ?? 1));
+};
+
 export const comfortDemand = (opts: ComfortOpts): DemandSource => {
-  const want = Math.max(0, opts.wantQuantity);
-  const budget = Math.max(0, opts.budget);
-  const scale = opts.decayScale ?? 1;
-  const cutoff = opts.cutoffMultiplier ?? 20;
-  const id = opts.id ?? nextId('comfort');
+  return comfortDemandDirect(
+    opts.id ?? nextId('comfort'),
+    opts.wantQuantity,
+    opts.budget,
+    opts.decayScale ?? 1,
+    opts.cutoffMultiplier ?? 20,
+    opts.buyerActor,
+    opts.buyerDisposition,
+  );
+};
+
+export const comfortDemandDirect = (
+  id: string,
+  wantQuantity: number,
+  budget: number,
+  decayScale = 1,
+  cutoffMultiplier = 20,
+  buyerActor?: ActorId,
+  buyerDisposition?: 'consume' | 'stockpile',
+): DemandSource => {
+  const want = Math.max(0, wantQuantity);
+  const safeBudget = Math.max(0, budget);
   // For zero budget, treat the curve as a vanishing want — any positive
   // price knocks demand out (consumers have nothing to spend on this).
-  const maxWtp = budget > 0 ? budget * cutoff : 0;
-  return {
+  const maxWtp = safeBudget > 0 ? safeBudget * cutoffMultiplier : 0;
+  const source: MutableDemandSource = {
     id,
     curve: 'comfort',
     peakQuantity: want,
     maxWillingnessToPay: maxWtp,
-    ...(opts.buyerActor !== undefined ? { buyerActor: opts.buyerActor } : {}),
-    ...(opts.buyerDisposition !== undefined ? { buyerDisposition: opts.buyerDisposition } : {}),
-    quantityAt(price: number): number {
-      if (want <= 0) return 0;
-      if (price <= 0) return want;
-      if (budget <= 0) return 0;
-      const x = price / budget;
-      return want * Math.exp(-x * scale);
-    },
+    curveBudget: safeBudget,
+    curveScale: decayScale,
+    quantityAt: comfortQuantityAt,
   };
+  if (buyerActor !== undefined) source.buyerActor = buyerActor;
+  if (buyerDisposition !== undefined) source.buyerDisposition = buyerDisposition;
+  return source;
 };
 
 // --- Status -----------------------------------------------------------------
@@ -147,26 +208,46 @@ export interface StatusOpts {
   readonly veryHighThreshold: number;
 }
 
+const stepQuantityAt = function (this: DemandSource, price: number): number {
+  if (this.peakQuantity <= 0) return 0;
+  return price <= this.maxWillingnessToPay ? this.peakQuantity : 0;
+};
+
 export const statusDemand = (opts: StatusOpts): DemandSource => {
-  const want = Math.max(0, opts.wantQuantity);
-  const wealth = Math.max(0, opts.segmentWealth);
-  const threshold = Math.max(0, opts.veryHighThreshold);
-  const id = opts.id ?? nextId('status');
+  return statusDemandDirect(
+    opts.id ?? nextId('status'),
+    opts.wantQuantity,
+    opts.segmentWealth,
+    opts.veryHighThreshold,
+    opts.buyerActor,
+    opts.buyerDisposition,
+  );
+};
+
+export const statusDemandDirect = (
+  id: string,
+  wantQuantity: number,
+  segmentWealth: number,
+  veryHighThreshold: number,
+  buyerActor?: ActorId,
+  buyerDisposition?: 'consume' | 'stockpile',
+): DemandSource => {
+  const want = Math.max(0, wantQuantity);
+  const wealth = Math.max(0, segmentWealth);
+  const threshold = Math.max(0, veryHighThreshold);
   // Effective want clipped by what total wealth could afford even one unit;
   // an entirely cashless patrician cannot bid.
   const effectiveWant = wealth > 0 || want === 0 ? want : 0;
-  return {
+  const source: MutableDemandSource = {
     id,
     curve: 'status',
     peakQuantity: effectiveWant,
     maxWillingnessToPay: threshold,
-    ...(opts.buyerActor !== undefined ? { buyerActor: opts.buyerActor } : {}),
-    ...(opts.buyerDisposition !== undefined ? { buyerDisposition: opts.buyerDisposition } : {}),
-    quantityAt(price: number): number {
-      if (effectiveWant <= 0) return 0;
-      return price <= threshold ? effectiveWant : 0;
-    },
+    quantityAt: stepQuantityAt,
   };
+  if (buyerActor !== undefined) source.buyerActor = buyerActor;
+  if (buyerDisposition !== undefined) source.buyerDisposition = buyerDisposition;
+  return source;
 };
 
 // --- Derived input ----------------------------------------------------------
@@ -183,52 +264,100 @@ export interface DerivedInputOpts {
 }
 
 export const derivedInputDemand = (opts: DerivedInputOpts): DemandSource => {
-  const breakEven =
-    opts.expectedOutputRevenuePerInputUnit - opts.otherCostsPerInputUnit - opts.margin;
-  const capacity = Math.max(0, opts.productionCapacity);
-  const inputPerOutput = Math.max(0, opts.inputPerOutput);
-  const quantityDemanded = breakEven > 0 ? capacity * inputPerOutput : 0;
-  const id = opts.id ?? nextId('derived');
+  return derivedInputDemandDirect(
+    opts.id ?? nextId('derived'),
+    opts.expectedOutputRevenuePerInputUnit,
+    opts.otherCostsPerInputUnit,
+    opts.margin,
+    opts.productionCapacity,
+    opts.inputPerOutput,
+    opts.buyerActor,
+    opts.buyerDisposition,
+  );
+};
+
+export const derivedInputDemandDirect = (
+  id: string,
+  expectedOutputRevenuePerInputUnit: number,
+  otherCostsPerInputUnit: number,
+  margin: number,
+  productionCapacity: number,
+  inputPerOutput: number,
+  buyerActor?: ActorId,
+  buyerDisposition?: 'consume' | 'stockpile',
+): DemandSource => {
+  const breakEven = expectedOutputRevenuePerInputUnit - otherCostsPerInputUnit - margin;
+  const capacity = Math.max(0, productionCapacity);
+  const inputPerOutputSafe = Math.max(0, inputPerOutput);
+  const quantityDemanded = breakEven > 0 ? capacity * inputPerOutputSafe : 0;
   const safeBreakEven = breakEven > 0 ? breakEven : 0;
-  return {
+  const source: MutableDemandSource = {
     id,
     curve: 'derived',
     peakQuantity: quantityDemanded,
     maxWillingnessToPay: safeBreakEven,
-    ...(opts.buyerActor !== undefined ? { buyerActor: opts.buyerActor } : {}),
-    ...(opts.buyerDisposition !== undefined ? { buyerDisposition: opts.buyerDisposition } : {}),
-    quantityAt(price: number): number {
-      if (quantityDemanded <= 0) return 0;
-      return price <= safeBreakEven ? quantityDemanded : 0;
-    },
+    quantityAt: stepQuantityAt,
   };
+  if (buyerActor !== undefined) source.buyerActor = buyerActor;
+  if (buyerDisposition !== undefined) source.buyerDisposition = buyerDisposition;
+  return source;
 };
 
 // --- Aggregation ------------------------------------------------------------
 
-export const aggregateDemand = (sources: readonly DemandSource[]): DemandSchedule => {
-  return {
-    sources,
-    totalAt(price: number): number {
-      let sum = 0;
-      for (const s of sources) sum += s.quantityAt(price);
-      return sum;
-    },
-    breakpoints(): readonly DemandBreakpoint[] {
-      const bps: DemandBreakpoint[] = [];
-      for (const s of sources) {
-        // Step sources contribute one discontinuity at their max-WTP, where
-        // demand drops from peak to 0 going up in price. Continuous sources
-        // (subsistence, comfort) emit no breakpoint here; clearing samples
-        // them via totalAt.
-        if (s.curve === 'status' || s.curve === 'derived') {
-          if (s.peakQuantity > 0) {
-            bps.push({ price: s.maxWillingnessToPay, quantityChange: -s.peakQuantity });
-          }
-        }
-      }
-      bps.sort((a, b) => a.price - b.price);
-      return bps;
-    },
-  };
+export const quantityAtDemandSource = (source: DemandSource, price: number): number => {
+  switch (source.curve) {
+    case 'subsistence': {
+      const need = source.peakQuantity;
+      if (need <= 0) return 0;
+      if (price <= 0) return need;
+      const wealth = source.curveBudget;
+      if (wealth === undefined) return source.quantityAt(price);
+      const threshold = wealth / need;
+      if (price <= threshold) return need;
+      return wealth / price;
+    }
+    case 'comfort': {
+      const want = source.peakQuantity;
+      if (want <= 0) return 0;
+      if (price <= 0) return want;
+      const budget = source.curveBudget;
+      if (budget === undefined) return source.quantityAt(price);
+      if (budget <= 0) return 0;
+      return want * Math.exp(-(price / budget) * (source.curveScale ?? 1));
+    }
+    case 'status':
+    case 'derived':
+      if (source.peakQuantity <= 0) return 0;
+      return price <= source.maxWillingnessToPay ? source.peakQuantity : 0;
+  }
 };
+
+const demandTotalAt = function (this: DemandSchedule, price: number): number {
+  let sum = 0;
+  for (const s of this.sources) sum += quantityAtDemandSource(s, price);
+  return sum;
+};
+
+const demandBreakpoints = function (this: DemandSchedule): readonly DemandBreakpoint[] {
+  const bps: DemandBreakpoint[] = [];
+  for (const s of this.sources) {
+    // Step sources contribute one discontinuity at their max-WTP, where
+    // demand drops from peak to 0 going up in price. Continuous sources
+    // (subsistence, comfort) emit no breakpoint here; clearing samples
+    // them via totalAt.
+    if (s.curve === 'status' || s.curve === 'derived') {
+      if (s.peakQuantity > 0) {
+        bps.push({ price: s.maxWillingnessToPay, quantityChange: -s.peakQuantity });
+      }
+    }
+  }
+  bps.sort((a, b) => a.price - b.price);
+  return bps;
+};
+
+export const aggregateDemand = (sources: readonly DemandSource[]): DemandSchedule => ({
+  sources,
+  totalAt: demandTotalAt,
+  breakpoints: demandBreakpoints,
+});

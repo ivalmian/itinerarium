@@ -241,10 +241,6 @@ const slaveEndemicMultiplier: Partial<Record<CharacterClass, number>> = {
   slave: 1.3,
 };
 
-const sampleBinomial = (n: number, p: number, rng: Rng): number => {
-  return rng.countBelow(n, p);
-};
-
 export interface EndemicResult {
   readonly deaths: number;
 }
@@ -266,7 +262,7 @@ export const applyEndemicMortality = (
     const classMul = slaveEndemicMultiplier[key.class] ?? 1;
     const dailyP = (annualPer1000 / 1000 / 365) * climateMul * terrainMul * classMul;
     if (dailyP <= 0) return;
-    const deaths = sampleBinomial(count, dailyP, rng);
+    const deaths = rng.countBelow(count, dailyP);
     if (deaths > 0) {
       pool.set(key, count - deaths);
       totalDeaths += deaths;
@@ -372,7 +368,7 @@ const allocateDeathsAcrossPool = (
     const bandPop = bandWeights.get(band) ?? 0;
     if (bandPop === 0 || remainingPop <= 0) continue;
     const isLast = band === '80+';
-    const allocated = isLast ? remaining : sampleBinomial(remaining, bandPop / remainingPop, rng);
+    const allocated = isLast ? remaining : rng.countBelow(remaining, bandPop / remainingPop);
     remaining -= allocated;
     remainingPop -= bandPop;
     if (allocated <= 0) continue;
@@ -396,14 +392,12 @@ const allocateDeathsAcrossPool = (
       if (!entry) continue;
       const [key, n] = entry;
       const isLastSub = i === subBuckets.length - 1;
-      const subAllocated = isLastSub
-        ? subRemaining
-        : sampleBinomial(subRemaining, n / subTotal, rng);
+      const subAllocated = isLastSub ? subRemaining : rng.countBelow(subRemaining, n / subTotal);
       subRemaining -= subAllocated;
       if (subAllocated <= 0) continue;
       const classMul = disease.mortalityByClass?.[key.class] ?? 1;
       const mortality = Math.min(1, baseMortality * classMul);
-      const deathsHere = Math.min(n, sampleBinomial(subAllocated, mortality, rng));
+      const deathsHere = Math.min(n, rng.countBelow(subAllocated, mortality));
       if (deathsHere > 0) {
         pool.set(key, n - deathsHere);
         totalDeaths += deathsHere;

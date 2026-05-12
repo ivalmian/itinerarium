@@ -54,9 +54,30 @@ const estimateDays = (hexes: number): number => {
   return Math.max(1, Math.ceil(hexes / ASSUMED_HEXES_PER_DAY));
 };
 
+const NON_PERISHABLE_DAYS = -1;
+const resourcePerishableDaysCache = new Map<ResourceId, number>();
+const resourceWeightKgCache = new Map<ResourceId, number>();
+
+const perishableDaysForResource = (resource: ResourceId): number => {
+  const cached = resourcePerishableDaysCache.get(resource);
+  if (cached !== undefined) return cached;
+  const days = getResource(resource).perishableDays ?? NON_PERISHABLE_DAYS;
+  resourcePerishableDaysCache.set(resource, days);
+  return days;
+};
+
+const weightKgPerUnitForResource = (resource: ResourceId): number => {
+  const cached = resourceWeightKgCache.get(resource);
+  if (cached !== undefined) return cached;
+  const weight = getResource(resource).weightKgPerUnit;
+  const normalized = weight > 0 ? weight : 1;
+  resourceWeightKgCache.set(resource, normalized);
+  return normalized;
+};
+
 const cargoCanSurviveTrip = (resource: ResourceId, estimatedTripDays: number): boolean => {
-  const perishableDays = getResource(resource).perishableDays;
-  if (perishableDays === undefined) return true;
+  const perishableDays = perishableDaysForResource(resource);
+  if (perishableDays < 0) return true;
   return estimatedTripDays <= perishableDays;
 };
 
@@ -137,6 +158,38 @@ interface OriginDestObservation {
   destPrice: number;
   spread: number;
 }
+
+interface RankedCargoObservation {
+  obs: OriginDestObservation;
+  weightKgPerUnit: number;
+  marginPerKg: number;
+  resourceKey: string;
+}
+
+const rankedCargoScratch: RankedCargoObservation[] = [];
+const rankedCargoPool: RankedCargoObservation[] = [];
+
+const rankedCargoItemAt = (index: number): RankedCargoObservation => {
+  let item = rankedCargoPool[index];
+  if (item === undefined) {
+    item = {
+      obs: { resource: '' as ResourceId, originPrice: 0, destPrice: 0, spread: 0 },
+      weightKgPerUnit: 1,
+      marginPerKg: 0,
+      resourceKey: '',
+    };
+    rankedCargoPool[index] = item;
+  }
+  return item;
+};
+
+const compareRankedCargoObservation = (
+  a: RankedCargoObservation,
+  b: RankedCargoObservation,
+): number => {
+  if (b.marginPerKg !== a.marginPerKg) return b.marginPerKg - a.marginPerKg;
+  return a.resourceKey < b.resourceKey ? -1 : a.resourceKey > b.resourceKey ? 1 : 0;
+};
 
 const observedOriginAsk = (obs: PriceObservation): number =>
   obs.askPrice !== undefined && Number.isFinite(obs.askPrice) && obs.askPrice > 0
@@ -244,12 +297,19 @@ const planCargo = (
   observations: readonly OriginDestObservation[],
   constraints: CargoPlanningConstraints = {},
   destinationKey?: string,
+  precomputedCapacityKg?: number,
 ): { cargo: Map<ResourceId, Quantity>; grossSpread: number } => {
   const cargo = new Map<ResourceId, Quantity>();
   if (observations.length === 0) return { cargo, grossSpread: 0 };
 
-  const reservedKg = Math.max(0, constraints.reserveCapacityKg ?? 0);
-  const capacityKg = Math.max(0, totalCarryKg(caravan) - totalCargoWeightKg(caravan) - reservedKg);
+  const capacityKg =
+    precomputedCapacityKg ??
+    Math.max(
+      0,
+      totalCarryKg(caravan) -
+        totalCargoWeightKg(caravan) -
+        Math.max(0, constraints.reserveCapacityKg ?? 0),
+    );
   if (capacityKg <= 1e-9) return { cargo, grossSpread: 0 };
 
   // Per docs/15 §C22: cap each resource's planned qty at the destination's
@@ -259,22 +319,31 @@ const planCargo = (
   const destBidDepth =
     destinationKey !== undefined ? constraints.destinationBidDepth?.get(destinationKey) : undefined;
 
-  const ranked = observations
-    .map((obs) => {
-      const def = getResource(obs.resource);
-      const wt = def.weightKgPerUnit > 0 ? def.weightKgPerUnit : 1;
-      return { obs, weightKgPerUnit: wt, marginPerKg: obs.spread / wt };
-    })
-    .sort((a, b) => {
-      if (b.marginPerKg !== a.marginPerKg) return b.marginPerKg - a.marginPerKg;
-      // Stable secondary sort by resource id keeps determinism.
-      return String(a.obs.resource).localeCompare(String(b.obs.resource));
-    });
+  rankedCargoScratch.length = 0;
+  for (let i = 0; i < observations.length; i++) {
+    const obs = observations[i] as OriginDestObservation;
+    const wt = weightKgPerUnitForResource(obs.resource);
+    const item = rankedCargoItemAt(i);
+    item.obs = obs;
+    item.weightKgPerUnit = wt;
+    item.marginPerKg = obs.spread / wt;
+    item.resourceKey = String(obs.resource);
+    let insertAt = rankedCargoScratch.length;
+    while (
+      insertAt > 0 &&
+      compareRankedCargoObservation(item, rankedCargoScratch[insertAt - 1] as RankedCargoObservation) <
+        0
+    ) {
+      rankedCargoScratch[insertAt] = rankedCargoScratch[insertAt - 1] as RankedCargoObservation;
+      insertAt--;
+    }
+    rankedCargoScratch[insertAt] = item;
+  }
 
   let remainingKg = capacityKg;
   let remainingSpend = Math.max(0, constraints.maxSpendCoin ?? Number.POSITIVE_INFINITY);
   let grossSpread = 0;
-  for (const r of ranked) {
+  for (const r of rankedCargoScratch) {
     if (remainingKg <= 0) break;
     if (remainingSpend <= 1e-9) break;
     const maxUnitsByCapacity = remainingKg / r.weightKgPerUnit;
@@ -350,6 +419,7 @@ export interface RoutePlan {
 export interface CandidateSettlement {
   readonly id: SettlementId;
   readonly hex: Position;
+  readonly hexKey?: string;
   readonly tier: SettlementTier;
 }
 
@@ -437,14 +507,26 @@ const evaluateCandidate = (
   candidate: CandidateSettlement,
   inputs: PlanCaravanRouteInputs,
   observations: readonly OriginDestObservation[],
+  candidateKey: string,
+  availableCargoCapacityKg: number,
 ): Evaluation | null => {
   if (hexEquals(candidate.hex, origin)) return null;
   if (observations.length === 0) return null;
   const distance = hexDistance(origin, candidate.hex);
   const tripDays = estimateDays(distance);
-  const durableObservations = observations.filter((obs) =>
-    cargoCanSurviveTrip(obs.resource, tripDays),
-  );
+  let durableObservations: readonly OriginDestObservation[] = observations;
+  for (let i = 0; i < observations.length; i++) {
+    const obs = observations[i] as OriginDestObservation;
+    if (cargoCanSurviveTrip(obs.resource, tripDays)) {
+      if (durableObservations !== observations) {
+        (durableObservations as OriginDestObservation[]).push(obs);
+      }
+      continue;
+    }
+    if (durableObservations === observations) {
+      durableObservations = observations.slice(0, i);
+    }
+  }
   const travelCostCoin = travelCost(caravan, distance);
   const constraints =
     inputs.cargoConstraints?.reserveTripOperatingCost === true &&
@@ -458,7 +540,8 @@ const evaluateCandidate = (
     caravan,
     durableObservations,
     constraints,
-    hexKey(candidate.hex),
+    candidateKey,
+    availableCargoCapacityKg,
   );
   if (grossSpread <= 0 || cargo.size === 0) return null;
 
@@ -511,14 +594,29 @@ export const planCaravanRoute = (inputs: PlanCaravanRouteInputs): RoutePlan | nu
 
   const minAbsProfit = Math.max(0, inputs.minNetProfitCoin ?? 0);
   const minFractionalProfit = Math.max(0, inputs.minNetProfitFraction ?? 0);
+  const availableCargoCapacityKg = Math.max(
+    0,
+    totalCarryKg(inputs.caravan) -
+      totalCargoWeightKg(inputs.caravan) -
+      Math.max(0, inputs.cargoConstraints?.reserveCapacityKg ?? 0),
+  );
 
   let best: Evaluation | undefined;
   let familyEval: Evaluation | undefined;
   const pref = inputs.ownerPreferences;
   for (const candidate of inputs.candidateSettlements) {
-    const obs = observationsByDest.get(hexKey(candidate.hex));
+    const candidateKey = candidate.hexKey ?? hexKey(candidate.hex);
+    const obs = observationsByDest.get(candidateKey);
     if (obs === undefined) continue;
-    const ev = evaluateCandidate(inputs.caravan, origin, candidate, inputs, obs);
+    const ev = evaluateCandidate(
+      inputs.caravan,
+      origin,
+      candidate,
+      inputs,
+      obs,
+      candidateKey,
+      availableCargoCapacityKg,
+    );
     if (ev === null) continue;
     // Per docs/15 §C25: require net profit ABOVE absolute and fractional
     // floors, not just positive. A 0.5%-margin route is not worth a

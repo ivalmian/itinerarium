@@ -495,43 +495,74 @@ const requirePositiveQty = (qty: number, label: string): void => {
   }
 };
 
-const bumpMap = (m: Map<ResourceId, number>, resource: ResourceId, qty: number): void => {
-  m.set(resource, (m.get(resource) ?? 0) + qty);
-};
-
 /** A trade delivery from outside arrived at this settlement (caravan
  *  selling its cargo to the local market, off-map factor consignment,
  *  buyer side of a local-trade pair). Aggregated into `recentInflows`. */
+export const recordImportUnchecked = (
+  s: Settlement,
+  resource: ResourceId,
+  qty: number,
+): void => {
+  s.market.recentImports.set(resource, (s.market.recentImports.get(resource) ?? 0) + qty);
+  s.market.recentInflows.set(resource, (s.market.recentInflows.get(resource) ?? 0) + qty);
+};
+
 export const recordImport = (s: Settlement, resource: ResourceId, qty: number): void => {
   requirePositiveQty(qty, 'recordImport qty');
-  bumpMap(s.market.recentImports, resource, qty);
-  bumpMap(s.market.recentInflows, resource, qty);
+  recordImportUnchecked(s, resource, qty);
 };
 
 /** A trade pickup left this settlement (caravan buying cargo, seller side
  *  of a local-trade pair, fence outlet sale). Aggregated into
  *  `recentOutflows`. */
+export const recordExportUnchecked = (
+  s: Settlement,
+  resource: ResourceId,
+  qty: number,
+): void => {
+  s.market.recentExports.set(resource, (s.market.recentExports.get(resource) ?? 0) + qty);
+  s.market.recentOutflows.set(resource, (s.market.recentOutflows.get(resource) ?? 0) + qty);
+};
+
 export const recordExport = (s: Settlement, resource: ResourceId, qty: number): void => {
   requirePositiveQty(qty, 'recordExport qty');
-  bumpMap(s.market.recentExports, resource, qty);
-  bumpMap(s.market.recentOutflows, resource, qty);
+  recordExportUnchecked(s, resource, qty);
 };
 
 /** A recipe firing in this settlement produced output (mill grinding,
  *  smithy hammering, farm harvest). Aggregated into `recentInflows`. */
+export const recordProductionUnchecked = (
+  s: Settlement,
+  resource: ResourceId,
+  qty: number,
+): void => {
+  s.market.recentProduction.set(resource, (s.market.recentProduction.get(resource) ?? 0) + qty);
+  s.market.recentInflows.set(resource, (s.market.recentInflows.get(resource) ?? 0) + qty);
+};
+
 export const recordProduction = (s: Settlement, resource: ResourceId, qty: number): void => {
   requirePositiveQty(qty, 'recordProduction qty');
-  bumpMap(s.market.recentProduction, resource, qty);
-  bumpMap(s.market.recentInflows, resource, qty);
+  recordProductionUnchecked(s, resource, qty);
 };
 
 /** Goods were used up in this settlement (recipe inputs drained,
  *  population eating, subsistence-curve trade where the buyer immediately
  *  consumes). Aggregated into `recentOutflows`. */
+export const recordConsumptionUnchecked = (
+  s: Settlement,
+  resource: ResourceId,
+  qty: number,
+): void => {
+  s.market.recentConsumption.set(
+    resource,
+    (s.market.recentConsumption.get(resource) ?? 0) + qty,
+  );
+  s.market.recentOutflows.set(resource, (s.market.recentOutflows.get(resource) ?? 0) + qty);
+};
+
 export const recordConsumption = (s: Settlement, resource: ResourceId, qty: number): void => {
   requirePositiveQty(qty, 'recordConsumption qty');
-  bumpMap(s.market.recentConsumption, resource, qty);
-  bumpMap(s.market.recentOutflows, resource, qty);
+  recordConsumptionUnchecked(s, resource, qty);
 };
 
 /**
@@ -587,6 +618,24 @@ export const recordMarketBook = (
   entry: MarketBookEntry,
 ): void => {
   const market = s.market;
+  if (
+    entry.bestAsk === null &&
+    entry.bestBid === null &&
+    entry.midPrice === null &&
+    entry.spread === null
+  ) {
+    if (market.bestAsk.has(resource) || market.askDepth.has(resource)) {
+      market.bestAsk.delete(resource);
+      market.askDepth.delete(resource);
+    }
+    if (market.bestBid.has(resource) || market.bidDepth.has(resource)) {
+      market.bestBid.delete(resource);
+      market.bidDepth.delete(resource);
+    }
+    if (market.midPrice.has(resource)) market.midPrice.delete(resource);
+    if (market.spread.has(resource)) market.spread.delete(resource);
+    return;
+  }
   if (entry.bestAsk !== null && Number.isFinite(entry.bestAsk)) {
     market.bestAsk.set(resource, entry.bestAsk);
     market.askDepth.set(resource, Math.max(0, entry.askDepth));
