@@ -431,6 +431,91 @@ and sellers. It gives all the right emergent behavior:
 - **Cascading shocks**: a collapse in an output market propagates
   back through derived input demand to the raw materials.
 
+### Bid-ask book (locked)
+
+The CDA collapses many heterogeneous quotes to one clearing price each
+day, but a real ancient marketplace had a **visible price ladder** —
+the next-best ask above the cleared sales and the next-best bid below
+them. Caravans walking through a forum gossip not about an idealized
+"market clearing" but about "the cheapest sack of grain on offer right
+now" and "the highest coin any wine merchant is paying today." We
+model that ladder explicitly.
+
+After each day's clearing, the market records a **post-clearing book**
+per resource:
+
+```
+bestAsk  = lowest reservationPrice among supply sources with
+            availableToSell > 0 at clearing-price-or-above that DID
+            NOT fully clear today
+bestBid  = highest maxWillingnessToPay among demand sources with
+            remaining quantity > 0 that DID NOT clear today
+askDepth = total unsold supply quantity sitting at or below bestAsk
+bidDepth = total unmet demand quantity sitting at or above bestBid
+midPrice = clearing price when one cleared; otherwise the geometric
+            mean of bestBid and bestAsk when both exist, or whichever
+            single side is quoted
+spread   = bestAsk - bestBid, both >0 (else "—" for the one-sided book)
+```
+
+The book is **derived per-tick from the residual schedules** — it
+does NOT persist orders across days. Each tick re-builds it from the
+current actor stockpiles, treasuries, and recipe demand. This matches
+the design pillar: the ladder is the visible state of who happens to
+be standing in the forum today with goods or coin, not a synthetic
+limit-order book pretending to be a modern exchange.
+
+The spread emerges from the documented **bid-ask asymmetry across
+actor types**: subsistence households bid as high as their cash will
+allow on staples but cap fast on luxuries; comfort buyers walk away
+past their budget; status buyers will pay multiples of fair price
+for the right luxury; producers bid only up to their break-even on
+inputs; patient patrician sellers post asks above marginal cost while
+desperate hamlet sellers cut their ask close to salvage; bandit fences
+quote both sides at deep discounts.
+
+Expected spread shape, in a healthy market:
+
+- **Staple food (grain, bread, legumes)**: tight spread. Subsistence
+  demand crowds against marginal-cost-anchored seller asks. A market
+  this thin around the clearing price means buyers and sellers agree
+  on what bread should cost; if the spread widens, something is
+  breaking (rich-only buyers, granary hoarding, shortage).
+- **Comfort goods (wine, oil, cheese, cloth, pottery)**: moderate
+  spread. Comfort demand is elastic, so buyers walk well before
+  reservation prices, and sellers can afford to wait days for the
+  right counterparty.
+- **Status goods (luxury textiles, silver, exotics)**: wide spread.
+  Few patrician buyers with deep pockets; sellers willing to hold for
+  months. Each individual cleared trade can move the recorded clearing
+  price visibly.
+- **Capital goods (carts, tools, herd capital, construction materials)**:
+  spread is set by amortization windows. Producer inputs to durable
+  recipes get bid up to a discounted future revenue; a smith's tool
+  workshop will bid for iron up to the per-unit margin of a tool sale
+  multiplied by the expected tool turnover.
+- **Strategic inputs (iron ore, charcoal, salt, equines)**: spread is
+  often wide and asymmetric — a sudden shortage drives bestBid hard
+  upward while bestAsk lags as patient sellers wait.
+
+Caravans and "internal needs" (a workshop running short of a critical
+input, a tax convoy preparing to leave) cross the spread by bidding
+above bestAsk or asking below bestBid. When that happens the next
+clearing matches the crossing party against the residual book and the
+spread re-equilibrates the next day. This is the explicit price-
+discovery story: most days, only the people who genuinely need to
+trade cross the spread; the rest of the book is quoted but quiet,
+which is exactly how a real local forum looked.
+
+**Dormant markets are an alarm.** If a settlement records `bestAsk` /
+`bestBid` quotes for several days but no clearing, something is
+suppressing crossings — usually an empty buyer treasury or a one-sided
+book where supply exists but no actor with cash wants the good. We
+treat these as diagnostic signals, not as bugs in the clearing math:
+the CDA correctly refuses to invent trade where willingness to pay
+doesn't meet willingness to sell, and the burn-in instrumentation
+must surface those frozen books for triage.
+
 ### Per-settlement markets, regional smoothing
 
 **Each settlement clears its own market.** A pagus and its three
@@ -611,6 +696,97 @@ operates inside the map, where they're competitive.
   physically shipped, but local markets spend actor treasury.
 - Caravans can attempt to evade tolls by going off-road; trade-off
   is speed and risk.
+
+## Cash circulation discipline (locked)
+
+A continuous double auction with cash-constrained buyers can deadlock
+itself in three different ways:
+
+1. **Producer cash drain.** A patrician estate pays wages to common
+   households for every recipe run, but if no buyer with cash bids on
+   the estate's output, the estate's treasury bleeds to zero. After
+   that, the estate cannot afford its wage bill and falls back on
+   in-kind grain wages, which keeps physical food moving but stops the
+   coin flowing. Once the estate is cashless its derived input demand
+   for tools, iron, oil, etc. also collapses.
+2. **Wage-spent-immediately collapse.** Common households receive
+   wages and immediately spend them on subsistence at the same
+   settlement; their treasury equilibrates near zero. Subsistence
+   demand at zero treasury is mathematically zero at any positive
+   price (the wealth-per-need term goes to zero), so the next day's
+   bread market has no buyer at the patrician's reservation. The
+   household DOES self-provision from its own grain stockpile when it
+   holds one — this is the actual food path in steady state — but
+   that breaks down for any good the household does NOT already hold,
+   like wine, cheese, or pottery.
+3. **One-rich-actor crowding.** When one city corporation or off-map
+   house absorbs most coin in a region, the rest of the actor
+   ledger settles to near-zero. The bid-ask book then looks like a
+   wall of unfillable asks (everyone wants to sell) against a wall of
+   non-binding bids (everyone wants to buy but nobody has coin),
+   and clearing volume collapses despite huge physical stockpiles
+   sitting on shelves.
+
+The model handles cases 1 and 2 via in-kind wages, self-provision,
+and the inventory-pressure discount on patient sellers' asks — those
+mechanisms keep food and the subsistence chain alive even with no
+coin circulating. They do NOT however make comfort, status, capital,
+or strategic-input markets functional, because those don't have an
+in-kind-wage fallback. So a chronic cash drain in a province shows up
+as a **healthy food market plus dormant everything-else markets**
+sitting on top of huge unsold stockpiles. That is exactly the
+diagnostic pattern the bid-ask book is meant to surface, and it is
+the leading reason a city can have "no trade in wine for 90 days"
+despite having amphorae and cellars.
+
+The v1.5 lever to keep cash circulating is the **distribution of
+liquid wealth across owner kinds**: every actor type that bids on
+goods needs a sustainable income channel. City corporations get tax
+inflows and own civic production. Patrician families need rents,
+tribute, and merchant-house dividends to refill what they pay out
+as wages — a patrician estate that pays wages but never collects
+rent or sells output for coin is structurally doomed in this model.
+Common households need wages-in-coin to participate in comfort and
+service markets — wages-in-grain only feeds them, it does not let
+them buy a new clay pot. The procgen + bootstrap pass therefore has
+to seed plausible initial treasuries AND continuous income mechanics
+on every owner kind that the schedule builder draws from.
+
+### Per-class household actors (locked, v1.5 C21)
+
+Free urban populations are NOT modeled as a single aggregate
+`common_household` ledger anymore. A town or city's free residents
+break into three class-level actors:
+
+```
+plebeian_household   — wage-earning urban poor + smallholder commoners
+freedman_household   — former slaves, free legally, often clientela
+foreigner_household  — itinerant traders, mercenaries, resident
+                       non-citizens
+```
+
+Each carries its own treasury and stockpile. Wages from recipes
+that run on city land split across the three IN PROPORTION to the
+recipe's actual class mix (computed from the LaborClassContext the
+production engine already uses). Subsistence and comfort demand
+from each class bid against THAT class's actor treasury — so a
+plebeian's empty pocket no longer suppresses a freedman's wine
+purchase, and the residual bid-ask book naturally has three
+distinct demand sources per resource instead of one merged curve.
+
+Hamlets and free villages keep their existing
+`hamlet_household` / `free_village` actor because those are
+political/ownership entities, not class aggregates. They route
+wages to the single household actor as before.
+
+Slaves do NOT have a `slave_household` actor. Per docs/11
+§"Slaves", they are owned property and consume on their owner's
+ledger. Slave subsistence demand bids through `patrician_family` /
+`city_corporation` / `governor_office` / `temple` / `hamlet_household`
+/ `free_village` as appropriate to who owns them.
+
+This is the C21 disaggregation. See docs/15 §C21 for the
+implementation details and the diagnosis that motivated it.
 
 ## In-settlement money flows (locked)
 

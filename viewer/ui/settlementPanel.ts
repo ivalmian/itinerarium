@@ -59,7 +59,8 @@ export const createSettlementPanel = (opts: SettlementPanelOpts): SettlementPane
     // Stacked-with affordance — list other settlements that share this anchor
     // hex (docs/05 §"Same-hex coexistence"). Each is a click-target that
     // switches the selection to the sibling.
-    const siblings: { readonly id: SettlementId; readonly name: string; readonly tier: string }[] = [];
+    const siblings: { readonly id: SettlementId; readonly name: string; readonly tier: string }[] =
+      [];
     for (const other of world.settlements.values()) {
       if (other.id === s.id) continue;
       if (!hexEquals(other.anchor, s.anchor)) continue;
@@ -116,7 +117,9 @@ export const createSettlementPanel = (opts: SettlementPanelOpts): SettlementPane
         totals.set(String(res), (totals.get(String(res)) ?? 0) + qty);
       }
     }
-    const sorted = Array.from(totals.entries()).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    const sorted = Array.from(totals.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8);
     const stockHeader = document.createElement('div');
     stockHeader.style.color = 'var(--muted)';
     stockHeader.style.marginTop = '4px';
@@ -146,14 +149,16 @@ export const createSettlementPanel = (opts: SettlementPanelOpts): SettlementPane
       root.appendChild(list);
     }
 
-    // Last clearing prices.
+    // Market snapshot: last clearing price + residual bid-ask book per
+    // docs/08 §"Bid-ask book". Shows "bid · last · ask" so the player can
+    // see at a glance whether each market is crossing or sitting frozen.
     if (s.market.lastClearingPrice.size > 0) {
       const priceHeader = document.createElement('div');
       priceHeader.style.color = 'var(--muted)';
       priceHeader.style.marginTop = '6px';
-      priceHeader.textContent = 'Last clearing prices:';
+      priceHeader.textContent = 'Market (bid · last · ask):';
       root.appendChild(priceHeader);
-      const sortedPrices = Array.from(s.market.lastClearingPrice.entries()).slice(0, 6);
+      const sortedPrices = Array.from(s.market.lastClearingPrice.entries()).slice(0, 8);
       const list = document.createElement('div');
       for (const [r, p] of sortedPrices) {
         const row = document.createElement('div');
@@ -163,7 +168,11 @@ export const createSettlementPanel = (opts: SettlementPanelOpts): SettlementPane
         l.textContent = String(r);
         const v = document.createElement('span');
         v.className = 'value';
-        v.textContent = p.toFixed(2);
+        const bid = s.market.bestBid.get(r);
+        const ask = s.market.bestAsk.get(r);
+        const bidStr = bid !== undefined ? bid.toFixed(2) : '—';
+        const askStr = ask !== undefined ? ask.toFixed(2) : '—';
+        v.textContent = `${bidStr} · ${p.toFixed(2)} · ${askStr}`;
         row.appendChild(l);
         row.appendChild(v);
         list.appendChild(row);
@@ -197,11 +206,7 @@ export const createSettlementPanel = (opts: SettlementPanelOpts): SettlementPane
  * compressed into ~10 buckets averaged so a city's slow population drift
  * shows as a smooth line, not a 100-pixel jitter.
  */
-const renderHistory = (
-  root: HTMLElement,
-  history: ViewerHistory,
-  id: SettlementId,
-): void => {
+const renderHistory = (root: HTMLElement, history: ViewerHistory, id: SettlementId): void => {
   const buf = history.settlements.get(id);
   if (buf === undefined || buf.length < 2) return;
 
@@ -237,12 +242,7 @@ const renderHistory = (
     root.appendChild(ph);
     for (const [res, vals] of ranked) {
       const trimmed = vals.slice(-10);
-      appendSparklineRow(
-        root,
-        String(res),
-        trimmed,
-        fmtCompact(trimmed[trimmed.length - 1] ?? 0),
-      );
+      appendSparklineRow(root, String(res), trimmed, fmtCompact(trimmed[trimmed.length - 1] ?? 0));
     }
   }
 
@@ -349,7 +349,10 @@ const appendSparklineRow = (
   host.appendChild(row);
 };
 
-const serializeSettlement = (world: WorldState, id: import('../../src/sim/types.js').SettlementId) => {
+const serializeSettlement = (
+  world: WorldState,
+  id: import('../../src/sim/types.js').SettlementId,
+) => {
   const s = world.settlements.get(id);
   if (s === undefined) return null;
   return {

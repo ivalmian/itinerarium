@@ -492,7 +492,12 @@ const seedPatricianFamily = (
     kind: 'patrician_family',
     name: `Family ${nomen} of ${cityNameHint}`,
     homeSettlement: city.id,
-    treasury: familyRng.int(2000, 8000),
+    // docs/15 §C20: patricians get working-capital reserve so they
+    // survive the first quarter before fiscal redistribution kicks in.
+    // Earlier 2000-8000 led to treasury collapsing to ~0 within months
+    // (wage payouts > grain-sale income) which froze status/comfort
+    // markets across the province.
+    treasury: familyRng.int(8000, 24000),
   });
   const patriarch = createCharacter({
     id: cId,
@@ -582,31 +587,56 @@ const seedCityCorporation = (
   return actor;
 };
 
-const commonHouseholdTreasuryForSettlement = (settlement: Settlement): number => {
-  // Match the liquid wealth assumptions in market/scheduleBuilder.ts:
-  // plebeian 30, freedman 15, foreigner 50 coin-equivalent per head.
-  const plebeian = settlement.population.totalByClass('plebeian') * 30;
-  const freedman = settlement.population.totalByClass('freedman') * 15;
-  const foreigner = settlement.population.totalByClass('foreigner') * 50;
-  return Math.max(100, Math.floor(plebeian + freedman + foreigner));
-};
+/**
+ * Per docs/15 §C21: per-class initial treasury for each household actor.
+ * Matches the liquid-wealth assumptions in market/scheduleBuilder.ts
+ * (plebeian 30, freedman 15, foreigner 50 coin-equivalent per head).
+ */
+const CLASS_HOUSEHOLD_SEED: ReadonlyArray<{
+  readonly class: 'plebeian' | 'freedman' | 'foreigner';
+  readonly kind: 'plebeian_household' | 'freedman_household' | 'foreigner_household';
+  readonly perCapita: number;
+  readonly displayName: string;
+}> = [
+  { class: 'plebeian', kind: 'plebeian_household', perCapita: 30, displayName: 'Plebeians' },
+  { class: 'freedman', kind: 'freedman_household', perCapita: 15, displayName: 'Freedmen' },
+  { class: 'foreigner', kind: 'foreigner_household', perCapita: 50, displayName: 'Foreigners' },
+];
 
-const seedCommonHousehold = (
+/**
+ * Per docs/15 §C21: seed up to three per-class household actors for a
+ * settlement. Only classes with positive population get an actor — a
+ * settlement with no plebeians (rare, e.g. slave-only estates) gets no
+ * `plebeian_household`. Each actor carries the class's own treasury and
+ * stockpile so demand is bounded by its own cash, not a shared pool.
+ *
+ * Returns the list of created actors so callers (mostly tests + post-seed
+ * grants) can grant additional stockpile. Most callers just need the side
+ * effect of registering actors + stockpile owners.
+ */
+const seedClassHouseholds = (
   ctx: BuildContext,
   settlement: Settlement,
   settlementName: string,
-): Actor => {
-  const aId = actorId(nextId('actor'));
-  const actor = createActor({
-    id: aId,
-    kind: 'common_household',
-    name: `Common Households of ${settlementName}`,
-    homeSettlement: settlement.id,
-    treasury: commonHouseholdTreasuryForSettlement(settlement),
-  });
-  addActor(ctx, actor);
-  settlement.stockpileOwners.push(aId);
-  return actor;
+): Actor[] => {
+  const out: Actor[] = [];
+  for (const cfg of CLASS_HOUSEHOLD_SEED) {
+    const pop = settlement.population.totalByClass(cfg.class);
+    if (pop <= 0) continue;
+    const aId = actorId(nextId('actor'));
+    const treasury = Math.max(50, Math.floor(pop * cfg.perCapita));
+    const actor = createActor({
+      id: aId,
+      kind: cfg.kind,
+      name: `${cfg.displayName} of ${settlementName}`,
+      homeSettlement: settlement.id,
+      treasury,
+    });
+    addActor(ctx, actor);
+    settlement.stockpileOwners.push(aId);
+    out.push(actor);
+  }
+  return out;
 };
 
 const seedFreeVillage = (
@@ -683,7 +713,7 @@ const seedClientVillage = (ctx: BuildContext, settlement: Settlement, patron: Ac
   addCharacter(ctx, headman);
   settlement.factions.push(patronFaction.id);
   settlement.stockpileOwners.push(patron.id);
-  seedCommonHousehold(ctx, settlement, settlement.name);
+  seedClassHouseholds(ctx, settlement, settlement.name);
   // ~30 days of grain + ~7 days of tools/wood for the patron's client
   // village; the patron accumulates across multiple villages so a city
   // family that holds 3-5 client villages still has months of headroom
@@ -854,7 +884,7 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
     const city = siteToSettlement.get(site);
     if (city === undefined) continue;
     seedCityCorporation(ctx, city, city.name);
-    seedCommonHousehold(ctx, city, city.name);
+    seedClassHouseholds(ctx, city, city.name);
     const seeds: FamilySeed[] = [];
     for (let i = 0; i < familiesPerCity; i++) {
       seeds.push(seedPatricianFamily(ctx, city, city.name));
@@ -868,7 +898,7 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
     const town = siteToSettlement.get(site);
     if (town === undefined) continue;
     seedCityCorporation(ctx, town, town.name);
-    seedCommonHousehold(ctx, town, town.name);
+    seedClassHouseholds(ctx, town, town.name);
   }
 
   // Phase 5: villages — assign as patron-client to a nearby family or as a

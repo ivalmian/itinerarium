@@ -100,15 +100,22 @@ import { allRecipes } from './production/recipes.js';
 import type { Rng } from './rng.js';
 import {
   addBuilding,
+  clearMarketBook,
   computeStorageCapacity,
   recomputeCatchment,
   recordClearingPrice,
   recordConsumption,
   recordExport,
   recordImport,
+  recordLastClearedDay,
+  recordMarketBook,
+  recordMarketBookLadder,
   recordProduction,
   removeBuilding,
   shouldRecomputeCatchment,
+  type MarketBookEntry,
+  type MarketBookLadder,
+  type MarketBookOrder,
   type PendingBuilding,
   type PendingDemolition,
   type Settlement,
@@ -149,6 +156,7 @@ import {
   isWageEarningLaborClass,
   ownerCanUseLaborClass,
   type LaborClassContext,
+  wageEarningWorkerDaysByClassForLaborForOwner,
   wageEarningWorkerDaysForLaborForOwner,
 } from './jobs/laborEconomics.js';
 import type { CharacterClass } from './population/types.js';
@@ -395,6 +403,24 @@ export type TickEvent =
       readonly toSettlement: SettlementId;
       readonly resource: ResourceId;
       readonly quantity: number;
+      readonly coinPaid: number;
+    }
+  | {
+      readonly type: 'fiscal_redistribution';
+      /**
+       * Channel of the transfer per docs/15 §C20:
+       *   civic_dividend     — city corporation → patrician families
+       *   tenant_rent        — free village / hamlet → patrician family
+       *
+       * `merchant_residual` was removed in §C22 — off-map house treasury
+       * accumulates from import sales but does NOT redistribute back to
+       * patricians via a synthetic transfer. The legitimate inbound coin
+       * flow is the export caravan path (see
+       * `completeOffMapExportIfArrived`).
+       */
+      readonly channel: 'civic_dividend' | 'tenant_rent';
+      readonly payer: ActorId;
+      readonly recipient: ActorId;
       readonly coinPaid: number;
     };
 
@@ -675,16 +701,16 @@ const productionPhase = (
             depleteMineDeposit(world, b, recipe, result);
             // Decrement the labor pool we estimated locally so subsequent
             // recipes in this phase don't double-count workers.
-            const paidWorkerDays = consumeLaborFromPoolsForOwner(
+            const consumed = consumeLaborFromPoolsForOwner(
               laborPools,
               result.laborUsed,
               ownerActor.kind,
             );
-            payProductionWagesForWorkerDays(
+            payProductionWagesForWorkerDaysByClass(
               world,
               settlement,
               ownerActor,
-              paidWorkerDays,
+              consumed.paidWorkerDaysByClass,
               wagePriceSignal,
             );
             // Decrement building capacity for the day.
@@ -709,15 +735,58 @@ const productionPhase = (
   }
 };
 
-const WAGE_RECIPIENT_KIND_PRIORITY: readonly Actor['kind'][] = [
-  'common_household',
-  'hamlet_household',
-  'free_village',
-  'city_corporation',
-  'patrician_family',
-  'governor_office',
-  'player',
-];
+/**
+ * Per docs/15 §C21: wages route to the per-class household actor matching
+ * the worker class that actually ran the recipe. Fallback chains let a
+ * settlement without an explicit `plebeian_household` (e.g., a hamlet) route
+ * plebeian wages to the `hamlet_household` instead.
+ *
+ * Slaves are not in this table — slave worker-days do not generate a cash
+ * wage (their upkeep flows through owner-funded subsistence, docs/11).
+ */
+const WAGE_RECIPIENT_KIND_PRIORITY_BY_CLASS: Readonly<
+  Record<'plebeian' | 'freedman' | 'foreigner' | 'patrician', readonly Actor['kind'][]>
+> = {
+  plebeian: [
+    'plebeian_household',
+    'hamlet_household',
+    'free_village',
+    'city_corporation',
+    'patrician_family',
+    'governor_office',
+    'player',
+  ],
+  freedman: [
+    'freedman_household',
+    'plebeian_household',
+    'hamlet_household',
+    'free_village',
+    'city_corporation',
+    'patrician_family',
+    'governor_office',
+    'player',
+  ],
+  foreigner: [
+    'foreigner_household',
+    'plebeian_household',
+    'hamlet_household',
+    'free_village',
+    'city_corporation',
+    'patrician_family',
+    'governor_office',
+    'player',
+  ],
+  patrician: [
+    // Wage-earning patrician class is rare (paid skilled labor like
+    // physicians, scribes-for-hire). Route to the patrician household
+    // ladder first; fall back to plebeian household / city_corp.
+    'patrician_family',
+    'governor_office',
+    'plebeian_household',
+    'city_corporation',
+    'player',
+  ],
+};
 
 const wagePriceSignalForSettlement = (settlement: Settlement): ReadonlyMap<ResourceId, number> => {
   const prices = new Map<ResourceId, number>();
@@ -730,19 +799,37 @@ const wagePriceSignalForSettlement = (settlement: Settlement): ReadonlyMap<Resou
   return prices;
 };
 
-const selectWageRecipient = (
+const selectWageRecipientForClass = (
   world: WorldState,
   settlement: Settlement,
   payer: Actor,
+  klass: 'plebeian' | 'freedman' | 'foreigner' | 'patrician',
 ): Actor | undefined => {
   const candidates = settlement.stockpileOwners
     .map((id) => world.actors.get(id))
     .filter((a): a is Actor => a !== undefined);
-  for (const kind of WAGE_RECIPIENT_KIND_PRIORITY) {
+  const priority = WAGE_RECIPIENT_KIND_PRIORITY_BY_CLASS[klass];
+  for (const kind of priority) {
     const found = candidates.find((a) => a.kind === kind && a.id !== payer.id);
     if (found !== undefined) return found;
   }
   return candidates.find((a) => a.id === payer.id);
+};
+
+/**
+ * Find any wage recipient available at the settlement, used by
+ * `wageAffordableCapacityForRecipe` which only needs to know whether *some*
+ * recipient is available before authorizing a recipe run. The actual class
+ * split happens later in `payProductionWagesForWorkerDaysByClass`.
+ */
+const hasAnyWageRecipient = (world: WorldState, settlement: Settlement, payer: Actor): boolean => {
+  for (const oId of settlement.stockpileOwners) {
+    const candidate = world.actors.get(oId);
+    if (candidate === undefined) continue;
+    if (candidate.id === payer.id) continue;
+    return true;
+  }
+  return false;
 };
 
 const wageAffordableCapacityForRecipe = (
@@ -761,8 +848,7 @@ const wageAffordableCapacityForRecipe = (
     payer.kind,
   );
   if (paidWorkerDaysPerRun <= 0) return Infinity;
-  const recipient = selectWageRecipient(world, settlement, payer);
-  if (recipient === undefined || recipient.id === payer.id) return Infinity;
+  if (!hasAnyWageRecipient(world, settlement, payer)) return Infinity;
   const liquidBudget = payer.treasury + inKindWageBudget(payer, prices);
   return Math.max(0, liquidBudget / (paidWorkerDaysPerRun * wagePerDay));
 };
@@ -775,35 +861,50 @@ const payProductionWages = (
   laborUsed: ReadonlyMap<JobId, number>,
   prices: ReadonlyMap<ResourceId, number>,
 ): void => {
-  const workerDays = wageEarningWorkerDaysForLaborForOwner(
+  const byClass = wageEarningWorkerDaysByClassForLaborForOwner(
     laborClassContext,
     laborUsed,
     payer.kind,
   );
-  payProductionWagesForWorkerDays(world, settlement, payer, workerDays, prices);
+  payProductionWagesForWorkerDaysByClass(world, settlement, payer, byClass, prices);
 };
 
-const payProductionWagesForWorkerDays = (
+/**
+ * Per docs/15 §C21: pay the wage bill for a recipe run, splitting the
+ * total across per-class household recipients in proportion to which
+ * classes did the work. Each class's wage portion follows the same
+ * coin-then-in-kind cascade as before.
+ */
+const payProductionWagesForWorkerDaysByClass = (
   world: WorldState,
   settlement: Settlement,
   payer: Actor,
-  workerDays: number,
+  workerDaysByClass: ReadonlyMap<CharacterClass, number>,
   prices: ReadonlyMap<ResourceId, number>,
 ): void => {
-  if (workerDays <= 0) return;
+  if (workerDaysByClass.size === 0) return;
   const wagePerDay = laborCostPerWorkerDay(prices);
   if (wagePerDay <= 0) return;
-  const recipient = selectWageRecipient(world, settlement, payer);
-  if (recipient === undefined || recipient.id === payer.id) return;
-  const wageBill = workerDays * wagePerDay;
-  let remaining = wageBill;
-  const paidCoin = Math.min(remaining, payer.treasury);
-  if (paidCoin > 0) {
-    payer.treasury -= paidCoin;
-    recipient.treasury += paidCoin;
-    remaining -= paidCoin;
+  for (const [klass, workerDays] of workerDaysByClass) {
+    if (workerDays <= 0) continue;
+    if (klass === 'slave') continue; // no cash wages for slave labor
+    const recipient = selectWageRecipientForClass(
+      world,
+      settlement,
+      payer,
+      klass as 'plebeian' | 'freedman' | 'foreigner' | 'patrician',
+    );
+    if (recipient === undefined || recipient.id === payer.id) continue;
+    const wageBill = workerDays * wagePerDay;
+    let remaining = wageBill;
+    const paidCoin = Math.min(remaining, payer.treasury);
+    if (paidCoin > 0) {
+      payer.treasury -= paidCoin;
+      recipient.treasury += paidCoin;
+      remaining -= paidCoin;
+    }
+    if (remaining > 1e-9) payInKindWages(payer, recipient, remaining, prices);
   }
-  if (remaining > 1e-9) payInKindWages(payer, recipient, remaining, prices);
 };
 
 const WAGE_IN_KIND_RESOURCES: readonly ResourceId[] = [
@@ -934,12 +1035,25 @@ const LABOR_CONSUMPTION_CLASS_ORDER: readonly CharacterClass[] = [
   'patrician',
 ];
 
+interface ConsumedLaborByClass {
+  /** Total wage-earning worker-days consumed across all classes (paid in coin). */
+  readonly paidWorkerDays: number;
+  /**
+   * Per docs/15 §C21: how those wage-earning worker-days break down by class.
+   * The wage routing splits each recipe's wage bill across the matching
+   * per-class household actors using this breakdown. Slave worker-days are
+   * NOT in this map — they are owner-funded upkeep, not cash wages.
+   */
+  readonly paidWorkerDaysByClass: ReadonlyMap<CharacterClass, number>;
+}
+
 const consumeLaborFromPoolsForOwner = (
   pools: LaborClassPools,
   laborUsed: ReadonlyMap<JobId, number>,
   ownerKind: Actor['kind'],
-): number => {
+): ConsumedLaborByClass => {
   let paidWorkerDays = 0;
+  const paidWorkerDaysByClass = new Map<CharacterClass, number>();
   for (const [job, required] of laborUsed) {
     let remaining = required;
     if (remaining <= 0) continue;
@@ -954,11 +1068,14 @@ const consumeLaborFromPoolsForOwner = (
       const next = available - used;
       if (next > 1e-9) byClass.set(klass, next);
       else byClass.delete(klass);
-      if (isWageEarningLaborClass(klass)) paidWorkerDays += used;
+      if (isWageEarningLaborClass(klass)) {
+        paidWorkerDays += used;
+        paidWorkerDaysByClass.set(klass, (paidWorkerDaysByClass.get(klass) ?? 0) + used);
+      }
       remaining -= used;
     }
   }
-  return paidWorkerDays;
+  return { paidWorkerDays, paidWorkerDaysByClass };
 };
 
 /**
@@ -1440,7 +1557,12 @@ const buyFallbackRationsFromOwner = (
 };
 
 const FALLBACK_RATION_BUYER_KIND_PRIORITY: readonly Actor['kind'][] = [
-  'common_household',
+  // Per docs/15 §C21 the legacy single common_household actor split into
+  // per-class household actors. Plebeian household first because that's the
+  // bulk of the urban free population.
+  'plebeian_household',
+  'freedman_household',
+  'foreigner_household',
   'hamlet_household',
   'free_village',
   'city_corporation',
@@ -1475,7 +1597,9 @@ const fallbackRationBuyers = (
 
 const sellerCanSelfProvisionRations = (settlement: Settlement, seller: Actor): boolean => {
   switch (seller.kind) {
-    case 'common_household':
+    case 'plebeian_household':
+    case 'freedman_household':
+    case 'foreigner_household':
     case 'hamlet_household':
     case 'free_village':
     case 'city_corporation':
@@ -2906,6 +3030,150 @@ const deleteClearingPriceIfNoRecordedOutflow = (
 ): void => {
   if ((settlement.market.recentOutflows.get(resource) ?? 0) > 0) return;
   settlement.market.lastClearingPrice.delete(resource);
+  clearMarketBook(settlement, resource);
+};
+
+/**
+ * Surface the residual bid-ask book from a clearing result onto the
+ * settlement's MarketSnapshot. Per docs/08 §"Bid-ask book", the book is
+ * derived per-tick from the residual schedules; we just persist whatever
+ * the CDA emitted.
+ */
+const recordBookFromClearing = (
+  settlement: Settlement,
+  resource: ResourceId,
+  result: {
+    readonly bestAsk: number | null;
+    readonly askDepth: number;
+    readonly bestBid: number | null;
+    readonly bidDepth: number;
+    readonly midPrice: number | null;
+    readonly spread: number | null;
+  },
+): void => {
+  const entry: MarketBookEntry = {
+    bestAsk: result.bestAsk,
+    askDepth: result.askDepth,
+    bestBid: result.bestBid,
+    bidDepth: result.bidDepth,
+    midPrice: result.midPrice,
+    spread: result.spread,
+  };
+  recordMarketBook(settlement, resource, entry);
+};
+
+const BOOK_LADDER_MAX_ORDERS_PER_SIDE = 12;
+
+/**
+ * Per docs/15 §C19: build the per-source bid/ask ladder from the residual
+ * schedules and stamp it on the settlement. Asks ascending, bids descending,
+ * capped to BOOK_LADDER_MAX_ORDERS_PER_SIDE entries per side so the snapshot
+ * doesn't balloon when a city has hundreds of tiny producer-input bids.
+ */
+const recordBookLadderFromClearing = (
+  world: WorldState,
+  settlement: Settlement,
+  resource: ResourceId,
+  demandSources: readonly {
+    readonly id: string;
+    readonly curve: 'subsistence' | 'comfort' | 'status' | 'derived';
+    quantityAt(price: number): number;
+    readonly peakQuantity: number;
+    readonly maxWillingnessToPay: number;
+    readonly buyerActor?: ActorId;
+  }[],
+  supplySources: readonly {
+    readonly id: string;
+    readonly ownerActor: ActorId;
+    readonly reservationPrice: number;
+    readonly availableToSell: number;
+  }[],
+  result: {
+    readonly clearingPrice: number;
+    readonly totalTraded: number;
+    readonly trades: readonly {
+      readonly buyerSourceId: string;
+      readonly sellerSourceId: string;
+      readonly quantity: number;
+    }[];
+  },
+  today: Day,
+): void => {
+  // How much of each demand/supply source was filled today?
+  const filledByBuyer = new Map<string, number>();
+  const filledBySeller = new Map<string, number>();
+  for (const trade of result.trades) {
+    filledByBuyer.set(
+      trade.buyerSourceId,
+      (filledByBuyer.get(trade.buyerSourceId) ?? 0) + trade.quantity,
+    );
+    filledBySeller.set(
+      trade.sellerSourceId,
+      (filledBySeller.get(trade.sellerSourceId) ?? 0) + trade.quantity,
+    );
+  }
+  const evalPrice = Number.isFinite(result.clearingPrice)
+    ? result.clearingPrice
+    : Number.MAX_SAFE_INTEGER;
+  const asks: MarketBookOrder[] = [];
+  for (const s of supplySources) {
+    const filled = filledBySeller.get(s.id) ?? 0;
+    const remaining = Math.max(0, s.availableToSell - filled);
+    if (remaining <= 1e-6) continue;
+    if (!Number.isFinite(s.reservationPrice)) continue;
+    const actor = world.actors.get(s.ownerActor);
+    if (actor === undefined) continue;
+    asks.push({
+      actorId: s.ownerActor,
+      actorKind: actor.kind,
+      price: s.reservationPrice,
+      quantity: remaining,
+    });
+  }
+  asks.sort((a, b) => a.price - b.price);
+  const bids: MarketBookOrder[] = [];
+  for (const d of demandSources) {
+    const filled = filledByBuyer.get(d.id) ?? 0;
+    // Residual quantity that would still trade at the curve's max-WTP.
+    // For subsistence (maxWtp = Infinity) we use quantityAt(eval) as a
+    // representative current-day order size.
+    const sampleQty = Number.isFinite(d.maxWillingnessToPay)
+      ? d.peakQuantity
+      : d.quantityAt(evalPrice);
+    const remaining = Math.max(0, sampleQty - filled);
+    if (remaining <= 1e-6) continue;
+    if (!Number.isFinite(d.maxWillingnessToPay)) {
+      // Subsistence: infinite-WTP. Show the bid at the current clearing
+      // price for ladder purposes (its effective floor in this market).
+      if (!Number.isFinite(result.clearingPrice) || result.clearingPrice <= 0) continue;
+      const buyer = d.buyerActor !== undefined ? world.actors.get(d.buyerActor) : undefined;
+      if (buyer === undefined) continue;
+      bids.push({
+        actorId: d.buyerActor as ActorId,
+        actorKind: buyer.kind,
+        price: result.clearingPrice,
+        quantity: remaining,
+        curve: d.curve,
+      });
+      continue;
+    }
+    if (d.buyerActor === undefined) continue;
+    const buyer = world.actors.get(d.buyerActor);
+    if (buyer === undefined) continue;
+    bids.push({
+      actorId: d.buyerActor,
+      actorKind: buyer.kind,
+      price: d.maxWillingnessToPay,
+      quantity: remaining,
+      curve: d.curve,
+    });
+  }
+  bids.sort((a, b) => b.price - a.price);
+  const ladder: MarketBookLadder = {
+    asks: asks.slice(0, BOOK_LADDER_MAX_ORDERS_PER_SIDE),
+    bids: bids.slice(0, BOOK_LADDER_MAX_ORDERS_PER_SIDE),
+  };
+  recordMarketBookLadder(settlement, resource, ladder, today);
 };
 
 const tradePhase = (
@@ -3015,6 +3283,22 @@ const tradePhase = (
       const result = clearMarket(pair.demand, pair.supply, {
         maxPrice: marketMaxPriceForResource(resId, pair.supply.sources, seededPrices),
       });
+      // Record the residual bid-ask book regardless of whether anything cleared
+      // today. Caravans, viewer panels, and dormant-market diagnostics all read
+      // from it.
+      recordBookFromClearing(settlement, resId, result);
+      // Per docs/15 §C19: also record the full per-source ladder so the
+      // viewer can show the actual book depth (who is bidding/asking, not
+      // just the best quote).
+      recordBookLadderFromClearing(
+        world,
+        settlement,
+        resId,
+        pair.demand.sources,
+        pair.supply.sources,
+        result,
+        today,
+      );
       if (result.totalTraded <= 0) {
         if (
           pair.demand.sources.length > 0 &&
@@ -3111,6 +3395,7 @@ const tradePhase = (
         continue;
       }
       recordClearingPrice(settlement, resId, result.clearingPrice);
+      recordLastClearedDay(settlement, resId, today);
       stats.marketsCleared += 1;
       events.push({
         type: 'market_cleared',
@@ -3615,13 +3900,11 @@ const pickDemandBackedLocalBuyer = (
   sources: readonly DemandSource[],
   price: number,
 ): LocalTradeBuyerIntent | null => {
-  let best:
-    | {
-        readonly source: DemandSource;
-        readonly actor: Actor;
-        readonly quantityDemanded: number;
-      }
-    | null = null;
+  let best: {
+    readonly source: DemandSource;
+    readonly actor: Actor;
+    readonly quantityDemanded: number;
+  } | null = null;
 
   for (const source of sources) {
     if (source.buyerActor === undefined || source.buyerDisposition === undefined) continue;
@@ -3938,11 +4221,14 @@ const politicsPhase = (world: WorldState, rng: Rng, today: Day, events: TickEven
     workerReallocationPhase(world, today, events);
   }
   // Quarterly hook (every 90 days): each settlement's stockpile-owning
-  // actors evaluate observed prices and invest in profitable buildings.
-  // Per docs/15 §C4 — Stage 2 specialization. Without this, the
-  // procgen seed is the FINAL building layout for the world's lifetime.
+  // actors evaluate observed prices and invest in profitable buildings,
+  // and the fiscal-redistribution pass moves cash from cash-generating
+  // actor kinds (city corps, off-map houses, tenant villages) to
+  // cash-consuming actor kinds (patrician families). Per docs/15 §C4
+  // (investment) and §C20 (fiscal redistribution).
   if ((today + 1) % 90 === 0) {
     investmentPhase(world, today, events);
+    fiscalRedistributionPhase(world, today, events);
   }
   // Tax shipments: per docs/11 §"Taxes" + the codex review #2.
   // Governor assesses on harvest-tribute day (autumn) + monthly coin
@@ -4308,6 +4594,34 @@ const localRationSellerQuotes = (
     return String(a.actor.id).localeCompare(String(b.actor.id));
   });
   return quotes;
+};
+
+/**
+ * Per docs/15 §C22 + C19: collect each candidate destination's residual
+ * bid depth (best-bid quantity) per resource so the caravan planner can
+ * cap planned cargo at what the destination market can actually absorb.
+ * Returns a Map keyed by `hexKey(candidate.hex)` → resource → quantity.
+ * Candidates without quoted bids contribute no entry → the planner treats
+ * those resources as effectively unlimited (it has no evidence either
+ * way), preserving back-compat with fixtures that don't populate books.
+ */
+const buildDestinationBidDepthMap = (
+  world: WorldState,
+  candidates: readonly { readonly id: SettlementId; readonly hex: Hex }[],
+): ReadonlyMap<string, ReadonlyMap<ResourceId, Quantity>> => {
+  const out = new Map<string, Map<ResourceId, Quantity>>();
+  for (const candidate of candidates) {
+    const settlement = world.settlements.get(candidate.id);
+    if (settlement === undefined) continue;
+    const market = settlement.market;
+    if (market.bidDepth.size === 0) continue;
+    const byResource = new Map<ResourceId, Quantity>();
+    for (const [resource, depth] of market.bidDepth) {
+      if (Number.isFinite(depth) && depth > 0) byResource.set(resource, depth);
+    }
+    if (byResource.size > 0) out.set(hexKey(candidate.hex), byResource);
+  }
+  return out;
 };
 
 const localSupplyAvailabilityByResource = (
@@ -5124,6 +5438,11 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
     const originAvailability =
       localBucket === undefined ? undefined : localSupplyAvailabilityByResource(world, localBucket);
     const missingRationKg = caravanMissingRationReserveKg(c);
+    // Per docs/15 §C22 + C19: pre-build a destination → resource → bid
+    // depth map for the candidates so the planner can cap cargo at what
+    // each destination market can actually absorb. Without this the
+    // planner over-loads goods that won't clear on arrival.
+    const destinationBidDepth = buildDestinationBidDepthMap(world, candidates);
 
     // 2. Plan next route.
     const plan = planCaravanRoute({
@@ -5143,6 +5462,7 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
         ...(originAvailability !== undefined
           ? { originAvailableQuantity: originAvailability }
           : {}),
+        destinationBidDepth,
       },
       includeReason: false,
       rng: rng.derive(String(cId)),
@@ -6689,6 +7009,200 @@ const investmentPhase = (world: WorldState, _today: Day, events: TickEvent[]): v
       costCoin: best.coinCost,
     });
   }
+};
+
+// --- Phase: fiscal redistribution (docs/15 §C20) --------------------------
+
+/**
+ * Per docs/15 §C20 + §C22: a quarterly fiscal-redistribution pass that
+ * keeps cash circulating across owner kinds. Without it, a single watchdog
+ * burn-in drains patrician treasuries to ~0 within months while city
+ * corporations accumulate the cash — every comfort / status / capital
+ * market freezes even though physical stockpiles are huge. See docs/08
+ * §"Cash circulation discipline" for the mechanism.
+ *
+ * Two flows fire on the same quarterly cadence as investmentPhase:
+ *
+ *   1. civic_dividend  — every city_corporation pays a fixed fraction of
+ *                        its treasury, split evenly, to patrician families
+ *                        whose homeSettlement matches the city's
+ *                        settlement. Models cura annonae / magistrate
+ *                        stipends / civic contract pay.
+ *   2. tenant_rent     — free_village / hamlet_household actors pay rent
+ *                        to the patrician families of their nearest patron
+ *                        city, split evenly. Capped so a single rent
+ *                        collection never overdrafts the tenant.
+ *
+ * The legacy `merchant_residual` channel was REMOVED in §C22 because it
+ * was a synthetic transfer with no real economic story. The proper
+ * inbound coin flow from off-map is the export caravan path: cities
+ * ship surplus → cargo crosses the map edge → global-market coin credits
+ * the source actor's treasury via `completeOffMapExportIfArrived`. Off-map
+ * houses still accumulate treasury from import sales, but they don't bid
+ * on-map for anything, so that growth is a benign sink.
+ *
+ * Each transfer emits a fiscal_redistribution TickEvent so the viewer and
+ * burn-in instrumentation can audit the flows.
+ */
+// docs/15 §C20. Tuned by 3-year watchdog burn-in iterations.
+//
+// Patrician estates burn coin steadily on production wages (each recipe
+// run pays free workers their subsistence basket in coin). Without
+// sustained income, the families equilibrate to ~0 coin — they can keep
+// farms running via in-kind grain wages, but they cannot bid on status /
+// comfort / capital goods.
+//
+// The fiscal redistribution fires QUARTERLY (every 91 days) alongside
+// investmentPhase. Rates below are per-quarter:
+//   civic dividend  8% → ≈32% APR
+//   tenant rent     5% → ≈22% APR (capped at 15% of tenant treasury)
+//
+// The merchant_residual channel was REMOVED — off-map houses now act as
+// natural coin sinks (their import sale revenue does not flow back via
+// a synthetic redistribution). The legitimate inbound flow is the export
+// caravan path: city-based actors (patrician families, city corps) ship
+// surplus to edge hexes, the cargo "leaves the map," and global-market
+// coin credits the source actor's treasury via
+// `completeOffMapExportIfArrived`. That is the trade-surplus channel that
+// matches docs/08 §"Off-map global market". See docs/15 §C20 / §C22 for
+// the rationale.
+const CITY_CORP_DIVIDEND_FRACTION = 0.08;
+const TENANT_RENT_FRACTION_PER_QUARTER = 0.05;
+const TENANT_RENT_TREASURY_CAP_FRACTION = 0.15;
+const TENANT_RENT_MAX_HEX_DISTANCE = 30;
+const FISCAL_TRANSFER_MIN_COIN = 0.5;
+
+const fiscalRedistributionPhase = (world: WorldState, _today: Day, events: TickEvent[]): void => {
+  // Index patrician families by homeSettlement for civic-dividend split.
+  const patriciansBySettlement = new Map<SettlementId, Actor[]>();
+  // Also keep a flat list for tenant-rent + merchant-residual proximity
+  // lookups, paired with the family's home anchor hex.
+  const patricianAnchors: { actor: Actor; anchor: Hex }[] = [];
+  for (const a of world.actors.values()) {
+    if (a.kind !== 'patrician_family') continue;
+    if (a.homeSettlement === undefined) continue;
+    const home = world.settlements.get(a.homeSettlement);
+    if (home === undefined) continue;
+    let bucket = patriciansBySettlement.get(a.homeSettlement);
+    if (bucket === undefined) {
+      bucket = [];
+      patriciansBySettlement.set(a.homeSettlement, bucket);
+    }
+    bucket.push(a);
+    patricianAnchors.push({ actor: a, anchor: home.anchor });
+  }
+
+  // --- Channel 1: civic_dividend ------------------------------------------
+  for (const corp of world.actors.values()) {
+    if (corp.kind !== 'city_corporation') continue;
+    if (corp.homeSettlement === undefined) continue;
+    const families = patriciansBySettlement.get(corp.homeSettlement);
+    if (families === undefined || families.length === 0) continue;
+    const pool = corp.treasury * CITY_CORP_DIVIDEND_FRACTION;
+    if (pool < FISCAL_TRANSFER_MIN_COIN) continue;
+    const perFamily = pool / families.length;
+    for (const family of families) {
+      const transfer = Math.min(perFamily, corp.treasury);
+      if (transfer < FISCAL_TRANSFER_MIN_COIN) continue;
+      corp.treasury -= transfer;
+      family.treasury += transfer;
+      events.push({
+        type: 'fiscal_redistribution',
+        channel: 'civic_dividend',
+        payer: corp.id,
+        recipient: family.id,
+        coinPaid: transfer,
+      });
+    }
+  }
+
+  // --- Channel 2: tenant_rent ---------------------------------------------
+  // For each free_village / hamlet_household, find the nearest patron city
+  // (the home settlement of a patrician family) within
+  // TENANT_RENT_MAX_HEX_DISTANCE, then split the rent EVENLY across all
+  // patrician families based in that city. Without this split a single
+  // family was collecting all the regional rent, producing a tiny number
+  // of obscenely rich patricians and a long tail of broke ones.
+  if (patricianAnchors.length > 0) {
+    // Group patricians by their home settlement to allow the per-city split.
+    const familiesByHome = new Map<SettlementId, Actor[]>();
+    for (const entry of patricianAnchors) {
+      const home = entry.actor.homeSettlement;
+      if (home === undefined) continue;
+      let bucket = familiesByHome.get(home);
+      if (bucket === undefined) {
+        bucket = [];
+        familiesByHome.set(home, bucket);
+      }
+      bucket.push(entry.actor);
+    }
+    for (const tenant of world.actors.values()) {
+      if (tenant.kind !== 'free_village' && tenant.kind !== 'hamlet_household') continue;
+      if (tenant.homeSettlement === undefined) continue;
+      const tenantHome = world.settlements.get(tenant.homeSettlement);
+      if (tenantHome === undefined) continue;
+      const patron = nearestPatricianWithin(
+        patricianAnchors,
+        tenantHome.anchor,
+        TENANT_RENT_MAX_HEX_DISTANCE,
+      );
+      if (patron === null) continue;
+      // Split rent across ALL patrician families in the patron's city.
+      const patronHome = patron.homeSettlement;
+      if (patronHome === undefined) continue;
+      const families = familiesByHome.get(patronHome);
+      if (families === undefined || families.length === 0) continue;
+      const wanted = tenant.treasury * TENANT_RENT_FRACTION_PER_QUARTER;
+      const cap = tenant.treasury * TENANT_RENT_TREASURY_CAP_FRACTION;
+      const totalTransfer = Math.min(wanted, cap, tenant.treasury);
+      if (totalTransfer < FISCAL_TRANSFER_MIN_COIN) continue;
+      const perFamily = totalTransfer / families.length;
+      for (const family of families) {
+        if (perFamily < FISCAL_TRANSFER_MIN_COIN) continue;
+        const actual = Math.min(perFamily, tenant.treasury);
+        if (actual < FISCAL_TRANSFER_MIN_COIN) continue;
+        tenant.treasury -= actual;
+        family.treasury += actual;
+        events.push({
+          type: 'fiscal_redistribution',
+          channel: 'tenant_rent',
+          payer: tenant.id,
+          recipient: family.id,
+          coinPaid: actual,
+        });
+      }
+    }
+  }
+
+  // No channel 3. Per docs/15 §C22, the legacy `merchant_residual`
+  // (off-map house → patrician family) was removed because it didn't
+  // correspond to any real economic mechanism. The legitimate channel
+  // for off-map → on-map coin flow is the EXPORT caravan: city-based
+  // actors (patrician families, city corps) ship surplus to an edge hex,
+  // the cargo leaves the map, and global-market coin credits the source
+  // actor's treasury via `completeOffMapExportIfArrived`. Off-map house
+  // treasury still grows from import sales, but they don't bid on-map for
+  // anything, so the growth is a benign sink.
+};
+
+const nearestPatricianWithin = (
+  anchors: readonly { actor: Actor; anchor: Hex }[],
+  target: Hex,
+  maxDistance: number,
+): Actor | null => {
+  let best: Actor | null = null;
+  let bestDist = Number.POSITIVE_INFINITY;
+  let bestId: string | undefined;
+  for (const entry of anchors) {
+    const d = hexDistance(target, entry.anchor);
+    if (d > maxDistance) continue;
+    if (d < bestDist || (d === bestDist && (bestId === undefined || entry.actor.id < bestId))) {
+      best = entry.actor;
+      bestDist = d;
+      bestId = String(entry.actor.id);
+    }
+  }
+  return best;
 };
 
 interface ScoredInvestment {

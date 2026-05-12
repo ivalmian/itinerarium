@@ -54,7 +54,10 @@ export interface FactionScreenOpts {
 const FACTION_TYPE_LABELS: Record<string, string> = {
   patrician_family: 'Patrician family',
   free_village: 'Free village council',
-  common_household: 'Common household',
+  // docs/15 §C21: per-class household disaggregation.
+  plebeian_household: 'Plebeian households',
+  freedman_household: 'Freedman households',
+  foreigner_household: 'Foreigner households',
   hamlet_household: 'Hamlet household',
   governor_office: "Governor's office",
   temple: 'Temple',
@@ -142,11 +145,7 @@ export const createFactionScreen = (opts: FactionScreenOpts): FactionScreen => {
 // Rendering helpers
 // ---------------------------------------------------------------------------
 
-const renderMissing = (
-  panel: HTMLElement,
-  id: FactionId,
-  onClose: () => void,
-): void => {
+const renderMissing = (panel: HTMLElement, id: FactionId, onClose: () => void): void => {
   const h = document.createElement('h2');
   h.className = 'faction-screen-title';
   h.textContent = 'Faction not found';
@@ -343,9 +342,10 @@ const makeAssetsSection = (
   } else {
     const list = document.createElement('div');
     list.className = 'stocklist faction-screen-stocklist';
-    const sorted = Array.from(actor.stockpile.entries()).sort(
-      (a, b) => b[1] - a[1],
-    ) as [ResourceId, number][];
+    const sorted = Array.from(actor.stockpile.entries()).sort((a, b) => b[1] - a[1]) as [
+      ResourceId,
+      number,
+    ][];
     for (const [r, qty] of sorted) {
       const row = document.createElement('div');
       row.className = 'stat-row';
@@ -354,8 +354,7 @@ const makeAssetsSection = (
       l.textContent = String(r);
       const v = document.createElement('span');
       v.className = 'value';
-      v.textContent =
-        qty >= 1000 ? `${(qty / 1000).toFixed(1)}k` : Math.round(qty).toString();
+      v.textContent = qty >= 1000 ? `${(qty / 1000).toFixed(1)}k` : Math.round(qty).toString();
       row.appendChild(l);
       row.appendChild(v);
       list.appendChild(row);
@@ -447,8 +446,7 @@ const makeAssetsSection = (
     for (const c of ownedCaravans.slice(0, 10)) {
       const row = document.createElement('button');
       row.className = 'faction-screen-caravan-row';
-      const dest =
-        c.destQ !== undefined && c.destR !== undefined ? `(${c.destQ},${c.destR})` : '—';
+      const dest = c.destQ !== undefined && c.destR !== undefined ? `(${c.destQ},${c.destR})` : '—';
       row.textContent = `${String(c.id).slice(-8)} · (${c.q},${c.r}) → ${dest}`;
       row.addEventListener('click', () => {
         setSelection(state, { kind: 'caravan', id: c.id });
@@ -532,10 +530,7 @@ const makeReputationSection = (
   return section;
 };
 
-const makeRepRow = (
-  row: RepRow,
-  openForFaction: (id: FactionId) => void,
-): HTMLElement => {
+const makeRepRow = (row: RepRow, openForFaction: (id: FactionId) => void): HTMLElement => {
   const r = document.createElement('div');
   r.className = 'faction-screen-rep-row';
 
@@ -622,10 +617,7 @@ const makeSection = (title: string): HTMLElement => {
 // Lookup helper used by panels that have an owner-actor and want to know if
 // the actor backs a Faction (i.e. whether to render a clickable link or just
 // plain text).
-export const findFactionByActor = (
-  world: WorldState,
-  actorId: ActorId,
-): Faction | undefined => {
+export const findFactionByActor = (world: WorldState, actorId: ActorId): Faction | undefined => {
   for (const f of world.factions.values()) {
     if (f.actor === actorId) return f;
   }

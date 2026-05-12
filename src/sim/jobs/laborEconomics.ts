@@ -236,3 +236,85 @@ export const wageEarningWorkerDaysForLabor = (
   context: LaborClassContext,
   labor: ReadonlyMap<JobId, number>,
 ): number => wageEarningWorkerDaysForLaborForOwner(context, labor);
+
+/**
+ * Per docs/15 §C21: break a recipe's wage-earning worker-days down by
+ * CharacterClass so the wage payer can split the wage bill across the
+ * matching per-class household actors. Returns a Map keyed by
+ * CharacterClass; classes that did not contribute to the recipe (or that
+ * the owner cannot command) are omitted.
+ *
+ * Note: only wage-earning classes (plebeian, freedman, foreigner, patrician)
+ * appear in the output. Enslaved worker-days are excluded — slaves are
+ * owner-funded subsistence per docs/11.
+ */
+export const wageEarningWorkerDaysByClassForLaborForOwner = (
+  context: LaborClassContext,
+  labor: ReadonlyMap<JobId, number>,
+  ownerKind?: ActorKind,
+): ReadonlyMap<CharacterClass, number> => {
+  const out = new Map<CharacterClass, number>();
+  if (labor.size === 0) return out;
+  for (const [job, days] of labor) {
+    if (days <= 0) continue;
+    const byClass = context.workersByJobAndClass.get(job);
+    if (byClass !== undefined) {
+      let totalForJob = 0;
+      let wageEarningForJob = 0;
+      const eligibleByClass = new Map<CharacterClass, number>();
+      for (const [klass, count] of byClass) {
+        if (!ownerCanUseLaborClass(klass, ownerKind)) continue;
+        totalForJob += count;
+        if (!WAGE_EARNING_CLASSES.has(klass)) continue;
+        wageEarningForJob += count;
+        eligibleByClass.set(klass, count);
+      }
+      if (totalForJob > 0 && wageEarningForJob > 0) {
+        const wageShare = wageEarningForJob / totalForJob;
+        const wageDays = days * wageShare;
+        for (const [klass, count] of eligibleByClass) {
+          const portion = wageDays * (count / wageEarningForJob);
+          if (portion <= 0) continue;
+          out.set(klass, (out.get(klass) ?? 0) + portion);
+        }
+      }
+      continue;
+    }
+    // Fallback path for fixtures without jobAllocations: split wage-earning
+    // labor across the job's eligible wage-earning classes weighted by their
+    // working-adult population.
+    if (context.hasJobAllocations && context.totalWorkingAdults > 0) continue;
+    const def = getJob(job);
+    let eligibleTotal = 0;
+    let wageTotal = 0;
+    const wagePopByClass = new Map<CharacterClass, number>();
+    for (const klass of def.allowedClasses) {
+      if (!ownerCanUseLaborClass(klass, ownerKind)) continue;
+      const count = context.workingAdultsByClass.get(klass) ?? 0;
+      eligibleTotal += count;
+      if (!WAGE_EARNING_CLASSES.has(klass)) continue;
+      wageTotal += count;
+      wagePopByClass.set(klass, count);
+    }
+    if (eligibleTotal > 0 && wageTotal > 0) {
+      const wageShare = wageTotal / eligibleTotal;
+      const wageDays = days * wageShare;
+      for (const [klass, count] of wagePopByClass) {
+        const portion = wageDays * (count / wageTotal);
+        if (portion <= 0) continue;
+        out.set(klass, (out.get(klass) ?? 0) + portion);
+      }
+      continue;
+    }
+    // Last-resort fallback (preserves legacy fixture behavior): no
+    // population pyramid at all. Treat the whole wage bill as plebeian —
+    // the dominant urban free class — so unit tests that construct
+    // synthetic worlds without a population pyramid still see wages flow.
+    // Matches the legacy `wageEarningShareForJobForOwner` rule that returned
+    // 1.0 when context.totalWorkingAdults <= 0.
+    if (context.totalWorkingAdults <= 0) {
+      out.set('plebeian', (out.get('plebeian') ?? 0) + days);
+    }
+  }
+  return out;
+};

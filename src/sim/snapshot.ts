@@ -94,6 +94,14 @@ interface SerializedMarketSnapshot {
   readonly recentInflows: ReadonlyArray<readonly [string, number]>;
   readonly recentOutflows: ReadonlyArray<readonly [string, number]>;
   readonly lastClearingPrice: ReadonlyArray<readonly [string, number]>;
+  /** docs/08 §"Bid-ask book". Optional for back-compat with older snapshots. */
+  readonly bestAsk?: ReadonlyArray<readonly [string, number]>;
+  readonly askDepth?: ReadonlyArray<readonly [string, number]>;
+  readonly bestBid?: ReadonlyArray<readonly [string, number]>;
+  readonly bidDepth?: ReadonlyArray<readonly [string, number]>;
+  readonly midPrice?: ReadonlyArray<readonly [string, number]>;
+  readonly spread?: ReadonlyArray<readonly [string, number]>;
+  readonly lastClearedDay?: ReadonlyArray<readonly [string, number]>;
 }
 
 interface SerializedSettlementBuilding {
@@ -301,6 +309,13 @@ const serializeSettlement = (s: Settlement): SerializedSettlement => {
       recentInflows: stringMapToArray(s.market.recentInflows),
       recentOutflows: stringMapToArray(s.market.recentOutflows),
       lastClearingPrice: stringMapToArray(s.market.lastClearingPrice),
+      bestAsk: stringMapToArray(s.market.bestAsk),
+      askDepth: stringMapToArray(s.market.askDepth),
+      bestBid: stringMapToArray(s.market.bestBid),
+      bidDepth: stringMapToArray(s.market.bidDepth),
+      midPrice: stringMapToArray(s.market.midPrice),
+      spread: stringMapToArray(s.market.spread),
+      lastClearedDay: stringMapToArray(s.market.lastClearedDay),
     },
     catchmentBaselinePop: s.catchmentBaselinePop,
     catchmentDayLastChanged: s.catchmentDayLastChanged,
@@ -370,6 +385,27 @@ const deserializeSettlement = (s: SerializedSettlement): Settlement => {
   }
   for (const [r, n] of s.market.lastClearingPrice) {
     settlement.market.lastClearingPrice.set(resourceId(r), n);
+  }
+  for (const [r, n] of s.market.bestAsk ?? []) {
+    settlement.market.bestAsk.set(resourceId(r), n);
+  }
+  for (const [r, n] of s.market.askDepth ?? []) {
+    settlement.market.askDepth.set(resourceId(r), n);
+  }
+  for (const [r, n] of s.market.bestBid ?? []) {
+    settlement.market.bestBid.set(resourceId(r), n);
+  }
+  for (const [r, n] of s.market.bidDepth ?? []) {
+    settlement.market.bidDepth.set(resourceId(r), n);
+  }
+  for (const [r, n] of s.market.midPrice ?? []) {
+    settlement.market.midPrice.set(resourceId(r), n);
+  }
+  for (const [r, n] of s.market.spread ?? []) {
+    settlement.market.spread.set(resourceId(r), n);
+  }
+  for (const [r, n] of s.market.lastClearedDay ?? []) {
+    settlement.market.lastClearedDay.set(resourceId(r), n);
   }
   return settlement;
 };

@@ -35,10 +35,16 @@ export interface SettlementPopupOpts {
   readonly id: SettlementId;
   readonly state: ViewerState;
   readonly history: ViewerHistory;
+  /**
+   * Called when the player clicks a resource row in the stockpile / market
+   * table. The app uses this to open the per-resource bid-ask book popup
+   * (docs/15 §C19 + §C21). When omitted, rows are not clickable.
+   */
+  readonly onResourceClick?: (resource: ResourceId) => void;
 }
 
 export const renderSettlementPopup = (opts: SettlementPopupOpts): SettlementPopupContent | null => {
-  const { world, id, state, history } = opts;
+  const { world, id, state, history, onResourceClick } = opts;
   const s = world.settlements.get(id);
   if (s === undefined) return null;
 
@@ -48,7 +54,7 @@ export const renderSettlementPopup = (opts: SettlementPopupOpts): SettlementPopu
   root.appendChild(renderPopulationSection(s));
   root.appendChild(renderTreasurySection(world, s));
   root.appendChild(renderBuildingsSection(s));
-  root.appendChild(renderStockpileSection(world, s, history));
+  root.appendChild(renderStockpileSection(world, s, history, onResourceClick));
   const events = renderEventsSection(history, s.id);
   if (events !== null) root.appendChild(events);
 
@@ -428,6 +434,18 @@ interface StockRow {
   readonly resource: string;
   readonly quantity: number;
   readonly lastPrice: number | null;
+  /**
+   * Days since the most recent CLEARED trade. `null` if the resource has
+   * never had a real clearing (the `lastPrice` is then a shadow/scarcity
+   * quote, not a transaction). `undefined` if the snapshot pre-dates
+   * lastClearedDay (older saves).
+   */
+  readonly daysSinceCleared: number | null;
+  readonly bestBid: number | null;
+  readonly bestAsk: number | null;
+  readonly bidDepth: number;
+  readonly askDepth: number;
+  readonly spread: number | null;
   readonly imp: number;
   readonly exp: number;
   readonly prod: number;
@@ -439,6 +457,7 @@ const renderStockpileSection = (
   world: WorldState,
   s: Settlement,
   history: ViewerHistory,
+  onResourceClick?: (resource: ResourceId) => void,
 ): HTMLElement => {
   const section = popupSection('Stockpile & market goods');
 
@@ -485,18 +504,33 @@ const renderStockpileSection = (
     }
   }
 
+  const today = world.day;
   const rows: StockRow[] = [];
   for (const r of seenResources) {
     const qty = totals.get(r) ?? 0;
-    const lp = s.market.lastClearingPrice.get(r as ResourceId);
-    const imp = s.market.recentImports.get(r as ResourceId) ?? 0;
-    const exp = s.market.recentExports.get(r as ResourceId) ?? 0;
-    const prod = s.market.recentProduction.get(r as ResourceId) ?? 0;
-    const cons = s.market.recentConsumption.get(r as ResourceId) ?? 0;
+    const resId = r as ResourceId;
+    const lp = s.market.lastClearingPrice.get(resId);
+    const imp = s.market.recentImports.get(resId) ?? 0;
+    const exp = s.market.recentExports.get(resId) ?? 0;
+    const prod = s.market.recentProduction.get(resId) ?? 0;
+    const cons = s.market.recentConsumption.get(resId) ?? 0;
+    const bidVal = s.market.bestBid.get(resId);
+    const askVal = s.market.bestAsk.get(resId);
+    const bidDepth = s.market.bidDepth.get(resId) ?? 0;
+    const askDepth = s.market.askDepth.get(resId) ?? 0;
+    const spreadVal = s.market.spread.get(resId);
+    const clearedDay = s.market.lastClearedDay.get(resId);
+    const daysSinceCleared = clearedDay !== undefined ? today - clearedDay : null;
     rows.push({
       resource: r,
       quantity: qty,
       lastPrice: lp ?? null,
+      daysSinceCleared,
+      bestBid: bidVal ?? null,
+      bestAsk: askVal ?? null,
+      bidDepth,
+      askDepth,
+      spread: spreadVal ?? null,
       imp,
       exp,
       prod,
@@ -516,14 +550,18 @@ const renderStockpileSection = (
   const thead = document.createElement('thead');
   // Flow columns reflect the ~30-day rolling window (exponential decay
   // factor exp(-1/30) per day in src/sim/tick.ts.ageRecentFlowsPhase).
+  // Bid/Ask are the residual book per docs/08 §"Bid-ask book".
   thead.innerHTML = `<tr>
     <th>Resource</th>
     <th class="num">Stock</th>
-    <th class="num">Last price</th>
-    <th class="num" title="Goods made here by recipes (~30d)">Produced</th>
-    <th class="num" title="Goods used up here by recipes/population (~30d)">Consumed</th>
-    <th class="num" title="Goods arriving from elsewhere (~30d)">Imported</th>
-    <th class="num" title="Goods sent elsewhere (~30d)">Exported</th>
+    <th class="num" title="Last cleared transaction price. Greyed out if the most recent recorded price is a shadow/scarcity quote rather than a real trade.">Last trade</th>
+    <th class="num" title="Highest standing bid (residual buyer willingness-to-pay after today's clearing)">Bid</th>
+    <th class="num" title="Lowest standing ask (residual seller reservation after today's clearing)">Ask</th>
+    <th class="num" title="Bid-ask spread = Ask − Bid">Spread</th>
+    <th class="num" title="Goods made here by recipes (~30d rolling)">Produced</th>
+    <th class="num" title="Goods used up here by recipes/population (~30d rolling)">Consumed</th>
+    <th class="num" title="Goods arriving from elsewhere (~30d rolling)">Imported</th>
+    <th class="num" title="Goods sent elsewhere (~30d rolling)">Exported</th>
     <th>Price (60d)</th>
   </tr>`;
   table.appendChild(thead);
@@ -532,13 +570,76 @@ const renderStockpileSection = (
   for (const r of rows) {
     const tr = document.createElement('tr');
     const c1 = document.createElement('td');
-    c1.textContent = r.resource;
+    if (onResourceClick !== undefined) {
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.className = 'popup-link';
+      link.textContent = r.resource;
+      link.title = 'View bid-ask book ladder';
+      link.style.cursor = 'pointer';
+      link.addEventListener('click', () => onResourceClick(r.resource as ResourceId));
+      c1.appendChild(link);
+    } else {
+      c1.textContent = r.resource;
+    }
     const c2 = document.createElement('td');
     c2.className = 'num';
     c2.textContent = r.quantity === 0 ? '—' : Math.round(r.quantity).toLocaleString();
     const c3 = document.createElement('td');
     c3.className = 'num';
-    c3.textContent = r.lastPrice === null ? '—' : r.lastPrice.toFixed(2);
+    if (r.lastPrice === null) {
+      c3.textContent = '—';
+      c3.style.color = 'var(--muted)';
+    } else if (r.daysSinceCleared === null) {
+      // We have a shadow/scarcity quote but no recorded clearing day —
+      // this is the "demand-only" or "seller-only" fallback signal.
+      c3.textContent = r.lastPrice.toFixed(2);
+      c3.style.color = 'var(--muted)';
+      c3.style.fontStyle = 'italic';
+      c3.title = 'Shadow / scarcity quote — no actual trade recorded yet.';
+    } else if (r.daysSinceCleared > 30) {
+      // Stale clearing — we have a recorded trade, but it was a while ago.
+      c3.textContent = r.lastPrice.toFixed(2);
+      c3.style.color = 'var(--muted)';
+      c3.title = `Last actual trade was ${r.daysSinceCleared} days ago.`;
+    } else {
+      c3.textContent = r.lastPrice.toFixed(2);
+      c3.title = `Cleared ${r.daysSinceCleared === 0 ? 'today' : `${r.daysSinceCleared} day(s) ago`}.`;
+    }
+
+    const cBid = document.createElement('td');
+    cBid.className = 'num';
+    if (r.bestBid === null) {
+      cBid.textContent = '—';
+      cBid.style.color = 'var(--muted)';
+    } else {
+      cBid.textContent = r.bestBid.toFixed(2);
+      cBid.style.color = '#7e9ec8';
+      if (r.bidDepth > 0) cBid.title = `bid depth: ${fmtCompact(r.bidDepth)} units`;
+    }
+    const cAsk = document.createElement('td');
+    cAsk.className = 'num';
+    if (r.bestAsk === null) {
+      cAsk.textContent = '—';
+      cAsk.style.color = 'var(--muted)';
+    } else {
+      cAsk.textContent = r.bestAsk.toFixed(2);
+      cAsk.style.color = '#c89e7e';
+      if (r.askDepth > 0) cAsk.title = `ask depth: ${fmtCompact(r.askDepth)} units`;
+    }
+    const cSpread = document.createElement('td');
+    cSpread.className = 'num';
+    if (r.spread === null) {
+      cSpread.textContent = '—';
+      cSpread.style.color = 'var(--muted)';
+    } else {
+      cSpread.textContent = r.spread.toFixed(2);
+      // Highlight wide relative spreads.
+      const ref =
+        r.lastPrice ?? (r.bestBid !== null && r.bestAsk !== null ? (r.bestBid + r.bestAsk) / 2 : 0);
+      if (ref > 0 && r.spread / ref > 0.3) cSpread.style.color = '#d8a86a';
+    }
+
     const cProd = document.createElement('td');
     cProd.className = 'num';
     cProd.textContent = r.prod === 0 ? '—' : fmtCompact(r.prod);
@@ -565,6 +666,9 @@ const renderStockpileSection = (
     tr.appendChild(c1);
     tr.appendChild(c2);
     tr.appendChild(c3);
+    tr.appendChild(cBid);
+    tr.appendChild(cAsk);
+    tr.appendChild(cSpread);
     tr.appendChild(cProd);
     tr.appendChild(cCons);
     tr.appendChild(cImp);

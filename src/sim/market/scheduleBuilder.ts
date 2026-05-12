@@ -322,7 +322,12 @@ const URGENCY_BY_KIND: Readonly<Record<ActorKind, number>> = Object.freeze({
   off_map_house: 0.2,
   player: 0.5,
   caravan_owner: 0.5,
-  common_household: 1.2,
+  // Per docs/15 §C21 the legacy `common_household` aggregate is split into
+  // three per-class household actors. Each carries the same "needs cash this
+  // week" urgency profile as the old common_household did.
+  plebeian_household: 1.2,
+  freedman_household: 1.2,
+  foreigner_household: 1.2,
   free_village: 1.0,
   hamlet_household: 1.5,
   temple: 0.2,
@@ -334,28 +339,35 @@ const URGENCY_BY_KIND: Readonly<Record<ActorKind, number>> = Object.freeze({
 const CONSUMER_BUYER_KIND_PRIORITY: Readonly<Record<CharacterClass, readonly ActorKind[]>> =
   Object.freeze({
     patrician: ['patrician_family', 'governor_office', 'city_corporation', 'player'],
+    // Per docs/15 §C21 each class bids primarily through its own
+    // class-level household actor. Hamlet/free-village fall back to the
+    // single settlement-level household; the city corp + patrician are
+    // last-resort buyers (e.g., grain rations for civic relief).
     plebeian: [
-      'common_household',
+      'plebeian_household',
       'hamlet_household',
       'free_village',
       'city_corporation',
       'patrician_family',
     ],
     freedman: [
-      'common_household',
+      'freedman_household',
       'hamlet_household',
       'free_village',
       'city_corporation',
       'patrician_family',
     ],
     foreigner: [
-      'common_household',
+      'foreigner_household',
       'hamlet_household',
       'free_village',
       'city_corporation',
       'patrician_family',
     ],
-    slave: ['patrician_family', 'city_corporation', 'hamlet_household', 'free_village'],
+    // Slaves are owner-funded subsistence per docs/11. They bid through whoever
+    // owns them: a patrician estate, the city corp, or a hamlet/free-village
+    // collective. There is intentionally no slave_household actor.
+    slave: ['patrician_family', 'city_corporation', 'hamlet_household', 'free_village', 'temple'],
   });
 
 const DEFAULT_OWNER_URGENCY = 1;
@@ -603,7 +615,17 @@ interface SettlementScheduleContext {
   readonly buildingsByKind: ReadonlyMap<string, number>;
   readonly buildings: Settlement['buildings'];
   readonly stockpilesByOwner: ReadonlyMap<ActorId, ReadonlyMap<ResourceId, Quantity>>;
-  readonly consumerBuyerByClass: ReadonlyMap<CharacterClass, ActorId>;
+  /**
+   * Per docs/15 §C21 the buyer for a consumer class can be multiple actors:
+   * plebeians have ONE plebeian_household per settlement, but patricians have
+   * 3-7 separate `patrician_family` actors per city — each with its own
+   * treasury. Slaves similarly bid through all owner actors in the
+   * settlement (city corp, governor, families, temples). When there is more
+   * than one buyer for a class we split demand evenly so each buyer
+   * contributes its own DemandSource with its own treasury cap, producing
+   * the richer per-buyer bid-ask book documented in docs/15 §C21.
+   */
+  readonly consumerBuyersByClass: ReadonlyMap<CharacterClass, readonly ActorId[]>;
   readonly laborClassContext: LaborClassContext;
   readonly actorTreasuryByActor?: ReadonlyMap<ActorId, number>;
   readonly grid?: HexGrid;
@@ -625,7 +647,7 @@ const buildSettlementScheduleContext = (inputs: BuildScheduleInputs): Settlement
     buildingsByKind: countBuildingsByKind(settlement),
     buildings: settlement.buildings,
     stockpilesByOwner: inputs.stockpilesByOwner,
-    consumerBuyerByClass: buildConsumerBuyerByClass(inputs),
+    consumerBuyersByClass: buildConsumerBuyersByClass(inputs),
     laborClassContext: buildLaborClassContext(settlement),
     ...(inputs.actorTreasuryByActor !== undefined
       ? { actorTreasuryByActor: inputs.actorTreasuryByActor }
@@ -719,23 +741,32 @@ const subsistenceSources = (
     // Total segment wealth = per-capita × headcount (use raw cohort heads,
     // not adult-equivalents — wealth is held per person).
     const headCount = context.headsByClass.get(klass) ?? 0;
-    const buyer = context.consumerBuyerByClass.get(klass);
-    const segmentWealth = subsistenceBudgetForActor(
-      context,
-      resource,
-      buyer,
-      wealthPerHead * headCount,
-      inputs.recentLocalPrices,
-    );
-    if (segmentWealth <= 0) continue;
-    out.push(
-      subsistenceDemand({
-        id: `subsistence:${String(inputs.settlement.id)}:${klass}:${resourceKey}`,
-        needPerDay: totalNeed,
-        segmentWealth,
-        ...consumerBuyerFields(context, klass),
-      }),
-    );
+    // docs/15 §C21: split demand across all buyer actors for this class.
+    // Patricians have multiple families; slaves bid through multiple owner
+    // kinds. Plebeian/freedman/foreigner typically have a single buyer.
+    const buyers = context.consumerBuyersByClass.get(klass) ?? [];
+    if (buyers.length === 0) continue;
+    const perBuyerNeed = totalNeed / buyers.length;
+    const perBuyerNominalWealth = (wealthPerHead * headCount) / buyers.length;
+    for (let i = 0; i < buyers.length; i++) {
+      const buyer = buyers[i]!;
+      const segmentWealth = subsistenceBudgetForActor(
+        context,
+        resource,
+        buyer,
+        perBuyerNominalWealth,
+        inputs.recentLocalPrices,
+      );
+      if (segmentWealth <= 0) continue;
+      out.push(
+        subsistenceDemand({
+          id: `subsistence:${String(inputs.settlement.id)}:${klass}:${i}:${resourceKey}`,
+          needPerDay: perBuyerNeed,
+          segmentWealth,
+          ...consumerBuyerFieldsFor(buyer),
+        }),
+      );
+    }
   }
   return out;
 };
@@ -763,20 +794,24 @@ const comfortSources = (
     const budgetPerHead = budgetMap.get(klass) ?? 0;
     const budgetShare = COMFORT_BUDGET_SHARE[resourceKey] ?? 0;
     const nominalBudget = budgetPerHead * headCount * budgetShare;
-    const totalBudget = budgetCapForActor(
-      context,
-      context.consumerBuyerByClass.get(klass),
-      nominalBudget,
-    );
-    if (totalBudget <= 0) continue;
-    out.push(
-      comfortDemand({
-        id: `comfort:${String(inputs.settlement.id)}:${klass}:${resourceKey}`,
-        wantQuantity: totalWant,
-        budget: totalBudget,
-        ...consumerBuyerFields(context, klass),
-      }),
-    );
+    // docs/15 §C21: split across multiple buyers when present.
+    const buyers = context.consumerBuyersByClass.get(klass) ?? [];
+    if (buyers.length === 0) continue;
+    const perBuyerWant = totalWant / buyers.length;
+    const perBuyerBudget = nominalBudget / buyers.length;
+    for (let i = 0; i < buyers.length; i++) {
+      const buyer = buyers[i]!;
+      const cap = budgetCapForActor(context, buyer, perBuyerBudget);
+      if (cap <= 0) continue;
+      out.push(
+        comfortDemand({
+          id: `comfort:${String(inputs.settlement.id)}:${klass}:${i}:${resourceKey}`,
+          wantQuantity: perBuyerWant,
+          budget: cap,
+          ...consumerBuyerFieldsFor(buyer),
+        }),
+      );
+    }
   }
   return out;
 };
@@ -804,25 +839,32 @@ const statusSources = (
   const wealthPerHead = wealthMap.get('patrician') ?? 0;
   const budgetShare = STATUS_BUDGET_SHARE[resourceKey] ?? 0;
   const nominalWealth = wealthPerHead * heads * budgetShare;
-  const totalWealth = budgetCapForActor(
-    context,
-    context.consumerBuyerByClass.get('patrician'),
-    nominalWealth,
-  );
-  // Threshold = wealth-per-want-unit × a generous multiplier. Patricians will
-  // pay multiples of "fair" price for status goods; the step gives them a
-  // ceiling that reflects their actual purse depth.
-  const threshold = totalWant > 0 ? (totalWealth / totalWant) * 5 : 0;
-  if (threshold <= 0) return out;
-  out.push(
-    statusDemand({
-      id: `status:${String(inputs.settlement.id)}:patrician:${resourceKey}`,
-      wantQuantity: totalWant,
-      segmentWealth: totalWealth,
-      veryHighThreshold: threshold,
-      ...consumerBuyerFields(context, 'patrician'),
-    }),
-  );
+  // docs/15 §C21: split across all patrician_family actors. Each family
+  // bids its 1/N share of the city's patrician status demand, capped by
+  // its OWN treasury — so a wealthy family can bid for silks that a broke
+  // family can't, producing real per-family entries in the residual book.
+  const buyers = context.consumerBuyersByClass.get('patrician') ?? [];
+  if (buyers.length === 0) return out;
+  const perBuyerWant = totalWant / buyers.length;
+  const perBuyerNominalWealth = nominalWealth / buyers.length;
+  for (let i = 0; i < buyers.length; i++) {
+    const buyer = buyers[i]!;
+    const cap = budgetCapForActor(context, buyer, perBuyerNominalWealth);
+    // Threshold = wealth-per-want-unit × generous multiplier. Patricians
+    // pay multiples of "fair" price for status goods; the step gives them
+    // a ceiling reflecting actual purse depth.
+    const threshold = perBuyerWant > 0 ? (cap / perBuyerWant) * 5 : 0;
+    if (threshold <= 0) continue;
+    out.push(
+      statusDemand({
+        id: `status:${String(inputs.settlement.id)}:patrician:${i}:${resourceKey}`,
+        wantQuantity: perBuyerWant,
+        segmentWealth: cap,
+        veryHighThreshold: threshold,
+        ...consumerBuyerFieldsFor(buyer),
+      }),
+    );
+  }
   return out;
 };
 
@@ -880,22 +922,27 @@ const priesthoodServiceDemandSources = (
     if (klass === 'slave' || adultEqCount <= 0) continue;
     const headCount = context.headsByClass.get(klass) ?? 0;
     const budgetPerHead = budgetMap.get(klass) ?? 0;
-    const budget = budgetCapForActor(
-      context,
-      context.consumerBuyerByClass.get(klass),
-      budgetPerHead * headCount * 0.035,
-    );
-    if (budget <= 0) continue;
-    out.push(
-      comfortDemand({
-        id: `service:${String(inputs.settlement.id)}:${klass}:${String(resource)}`,
-        wantQuantity: adultEqCount / 2_500,
-        budget,
-        decayScale: 1.25,
-        cutoffMultiplier: 8,
-        ...consumerBuyerFields(context, klass),
-      }),
-    );
+    const nominalBudget = budgetPerHead * headCount * 0.035;
+    // docs/15 §C21: split across multiple buyers when present.
+    const buyers = context.consumerBuyersByClass.get(klass) ?? [];
+    if (buyers.length === 0) continue;
+    const perBuyerWant = adultEqCount / 2_500 / buyers.length;
+    const perBuyerNominal = nominalBudget / buyers.length;
+    for (let i = 0; i < buyers.length; i++) {
+      const buyer = buyers[i]!;
+      const cap = budgetCapForActor(context, buyer, perBuyerNominal);
+      if (cap <= 0) continue;
+      out.push(
+        comfortDemand({
+          id: `service:${String(inputs.settlement.id)}:${klass}:${i}:${String(resource)}`,
+          wantQuantity: perBuyerWant,
+          budget: cap,
+          decayScale: 1.25,
+          cutoffMultiplier: 8,
+          ...consumerBuyerFieldsFor(buyer),
+        }),
+      );
+    }
   }
   return out;
 };
@@ -1276,45 +1323,59 @@ const RECIPES_BY_OUTPUT: ReadonlyMap<string, readonly RecipeDef[]> = (() => {
   return out;
 })();
 
-const consumerBuyerFields = (
-  context: SettlementScheduleContext,
-  klass: CharacterClass,
+const consumerBuyerFieldsFor = (
+  buyerActor: ActorId | undefined,
 ):
   | { readonly buyerActor: ActorId; readonly buyerDisposition: 'consume' }
   | Record<string, never> => {
-  const buyerActor = context.consumerBuyerByClass.get(klass);
   return buyerActor !== undefined ? { buyerActor, buyerDisposition: 'consume' } : {};
 };
 
-const buildConsumerBuyerByClass = (
+const buildConsumerBuyersByClass = (
   inputs: BuildScheduleInputs,
-): ReadonlyMap<CharacterClass, ActorId> => {
+): ReadonlyMap<CharacterClass, readonly ActorId[]> => {
   const candidates = ownerCandidates(inputs);
   if (candidates.length === 0) return new Map();
-  const out = new Map<CharacterClass, ActorId>();
+  const out = new Map<CharacterClass, readonly ActorId[]>();
   for (const klass of CHARACTER_CLASSES) {
-    const buyer = chooseConsumerBuyerActor(inputs, klass, candidates);
-    if (buyer !== undefined) out.set(klass, buyer);
+    const buyers = chooseConsumerBuyerActors(inputs, klass, candidates);
+    if (buyers.length > 0) out.set(klass, buyers);
   }
   return out;
 };
 
-const chooseConsumerBuyerActor = (
+/**
+ * Per docs/15 §C21: return ALL buyer actors for a class, not just the first
+ * priority match. Patricians have multiple `patrician_family` actors per
+ * city; slaves bid through whoever owns them. Plebeian/freedman/foreigner
+ * typically have one household actor per settlement.
+ *
+ * The list is collected in priority order: for each kind in
+ * `CONSUMER_BUYER_KIND_PRIORITY[klass]`, take every candidate matching that
+ * kind. Stop after the first kind that yielded any matches — we don't want a
+ * plebeian household to share demand with a fallback hamlet_household when
+ * both exist. But within a single matching kind, we return all matches so a
+ * city with 3 patrician families has 3 entries.
+ */
+const chooseConsumerBuyerActors = (
   inputs: BuildScheduleInputs,
   klass: CharacterClass,
   candidates: readonly ActorId[],
-): ActorId | undefined => {
+): readonly ActorId[] => {
   const ownerKindByActor = inputs.ownerKindByActor;
   if (ownerKindByActor !== undefined) {
     const priority = CONSUMER_BUYER_KIND_PRIORITY[klass];
     for (const kind of priority) {
+      const matches: ActorId[] = [];
       for (const actorId of candidates) {
-        if (ownerKindByActor.get(actorId) === kind) return actorId;
+        if (ownerKindByActor.get(actorId) === kind) matches.push(actorId);
       }
+      if (matches.length > 0) return matches;
     }
+    return [];
   }
-
-  return candidates[0];
+  // No ownerKind lookup available — return the first candidate as a fallback.
+  return candidates.length > 0 ? [candidates[0]!] : [];
 };
 
 const ownerCandidates = (inputs: BuildScheduleInputs): readonly ActorId[] => {

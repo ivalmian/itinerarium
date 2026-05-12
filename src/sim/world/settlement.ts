@@ -90,7 +90,81 @@ export interface MarketSnapshot {
   recentOutflows: Map<ResourceId, number>;
   /** Last clearing price per resource (set by the market clearing tick). */
   lastClearingPrice: Map<ResourceId, number>;
+
+  /**
+   * Post-clearing bid-ask book per resource — docs/08 §"Bid-ask book". A
+   * snapshot of what the residual schedules looked like at the end of the
+   * day's clearing. Lives next to lastClearingPrice and is refreshed every
+   * tick from the CDA result; no persistent limit-order book is kept across
+   * days.
+   *
+   * Entries are removed for the same reason `lastClearingPrice` is removed:
+   * when neither a current bid nor a current ask exists, the local book is
+   * not carried forward as stale memory.
+   *
+   *   bestAsk / askDepth — lowest residual reservation + supply behind it
+   *   bestBid / bidDepth — highest residual WTP + demand quantity behind it
+   *   midPrice           — clearing price (if any cleared today) else the
+   *                        geometric mean of the two sides
+   *   spread             — bestAsk − bestBid when both quoted AND ask ≥ bid
+   *
+   * For diagnostics, `lastClearedDay` tracks the most recent day on which the
+   * resource had non-zero clearing volume, used to flag dormant goods.
+   */
+  bestAsk: Map<ResourceId, number>;
+  askDepth: Map<ResourceId, number>;
+  bestBid: Map<ResourceId, number>;
+  bidDepth: Map<ResourceId, number>;
+  midPrice: Map<ResourceId, number>;
+  spread: Map<ResourceId, number>;
+  lastClearedDay: Map<ResourceId, Day>;
+
+  /**
+   * Per docs/15 §C19 the bid-ask book also surfaces the per-source ladder
+   * so the viewer + diagnostics can show WHO is bidding/asking, not just the
+   * aggregate best quote. The ladder is sampled at the end of each tick's
+   * clearing — entries are the *residual* book (orders that did NOT clear
+   * today) sorted by aggressiveness (asks ascending, bids descending). The
+   * entries are deliberately COMPACT (no DemandSource/SupplySource objects;
+   * just the four fields a UI/AI consumer needs) so they serialize cheaply
+   * and don't pin GC roots from the per-tick schedule build.
+   *
+   * `lastBookSampleDay` records the day the ladder was last populated so the
+   * viewer can decide whether to show "today's book" vs "stale".
+   */
+  bookLadder: Map<ResourceId, MarketBookLadder>;
+  lastBookSampleDay: Map<ResourceId, Day>;
 }
+
+export interface MarketBookOrder {
+  readonly actorId: ActorId;
+  readonly actorKind: ActorKindForBook;
+  /** Asks: reservation price. Bids: max willingness-to-pay. */
+  readonly price: number;
+  /** Residual quantity at that price (availableToSell for asks, peak for bids). */
+  readonly quantity: number;
+  /**
+   * For demand sources, which curve the bid came from. Useful for the player
+   * to understand "this is subsistence demand at infinity, that's a derived
+   * input cap, that's a comfort buyer walking away". Optional on the supply
+   * side because supply curves are uniform step functions.
+   */
+  readonly curve?: 'subsistence' | 'comfort' | 'status' | 'derived';
+}
+
+export interface MarketBookLadder {
+  /** Residual asks, sorted ascending by price (best/cheapest first). */
+  readonly asks: readonly MarketBookOrder[];
+  /** Residual bids, sorted descending by price (best/highest first). */
+  readonly bids: readonly MarketBookOrder[];
+}
+
+/**
+ * Local re-declaration of the ActorKind so the settlement module doesn't have
+ * to import politics/actor.ts and create a cycle. Treat as a string lookup
+ * key — populated by the caller from `Actor.kind`.
+ */
+export type ActorKindForBook = string;
 
 export interface Settlement {
   readonly id: SettlementId;
@@ -249,6 +323,15 @@ export const createSettlement = (input: CreateSettlementInput): Settlement => {
       recentInflows: new Map(),
       recentOutflows: new Map(),
       lastClearingPrice: new Map(),
+      bestAsk: new Map(),
+      askDepth: new Map(),
+      bestBid: new Map(),
+      bidDepth: new Map(),
+      midPrice: new Map(),
+      spread: new Map(),
+      lastClearedDay: new Map(),
+      bookLadder: new Map(),
+      lastBookSampleDay: new Map(),
     },
     catchmentBaselinePop: input.catchmentBaselinePop ?? 0,
     catchmentDayLastChanged: input.catchmentDayLastChanged ?? 0,
@@ -460,6 +543,94 @@ export const recordClearingPrice = (s: Settlement, resource: ResourceId, price: 
     throw new Error(`recordClearingPrice: price must be non-negative, got ${price}`);
   }
   s.market.lastClearingPrice.set(resource, price);
+};
+
+/**
+ * Per docs/08 §"Bid-ask book": record the residual book from the day's
+ * market clearing. All five fields default to "no quote" — callers pass
+ * `null`/undefined to drop the entry instead of recording a stale zero.
+ *
+ * When the resource is fully dead (no bid AND no ask), the book entries
+ * are deleted alongside the lastClearingPrice / lastClearedDay logic the
+ * tick layer drives.
+ */
+export interface MarketBookEntry {
+  readonly bestAsk: number | null;
+  readonly askDepth: number;
+  readonly bestBid: number | null;
+  readonly bidDepth: number;
+  readonly midPrice: number | null;
+  readonly spread: number | null;
+}
+
+export const recordMarketBook = (
+  s: Settlement,
+  resource: ResourceId,
+  entry: MarketBookEntry,
+): void => {
+  const market = s.market;
+  if (entry.bestAsk !== null && Number.isFinite(entry.bestAsk)) {
+    market.bestAsk.set(resource, entry.bestAsk);
+    market.askDepth.set(resource, Math.max(0, entry.askDepth));
+  } else {
+    market.bestAsk.delete(resource);
+    market.askDepth.delete(resource);
+  }
+  if (entry.bestBid !== null && Number.isFinite(entry.bestBid)) {
+    market.bestBid.set(resource, entry.bestBid);
+    market.bidDepth.set(resource, Math.max(0, entry.bidDepth));
+  } else {
+    market.bestBid.delete(resource);
+    market.bidDepth.delete(resource);
+  }
+  if (entry.midPrice !== null && Number.isFinite(entry.midPrice)) {
+    market.midPrice.set(resource, entry.midPrice);
+  } else {
+    market.midPrice.delete(resource);
+  }
+  if (entry.spread !== null && Number.isFinite(entry.spread) && entry.spread >= 0) {
+    market.spread.set(resource, entry.spread);
+  } else {
+    market.spread.delete(resource);
+  }
+};
+
+/** Track the most recent day on which a non-trivial trade cleared. */
+export const recordLastClearedDay = (s: Settlement, resource: ResourceId, day: Day): void => {
+  s.market.lastClearedDay.set(resource, day);
+};
+
+/** Clear the bid-ask book entry for a resource (used when the market dies). */
+export const clearMarketBook = (s: Settlement, resource: ResourceId): void => {
+  const market = s.market;
+  market.bestAsk.delete(resource);
+  market.askDepth.delete(resource);
+  market.bestBid.delete(resource);
+  market.bidDepth.delete(resource);
+  market.midPrice.delete(resource);
+  market.spread.delete(resource);
+  market.bookLadder.delete(resource);
+};
+
+/**
+ * Per docs/15 §C19: record the per-source bid/ask ladder for a resource.
+ * Callers pass already-sorted arrays (asks ascending, bids descending);
+ * we just store + stamp the day. Passing an empty ladder is the same as
+ * deleting it.
+ */
+export const recordMarketBookLadder = (
+  s: Settlement,
+  resource: ResourceId,
+  ladder: MarketBookLadder,
+  today: Day,
+): void => {
+  if (ladder.asks.length === 0 && ladder.bids.length === 0) {
+    s.market.bookLadder.delete(resource);
+    s.market.lastBookSampleDay.delete(resource);
+    return;
+  }
+  s.market.bookLadder.set(resource, ladder);
+  s.market.lastBookSampleDay.set(resource, today);
 };
 
 // --- Dynamic catchment recompute (docs/05 §"Dynamic catchment recompute") ---

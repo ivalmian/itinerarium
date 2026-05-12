@@ -60,6 +60,7 @@ import { createPopup, type Popup } from './ui/popup.js';
 import { renderSettlementPopup } from './ui/settlementPopup.js';
 import { renderCaravanPopup } from './ui/caravanPopup.js';
 import { renderBanditCampPopup } from './ui/banditCampPopup.js';
+import { renderMarketBookPopup } from './ui/marketBookPopup.js';
 
 export interface ViewerApp {
   destroy(): void;
@@ -460,19 +461,59 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
       if (k === 'settlement' || k === 'caravan' || k === 'bandit_camp') {
         setSelection(state, { kind: 'none' });
       }
+      // Closing the parent popup also closes the per-resource book popup.
+      if (marketBookPopup.isOpen) marketBookPopup.close();
     },
   });
+
+  // Per docs/15 §C19 + §C21: a second popup stacks on top of the settlement
+  // popup to show the per-resource bid-ask book ladder.
+  const marketBookPopup: Popup = createPopup({
+    onClose: () => {
+      selectedMarketBookResource = null;
+      selectedMarketBookSettlement = null;
+    },
+  });
+  let selectedMarketBookResource: import('../src/sim/types.js').ResourceId | null = null;
+  let selectedMarketBookSettlement: import('../src/sim/types.js').SettlementId | null = null;
+  const openMarketBookFor = (resource: import('../src/sim/types.js').ResourceId): void => {
+    if (state.selection.kind !== 'settlement') return;
+    selectedMarketBookResource = resource;
+    selectedMarketBookSettlement = state.selection.id;
+    const c = renderMarketBookPopup({ world, settlementId: state.selection.id, resource });
+    if (c === null) return;
+    marketBookPopup.open(c.element, c.title);
+  };
 
   const refreshDetailPopup = (): void => {
     const sel = state.selection;
     if (sel.kind === 'settlement') {
-      const c = renderSettlementPopup({ world, id: sel.id, state, history });
+      const c = renderSettlementPopup({
+        world,
+        id: sel.id,
+        state,
+        history,
+        onResourceClick: openMarketBookFor,
+      });
       if (c === null) {
         if (detailPopup.isOpen) detailPopup.close();
         return;
       }
       if (detailPopup.isOpen) detailPopup.setContent(c.element, c.title);
       else detailPopup.open(c.element, c.title);
+      // Refresh the book popup if it's open and tracking this settlement.
+      if (
+        marketBookPopup.isOpen &&
+        selectedMarketBookSettlement === sel.id &&
+        selectedMarketBookResource !== null
+      ) {
+        const b = renderMarketBookPopup({
+          world,
+          settlementId: sel.id,
+          resource: selectedMarketBookResource,
+        });
+        if (b !== null) marketBookPopup.setContent(b.element, b.title);
+      }
       return;
     }
     if (sel.kind === 'caravan') {

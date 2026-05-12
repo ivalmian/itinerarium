@@ -131,6 +131,19 @@ export interface CargoPlanningConstraints {
   readonly reserveTripOperatingCost?: boolean;
   /** Locally available stock at the origin market, by resource. */
   readonly originAvailableQuantity?: ReadonlyMap<ResourceId, Quantity>;
+  /**
+   * Per docs/15 §C22 + C19: a per-destination, per-resource volume cap on
+   * how many units the caravan can EXPECT to sell at the destination's
+   * bestBid. This is the destination market's residual bid depth surfaced
+   * from `Settlement.market.bidDepth`. Without this cap the planner
+   * assumes infinite absorbing demand and over-loads cargo that won't
+   * clear when it arrives.
+   *
+   * Keyed by `hexKey(destinationHex)` then by resource. Absent entries are
+   * treated as unlimited (back-compat for fixtures that don't thread the
+   * book through).
+   */
+  readonly destinationBidDepth?: ReadonlyMap<string, ReadonlyMap<ResourceId, Quantity>>;
 }
 
 const observationsForRoute = (
@@ -192,6 +205,7 @@ const planCargo = (
   caravan: Caravan,
   observations: readonly OriginDestObservation[],
   constraints: CargoPlanningConstraints = {},
+  destinationKey?: string,
 ): { cargo: Map<ResourceId, Quantity>; grossSpread: number } => {
   const cargo = new Map<ResourceId, Quantity>();
   if (observations.length === 0) return { cargo, grossSpread: 0 };
@@ -199,6 +213,13 @@ const planCargo = (
   const reservedKg = Math.max(0, constraints.reserveCapacityKg ?? 0);
   const capacityKg = Math.max(0, totalCarryKg(caravan) - totalCargoWeightKg(caravan) - reservedKg);
   if (capacityKg <= 1e-9) return { cargo, grossSpread: 0 };
+
+  // Per docs/15 §C22: cap each resource's planned qty at the destination's
+  // residual bid depth so the caravan doesn't over-load cargo that won't
+  // clear when it arrives. Falls back to "unlimited" when the book isn't
+  // threaded through (fixture tests).
+  const destBidDepth =
+    destinationKey !== undefined ? constraints.destinationBidDepth?.get(destinationKey) : undefined;
 
   const ranked = observations
     .map((obs) => {
@@ -226,7 +247,16 @@ const planCargo = (
         : (availability.get(r.obs.resource) ?? 0);
     const maxUnitsBySpend =
       r.obs.originPrice > 0 ? remainingSpend / r.obs.originPrice : Number.POSITIVE_INFINITY;
-    const qty = Math.min(maxUnitsByCapacity, maxUnitsByAvailability, maxUnitsBySpend);
+    const maxUnitsByDestDepth =
+      destBidDepth === undefined
+        ? Number.POSITIVE_INFINITY
+        : (destBidDepth.get(r.obs.resource) ?? Number.POSITIVE_INFINITY);
+    const qty = Math.min(
+      maxUnitsByCapacity,
+      maxUnitsByAvailability,
+      maxUnitsBySpend,
+      maxUnitsByDestDepth,
+    );
     if (qty <= 1e-9) continue;
     cargo.set(r.obs.resource, qty);
     grossSpread += r.obs.spread * qty;
@@ -254,13 +284,14 @@ export const expectedProfit = (
   route: { from: Position; to: Position },
   knownPrices: Caravan['priceBook'],
   cargoCandidates: readonly ResourceId[],
+  constraints: CargoPlanningConstraints = {},
 ): ExpectedProfitResult => {
   const allObs = observationsForRoute(route.from, route.to, knownPrices);
   const filtered =
     cargoCandidates.length === 0
       ? allObs
       : allObs.filter((o) => cargoCandidates.includes(o.resource));
-  const { cargo, grossSpread } = planCargo(caravan, filtered);
+  const { cargo, grossSpread } = planCargo(caravan, filtered, constraints, hexKey(route.to));
   const distance = hexDistance(route.from, route.to);
   const cost = travelCost(caravan, distance);
   return { profit: grossSpread - cost, cargo };
@@ -365,7 +396,12 @@ const evaluateCandidate = (
           maxSpendCoin: Math.max(0, inputs.cargoConstraints.maxSpendCoin - travelCostCoin),
         }
       : inputs.cargoConstraints;
-  const { cargo, grossSpread } = planCargo(caravan, durableObservations, constraints);
+  const { cargo, grossSpread } = planCargo(
+    caravan,
+    durableObservations,
+    constraints,
+    hexKey(candidate.hex),
+  );
   if (grossSpread <= 0 || cargo.size === 0) return null;
 
   const riskMultiplier =

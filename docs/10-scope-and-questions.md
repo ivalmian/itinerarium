@@ -168,6 +168,8 @@ loop: production → consumption → trade → demographics & disease
 | 29 | Docs-first discipline | **Locked rule** in CLAUDE.md: design changes update docs FIRST, then code. Docs hold the conceptual data (recipes, vital rates, formulas). Code implements from docs |
 | 30 | River vs. lake terrain semantics | **Rivers are sub-1 km wide** — a river hex still has riverbank land, so settlements + buildings CAN sit on river hexes; fording without a bridge is slow but possible. **Lakes fully occupy their hex** — impassable + unbuildable. **No `coast` terrain** — sub-sea-level hexes are `lake` directly; sea-trade content is deferred. See [07 — Geography](07-geography.md) |
 | 31 | River/lake adjacency caps | A river hex may touch ≤3 water neighbors total (rivers + lakes) of which ≤1 may be a lake; a lake hex may touch ≤1 river. Violators collapse to lake. Prevents "river-lakes" and multi-outlet lakes. See [07 — Geography](07-geography.md) "River adjacency caps" |
+| 32 | Bid-ask book per market | **Locked** — every per-(settlement, resource) clearing records `bestBid`, `bestAsk`, `bidDepth`, `askDepth`, `midPrice`, and `spread` derived from the residual demand/supply schedules. Surfaced in viewer panels and consumed by caravan/cross-spread logic. See [08 — Money & Trade](08-money-and-trade.md) §"Bid-ask book" |
+| 33 | Cash circulation discipline | **Locked** — every actor kind that the schedule builder draws bids from must have a sustainable cash income channel (rents, tax, wages-in-coin, merchant-house dividends, sales). Without it, comfort/status/capital markets go dormant on top of full stockpiles. See [08 — Money & Trade](08-money-and-trade.md) §"Cash circulation discipline" |
 
 ## Open design risks
 

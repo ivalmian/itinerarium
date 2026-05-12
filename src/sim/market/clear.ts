@@ -50,6 +50,30 @@ export interface ClearingResult {
   readonly trades: readonly ClearingTrade[];
   readonly unmetDemandAtClearingPrice: number;
   readonly unsoldSupplyAtClearingPrice: number;
+  /**
+   * Post-clearing book per docs/08 §"Bid-ask book":
+   *   bestAsk  — lowest reservation among sellers that did NOT fully clear,
+   *              i.e. supply quoted but unsold after the day's matching.
+   *   askDepth — total residual availableToSell at or below bestAsk.
+   *   bestBid  — highest maxWillingnessToPay among buyers that did NOT clear,
+   *              i.e. unfilled demand quoted at or above bestBid.
+   *   bidDepth — total residual demand quantity at or above bestBid.
+   *   midPrice — clearing price if any trade cleared; otherwise the geometric
+   *              mean of bestBid/bestAsk when both exist, or whichever
+   *              single side is quoted.
+   *   spread   — bestAsk - bestBid when both >0 AND ask >= bid; null otherwise.
+   *              A "crossing" book (bid >= ask) yields null spread and a
+   *              non-zero clearingPrice in the same result.
+   *
+   * All five fields are `null` when no side quotes anything meaningful
+   * (treated as no observable book today).
+   */
+  readonly bestAsk: number | null;
+  readonly askDepth: number;
+  readonly bestBid: number | null;
+  readonly bidDepth: number;
+  readonly midPrice: number | null;
+  readonly spread: number | null;
 }
 
 export interface ClearMarketOpts {
@@ -83,6 +107,12 @@ export const clearMarket = (
       trades: [],
       unmetDemandAtClearingPrice: 0,
       unsoldSupplyAtClearingPrice: 0,
+      bestAsk: null,
+      askDepth: 0,
+      bestBid: null,
+      bidDepth: 0,
+      midPrice: null,
+      spread: null,
     };
   }
 
@@ -312,13 +342,136 @@ const finalizeClearing = (
     supplyAvailableAt(supply.sources, clearingPrice) - totalTraded,
   );
 
+  const book = derivePostClearingBook(
+    demand,
+    supply,
+    clearingPrice,
+    totalTraded,
+    buyerOrder,
+    sellerOrder,
+  );
+
   return {
     clearingPrice,
     totalTraded,
     trades,
     unmetDemandAtClearingPrice,
     unsoldSupplyAtClearingPrice,
+    ...book,
   };
+};
+
+const BOOK_QTY_EPS = 1e-9;
+
+interface PostClearingBook {
+  readonly bestAsk: number | null;
+  readonly askDepth: number;
+  readonly bestBid: number | null;
+  readonly bidDepth: number;
+  readonly midPrice: number | null;
+  readonly spread: number | null;
+}
+
+/**
+ * Derive the residual bid-ask book per docs/08 §"Bid-ask book". The book is
+ * what would remain visible in the forum after today's matching:
+ *
+ *   bestAsk = lowest reservation among sellers with unsold availableToSell
+ *   bestBid = highest maxWillingnessToPay among demanders whose curve still
+ *             quotes a positive quantity at their max-WTP after clearing
+ *
+ * Residual is computed against the matched buyer/seller arrays (which had
+ * their .remaining drained inside the trade loop), so unfilled bids/asks are
+ * the ones that did NOT clear today. We also re-scan the *original* source
+ * lists for sellers with reservation strictly above the clearing price
+ * (they posted an ask but were too pricey today) and buyers with WTP
+ * strictly below the clearing price (they wanted to bid but the going
+ * price was already past them).
+ */
+const derivePostClearingBook = (
+  demand: DemandSchedule,
+  supply: SupplySchedule,
+  clearingPrice: number,
+  totalTraded: number,
+  buyerOrder: readonly { id: string; maxWtp: number; remaining: number }[],
+  sellerOrder: readonly { id: string; reservation: number; remaining: number }[],
+): PostClearingBook => {
+  // --- Ask side: residual sellers ---
+  let bestAsk: number | null = null;
+  let askDepth = 0;
+  for (const s of sellerOrder) {
+    if (s.remaining > BOOK_QTY_EPS) {
+      if (bestAsk === null || s.reservation < bestAsk) bestAsk = s.reservation;
+    }
+  }
+  // Sellers above the clearing price (above-water asks) are also part of
+  // today's visible book — they posted but were not in the clearable set.
+  for (const s of supply.sources) {
+    if (s.availableToSell <= BOOK_QTY_EPS) continue;
+    if (!Number.isFinite(s.reservationPrice)) continue;
+    if (Number.isFinite(clearingPrice) && s.reservationPrice <= clearingPrice) continue;
+    if (bestAsk === null || s.reservationPrice < bestAsk) bestAsk = s.reservationPrice;
+  }
+  if (bestAsk !== null) {
+    for (const s of supply.sources) {
+      const remaining = sellerOrder.find((x) => x.id === s.id)?.remaining ?? s.availableToSell;
+      if (remaining <= BOOK_QTY_EPS) continue;
+      if (!Number.isFinite(s.reservationPrice)) continue;
+      if (s.reservationPrice <= bestAsk + BOOK_QTY_EPS) askDepth += remaining;
+    }
+  }
+
+  // --- Bid side: residual buyers ---
+  let bestBid: number | null = null;
+  let bidDepth = 0;
+  // Drained buyers from clearing.
+  for (const b of buyerOrder) {
+    if (b.remaining > BOOK_QTY_EPS) {
+      if (Number.isFinite(b.maxWtp) && (bestBid === null || b.maxWtp > bestBid)) bestBid = b.maxWtp;
+    }
+  }
+  // Demanders with WTP at-or-below the clearing price (they were squeezed out)
+  // still represent a quoted bid in the residual book.
+  for (const d of demand.sources) {
+    if (!Number.isFinite(d.maxWillingnessToPay)) continue;
+    if (d.maxWillingnessToPay <= 0) continue;
+    // Subsistence has maxWtp = +Infinity; never finite-quote it as a book bid.
+    if (!Number.isFinite(d.maxWillingnessToPay)) continue;
+    if (Number.isFinite(clearingPrice) && d.maxWillingnessToPay >= clearingPrice) continue;
+    const peak = d.peakQuantity;
+    if (peak <= BOOK_QTY_EPS) continue;
+    if (bestBid === null || d.maxWillingnessToPay > bestBid) bestBid = d.maxWillingnessToPay;
+  }
+  if (bestBid !== null) {
+    for (const d of demand.sources) {
+      if (!Number.isFinite(d.maxWillingnessToPay)) continue;
+      if (d.maxWillingnessToPay + BOOK_QTY_EPS < bestBid) continue;
+      const matchedRemaining = buyerOrder.find((b) => b.id === d.id)?.remaining;
+      const remaining =
+        matchedRemaining !== undefined ? matchedRemaining : Math.max(0, d.peakQuantity);
+      bidDepth += remaining;
+    }
+  }
+
+  // --- Mid and spread ---
+  let midPrice: number | null = null;
+  let spread: number | null = null;
+  if (totalTraded > BOOK_QTY_EPS && Number.isFinite(clearingPrice)) {
+    midPrice = clearingPrice;
+  } else if (bestBid !== null && bestAsk !== null && bestBid > 0 && bestAsk > 0) {
+    // Geometric mean is scale-friendly for goods that span orders of magnitude
+    // in price; falls back to arithmetic for the tiny-positive case.
+    midPrice = Math.sqrt(bestBid * bestAsk);
+  } else if (bestAsk !== null) {
+    midPrice = bestAsk;
+  } else if (bestBid !== null) {
+    midPrice = bestBid;
+  }
+  if (bestBid !== null && bestAsk !== null && bestAsk >= bestBid) {
+    spread = bestAsk - bestBid;
+  }
+
+  return { bestAsk, askDepth, bestBid, bidDepth, midPrice, spread };
 };
 
 const sumSourceQuantities = (

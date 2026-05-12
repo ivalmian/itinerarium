@@ -378,6 +378,277 @@ backfill zero rows so all CSVs share the same row count.
 `src/burnin/instruments/timeSeriesCsv.ts`,
 `src/burnin/runner.ts`, `src/cli/burnin.ts`.
 
+## C19 — Bid-ask book per market (landed in progress)
+
+**Pre-v1.5 hack:** market clearing returned only a single
+`clearingPrice` per resource per settlement. The CDA actually produces
+a residual schedule on both sides (unsold asks, unmet bids), and that
+ladder is the visible "spread" any caravan would observe walking
+through a real forum. The viewer's settlement panel had a `bid-ask`
+column as a placeholder showing `—`.
+
+**Realistic (per docs/08 §"Bid-ask book"):** after clearing each
+day, derive a five-field book per (settlement, resource):
+
+```
+bestAsk, askDepth   ← residual SupplySource with availableToSell > 0
+bestBid, bidDepth   ← residual DemandSource with quantityAt > 0
+midPrice            ← clearing price if any, else mean(bestBid, bestAsk),
+                      else the single side
+spread              ← bestAsk - bestBid when both >0, else null
+```
+
+The book lives in `MarketSnapshot` (per resource) alongside
+`lastClearingPrice`, refreshed every tick. It does **not** persist as
+a limit order book — each tick re-derives it from current
+stockpiles / treasuries / recipe demand. Caravans and "internal
+needs" (workshops short on inputs, tax convoys assembling, off-map
+houses sweeping in cargo) cross the spread by bidding above bestAsk
+or asking below bestBid; the next clearing matches them against the
+remaining book.
+
+**Implementation:**
+
+1. `ClearingResult` returns `bestBid`, `bidDepth`, `bestAsk`,
+   `askDepth`, `midPrice`, `spread` based on residual sources.
+2. `Settlement.market` carries `bestBid`, `bestAsk`, `bidDepth`,
+   `askDepth`, `midPrice` per resource. Cleared on the same path
+   that prunes `lastClearingPrice` for dead markets.
+3. Viewer `settlementPopup` renders the spread column as
+   `bestBid – bestAsk` with depth annotations.
+
+**Acceptance:** at year 5 of a watchdog burn-in, every city
+shows a non-trivial spread on at least 30 different resources;
+goods with zero clearing volume for >30 days are flagged as
+dormant in the diagnostics and surfaced for triage. Tests cover
+the residual-book extraction (`clear.test.ts`), the schedule
+builder's bid-ask projection, and the viewer's spread rendering.
+
+**Cross-refs:** `docs/08-money-and-trade.md` §"Bid-ask book",
+`docs/10-scope-and-questions.md` Decision 32,
+`src/sim/market/clear.ts`, `src/sim/world/settlement.ts`,
+`viewer/ui/settlementPopup.ts`.
+
+## C20 — Cash circulation across owner kinds (landed)
+
+**Diagnosed during the C19 burn-in audit:** a watchdog burn-in
+showed `patrician_family` average treasury of 2 coin (max 8) and
+`common_household` average treasury 0, against 14 `city_corporation`
+actors with up to ~320k treasury each. The bid-ask book correctly
+showed quoted asks on most goods but almost no crossings — buyers
+were broke. See docs/08 §"Cash circulation discipline" for the
+mechanism.
+
+**v1.5 mechanics (landed):**
+
+The redistribution lives in a new `fiscalRedistributionPhase` called
+on a **quarterly** cadence (every 91 days), alongside `investmentPhase`.
+Each transfer emits a `fiscal_redistribution` `TickEvent` (`channel`
+∈ `civic_dividend / tenant_rent / merchant_residual`) for viewer +
+burn-in audit.
+
+1. **Quarterly civic dividend to patricians.** Every 91 days, each
+   `city_corporation` distributes a fraction of its treasury
+   (`CITY_CORP_DIVIDEND_FRACTION = 0.08`, ≈32% APR) split evenly
+   among `patrician_family` actors whose `homeSettlement` matches
+   the city's settlement. Models cura annonae stipends, civic
+   contract pay, magistrate salaries — the real Roman income
+   channel for families running the city council.
+2. **Quarterly rent collection from tenant villages.** Every 91 days,
+   each `free_village` and `hamlet_household` pays rent to the
+   patrician families of its nearest patron city within
+   `TENANT_RENT_MAX_HEX_DISTANCE = 30` hexes. The rent is
+   `TENANT_RENT_FRACTION_PER_QUARTER = 0.05` of the tenant's
+   treasury, capped to `TENANT_RENT_TREASURY_CAP_FRACTION = 0.15`
+   so a single collection cannot overdraft a tiny hamlet. The rent
+   is split EVENLY across all patrician families in the patron
+   city — without that split a single nearest family was
+   collecting all the regional rent.
+3. ~~**Quarterly merchant-house residual to patricians.**~~ **REMOVED
+   in §C22.** The original C20 had off-map houses paying back a
+   fraction of their treasury to patrician families, but this was a
+   synthetic transfer with no real economic story. The legitimate
+   off-map → on-map coin channel is the export caravan path (see
+   §C22): cities ship surplus to edge hexes and global-market coin
+   credits the source actor on cargo exit.
+4. **Initial treasury seed by kind, rebalanced.** Patrician families
+   now seed with `8000-24000` coin (was 2000-8000) so they survive
+   the first quarter before redistribution arrives. Common
+   households are unchanged; they still equilibrate to ~0 via
+   subsistence spending but receive their cash from wages (paid by
+   now-solvent patrician employers) every tick.
+
+An earlier iteration tried monthly cadence with proportionally
+smaller fractions (3% / 2% / 2.5% per month vs 8% / 5% / 6% per
+quarter). The monthly version produced WORSE outcomes — patrician
+treasuries averaged lower and famine deaths rose ~30%, likely
+because the smaller monthly drips did not deliver enough working
+capital to outpace the wage burn in any single month. Quarterly
+chunks, even though they arrive in pulses, give families a
+bigger buffer that survives the gap between redistributions.
+
+**Acceptance:** at year 3 the median patrician_family treasury is
+in the 1000+ coin band; comfort/status/capital markets in cities
+show non-trivial clearing volume; the bid-ask book's dormant-good
+count drops materially.
+
+**Cross-refs:** `docs/08-money-and-trade.md` §"Cash circulation
+discipline", `docs/10-scope-and-questions.md` Decision 33,
+`docs/11-politics-and-ownership.md` §"Tax revenue is real",
+`src/sim/tick.ts` `fiscalRedistributionPhase`.
+
+## C21 — Disaggregate `common_household` by class (landed)
+
+**Diagnosed during the C19/C20 burn-in audit:** even with the C20
+redistribution flowing, a town/city's "common household" actor still
+appeared with avg treasury ~0 most of the time, suppressing comfort
+and status demand from the urban free population. The structural
+cause was that `common_household` was a single aggregate ledger
+representing thousands of plebeians + freedmen + foreigners. When
+the schedule builder capped demand at "actor treasury", it was
+capping the buying power of an entire city's free population at a
+single number. Spending by ANY class drained the treasury for ALL
+classes; wages routed to ONE actor regardless of who actually
+worked the recipe.
+
+**v1.5 mechanics (landed):**
+
+1. **Three new actor kinds replace `common_household`:**
+   `plebeian_household`, `freedman_household`, `foreigner_household`.
+   Per the CLAUDE.md "no backwards compatibility — ever" rule,
+   `common_household` is removed entirely; no shim, no deprecated
+   enum value. The three kinds carry the same ownership semantics
+   `common_household` did (own no hexes, own no buildings by
+   default, exist to anchor per-class household cash + stockpile).
+2. **Per-settlement seeding** — every settlement that previously
+   got a `common_household` actor now gets up to three actors, one
+   per class WITH POSITIVE POPULATION in that settlement. A
+   settlement with no plebeians (rare, but possible in tiny
+   slave-only estates) gets no `plebeian_household`. Initial
+   treasury per class:
+   plebeian_household = plebeian_count × 30 coin
+   freedman_household = freedman_count × 15 coin
+   foreigner_household = foreigner_count × 50 coin
+   Same totals as the old `common_household` seed, just split.
+3. **Hamlets and free villages keep their existing actor.**
+   `hamlet_household` and `free_village` are settlement-political
+   concepts (they own land, they have elders, they pay rent to a
+   patron) — they are not the same thing as a class-level household
+   aggregate. They continue to represent the dominant smallholder
+   population of those tiers.
+4. **Wage routing splits by class.** When a recipe runs at a
+   town/city building, its `payProductionWages` call now splits the
+   wage bill across `plebeian_household` / `freedman_household` /
+   `foreigner_household` IN PROPORTION to the recipe's actual class
+   mix consumed (computed via the same LaborClassContext that the
+   production engine already uses). Hamlet/free-village settlements
+   route wages to their single `hamlet_household` / `free_village`
+   actor as before — those settlements typically have a single
+   class dominant anyway.
+5. **Slaves stay on the owner's books.** No `slave_household`
+   actor. Slave subsistence demand still bids through the slave's
+   owner (`patrician_family`, `city_corporation`, `governor_office`,
+   `temple`, `hamlet_household` / `free_village` as appropriate),
+   exactly as before. Per docs/11: enslaved labor is owner-funded
+   subsistence; the slave does not hold personal coin.
+6. **Schedule builder buyer selection.** The
+   `CONSUMER_BUYER_KIND_PRIORITY` table that previously mapped
+   `plebeian → [common_household, hamlet_household, free_village,
+...]` becomes the cleaner mapping `plebeian →
+[plebeian_household, hamlet_household, free_village, ...]`.
+   Direct 1:1 lookup; no shared bucket.
+
+**Why this matters for the bid-ask book:**
+
+With three class-level actors instead of one, the residual book per
+resource is genuinely **richer**: plebeian comfort-demand and
+freedman comfort-demand show up as separate quote sources, each with
+their own WTP cap derived from their own treasury. A city of 50k
+plebeians + 10k freedmen + 5k foreigners produces three independent
+DemandSource entries per resource per day instead of one merged
+schedule. The CDA matches highest-WTP first, so freedmen with a
+slightly higher reservation can clear before plebeians get squeezed
+out.
+
+This also unlocks volume-based caravan planning (docs/06 §"NPC
+caravan AI" follow-up): a caravan arriving with cargo can read each
+class's residual bid depth and price its sales against the actual
+absorption ceiling at each WTP step, rather than against the
+single-actor aggregate that treated the whole city as one ledger.
+
+**Acceptance:** at year 3, every city has at least
+`plebeian_household` with treasury > 0 most of the time, comfort
+markets (wine, oil, cheese, cloth, pottery) clear regularly, the
+viewer's per-resource book ladder shows multiple distinct bid
+sources per resource.
+
+**Cross-refs:** `docs/04-population.md` §"Class structure"
+(plebeian/freedman/foreigner are the wage-earning + bidding classes,
+slaves are owner-funded), `docs/08-money-and-trade.md` §"Cash
+circulation discipline" + §"Bid-ask book" (richer per-class book),
+`docs/11-politics-and-ownership.md` §"Every faction has named
+characters" (the common-household actor concept), `src/sim/politics/
+actor.ts` `ActorKind`, `src/procgen/seed.ts` household seeding,
+`src/sim/tick.ts` wage routing.
+
+## C22 — Off-map coin flow via exports, not synthetic residual (landed)
+
+**Pre-§C22 hack (C20 channel 3):** every quarter, each `off_map_house`
+actor paid back `OFF_MAP_HOUSE_RESIDUAL_FRACTION = 0.06` of its
+treasury to patrician families in the nearest on-map city. This was
+documented as "factor commissions / agent retainers / partnerships,"
+but it was a synthetic transfer with no real economic mechanism —
+off-map houses don't structurally owe anything to on-map patrician
+families.
+
+**Realistic (per docs/08 §"Off-map global market" + docs/06 §"Edge-
+hub caravans"):** the two coin channels between on-map and off-map
+are:
+
+1. **Imports.** An `off_map_house` spawns an import caravan at an
+   edge hex with cargo and operating coin. The caravan sells the
+   cargo on-map; the sale credits the off-map house's treasury. The
+   house's treasury grows.
+2. **Exports.** A city-based actor (`patrician_family`,
+   `city_corporation`, `governor_office`) has surplus cargo
+   registered as `availableForExport`. An export caravan is spawned
+   with the city actor as `ownerActor`. The caravan walks to an
+   edge hex; on arrival, `completeOffMapExportIfArrived` sells the
+   cargo at `DEFAULT_GLOBAL_PRICES` and credits the OWNER's
+   treasury. The on-map actor's treasury grows.
+
+That is sufficient. The trade surplus / deficit is the real
+balance: a province with strong exports earns more from off-map
+than it spends on imports; a province with thin exports drains
+its money supply. Off-map houses still hoard import-sale coin in
+their treasuries, but they don't bid for anything on-map (their
+export caravans are owned by city actors, not by them), so the
+hoard is a benign sink.
+
+**v1.5 mechanics (landed):**
+
+- The `merchant_residual` channel in `fiscalRedistributionPhase`
+  is deleted. The `OFF_MAP_HOUSE_RESIDUAL_FRACTION` constant is
+  removed.
+- The `fiscal_redistribution` `TickEvent` channel union no longer
+  has `'merchant_residual'`.
+- The existing `caravan_exported_off_map` event remains the
+  authoritative inbound coin signal. Per-resource export quantities
+  and global-price-denominated coin are surfaced for the viewer +
+  diagnostics.
+
+**Acceptance:** at year 3 the patrician/city-corp treasuries are
+sustained by civic dividends, tenant rents, and export-caravan
+proceeds — not by a synthetic merchant transfer. Off-map house
+treasury grows monotonically (with no observable behavioral
+consequence). The viewer's economic event log shows export
+caravans completing instead of residual transfers firing.
+
+**Cross-refs:** `docs/06-caravans.md` §"Edge-hub caravans",
+`docs/08-money-and-trade.md` §"Off-map global market",
+`docs/15-v1-5-cleanups.md` §C20, `src/sim/tick.ts`
+`fiscalRedistributionPhase`, `completeOffMapExportIfArrived`.
+
 ## C16 — Cascading consequences of price explosion [TODO]
 
 **Current state:** prices are capped at a sane multiple of base
