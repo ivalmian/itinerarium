@@ -360,6 +360,16 @@ export type TickEvent =
       readonly ownerActor: ActorId;
     }
   | {
+      /**
+       * Per docs/15 §C31: a `free_village` actor dispatched a villager
+       * caravan to carry village food surplus to the nearest city.
+       */
+      readonly type: 'villager_caravan_dispatched';
+      readonly caravan: CaravanId;
+      readonly settlement: SettlementId;
+      readonly ownerActor: ActorId;
+    }
+  | {
       readonly type: 'tax_shipment_dispatched';
       readonly fromSettlement: SettlementId;
       readonly toSettlement: SettlementId;
@@ -4568,6 +4578,11 @@ const politicsPhase = (world: WorldState, rng: Rng, today: Day, events: TickEven
   // count. This keeps trade alive over long burn-ins without injecting
   // discontinuous random fleets.
   merchantCaravanAssemblyPhase(world, rng.derive('merchant-caravan-assembly'), today, events);
+  // Per docs/15 §C31: villages with food surplus dispatch a small handcart
+  // caravan to the nearest city. Separate fleet target from merchants so
+  // long-haul trade and short-haul village→city food runs don't compete
+  // for the same caravan slots.
+  villagerCaravanAssemblyPhase(world, rng.derive('villager-caravan-assembly'), today, events);
   // Bandit emergence + decisions + raid resolution. Without this loop,
   // the seeded bandit camps are inert decorations — see docs/12
   // §"Bandit emergence in the tick loop".
@@ -5327,7 +5342,11 @@ const remitStandingCaravanProfitAtHome = (
   settlements: readonly Settlement[],
   events: TickEvent[],
 ): number => {
-  if (!isStandingMerchantCaravan(caravan)) return 0;
+  // Both standing merchant caravans (patrician/caravan_owner/off_map) and
+  // villager caravans (free_village steward, docs/15 §C31) remit profit at
+  // home. Edge-hub + tax caravans are excluded because their balance is
+  // closed at the hub/capital, not at an owner's home.
+  if (!isStandingMerchantCaravan(caravan) && !isVillagerCaravan(caravan)) return 0;
   const owner = world.actors.get(caravan.ownerActor);
   if (owner === undefined || owner.homeSettlement === undefined) return 0;
   const home = settlements.find((settlement) => settlement.id === owner.homeSettlement);
@@ -5495,12 +5514,35 @@ const MERCHANT_CARAVAN_MIN_STARTER_RATION_DAYS = 7;
 const MERCHANT_CARAVAN_MIN_PACK_ANIMALS = 6;
 const MERCHANT_CARAVAN_PREFERRED_EQUINE_UNITS = 2;
 
+/**
+ * Per docs/15 §C31: villager caravans are short-haul village → city food
+ * runs spawned by the village's `free_village` steward. Their ID carries
+ * the `villager-` prefix so the viewer renders them with the dedicated
+ * peasant-with-handcart glyph and so caravan-bookkeeping doesn't confuse
+ * them with patron-owned long-haul merchant trains.
+ */
+const VILLAGER_CARAVAN_PREFIX = 'villager-';
+const VILLAGER_CARAVAN_ASSEMBLY_INTERVAL_DAYS = 14;
+const VILLAGER_CARAVAN_MAX_DISPATCHED_PER_INTERVAL = 4;
+const VILLAGER_CARAVAN_TARGET_PER_VILLAGE = 0.5;
+const VILLAGER_CARAVAN_TARGET_MAX = 120;
+const VILLAGER_CARAVAN_OWNER_CAP = 1;
+const VILLAGER_CARAVAN_MIN_OPERATING_TREASURY = 30;
+const VILLAGER_CARAVAN_MIN_STARTER_RATION_DAYS = 4;
+const VILLAGER_CARAVAN_MIN_PACK_ANIMALS = 2;
+const VILLAGER_CARAVAN_PREFERRED_EQUINE_UNITS = 0.6; // ≈3-4 mules
+const VILLAGER_CARAVAN_SURPLUS_DAYS_THRESHOLD = 14;
+
+const isVillagerCaravan = (caravan: Caravan): boolean =>
+  String(caravan.id).startsWith(VILLAGER_CARAVAN_PREFIX);
+
 const isStandingMerchantCaravan = (caravan: Caravan): boolean => {
   const id = String(caravan.id);
   return (
     !id.startsWith(EDGE_HUB_IMPORT_CARAVAN_PREFIX) &&
     !id.startsWith(EDGE_HUB_EXPORT_CARAVAN_PREFIX) &&
-    !id.startsWith('tax-')
+    !id.startsWith('tax-') &&
+    !id.startsWith(VILLAGER_CARAVAN_PREFIX)
   );
 };
 
@@ -5683,6 +5725,260 @@ const merchantCaravanAssemblyPhase = (
     dispatched += 1;
     events.push({
       type: 'merchant_caravan_dispatched',
+      caravan: caravan.id,
+      settlement: slot.settlement.id,
+      ownerActor: slot.actor.id,
+    });
+  }
+};
+
+// --- Villager caravans (docs/15 §C31) ------------------------------------
+
+/**
+ * Count active villager caravans per owner. Villager caravans use the
+ * `villager-` ID prefix so we can distinguish them from standing merchant
+ * caravans (which fill a separate fleet target).
+ */
+const villagerCaravanCountByOwner = (world: WorldState): Map<ActorId, number> => {
+  const out = new Map<ActorId, number>();
+  for (const caravan of world.caravans.values()) {
+    if (!isVillagerCaravan(caravan)) continue;
+    out.set(caravan.ownerActor, (out.get(caravan.ownerActor) ?? 0) + 1);
+  }
+  return out;
+};
+
+const villagerCaravanTarget = (world: WorldState): number => {
+  // Roughly half the villages can have a villager caravan out at any time.
+  let villageCount = 0;
+  for (const s of world.settlements.values()) {
+    if (s.tier === 'village') villageCount += 1;
+  }
+  const raw = Math.floor(villageCount * VILLAGER_CARAVAN_TARGET_PER_VILLAGE);
+  return Math.max(0, Math.min(VILLAGER_CARAVAN_TARGET_MAX, raw));
+};
+
+/**
+ * Per docs/15 §C31: things a Roman village routinely had surplus of and
+ * carted to a nearby city for sale — basic rural production. Food items,
+ * fibre/fleece, lumber, hides, livestock, and the simplest goods the village
+ * can make from those (cloth, clothing). NOT included: imports like wine,
+ * oil, pottery, tools, salt — those flow IN to a typical village, not out.
+ */
+const VILLAGER_EXPORTABLE_RESOURCES: ReadonlyArray<ResourceId> = [
+  // Food
+  resourceId('food.grain'),
+  resourceId('food.legumes'),
+  resourceId('food.salted_fish'),
+  resourceId('food.salted_meat'),
+  resourceId('food.cheese'),
+  // Fibres + raw materials
+  resourceId('material.flax'),
+  resourceId('material.linen_fiber'),
+  resourceId('material.wool'),
+  resourceId('material.wood'),
+  resourceId('material.lumber'),
+  resourceId('material.hides'),
+  resourceId('material.leather'),
+  // Livestock + goods made in-village
+  resourceId('livestock.sheep'),
+  resourceId('livestock.cattle'),
+  resourceId('livestock.pigs'),
+  resourceId('goods.cloth'),
+  resourceId('goods.clothing'),
+];
+
+/**
+ * Per docs/15 §C31: enough treasury that a village steward could
+ * realistically fund an import-only round-trip — fully-paid cart + 4-day
+ * starter rations + city-side purchase of pots/oil/tools/salt to bring
+ * home. Below this threshold the steward can't really afford an
+ * import-driven trip; we still let the caravan launch on a surplus
+ * trigger so it can earn coin on the way.
+ */
+const VILLAGER_CARAVAN_IMPORT_TRIP_MIN_TREASURY = 200;
+
+/**
+ * Per docs/15 §C31: is it worth sending a villager caravan out THIS
+ * cycle? Three Roman village-to-city motivations:
+ *  1. Surplus run — the village has any meaningful exportable inventory
+ *     (food, fibre, wood, livestock, cloth) above a small per-capita
+ *     threshold. The caravan carries it to the city, returns with coin
+ *     and/or city goods.
+ *  2. Import trip — the village has accumulated treasury and wants to
+ *     buy what it can't make itself (oil, wine, salt, pottery, tools).
+ *  3. Hard-times resupply — the village's own subsistence stocks are
+ *     critically low AND it has any cash, so the steward drains some
+ *     treasury and sends the caravan to buy back food/staples from the
+ *     city.
+ *
+ * Each case is a "yes, dispatch a caravan" — the planner picks the
+ * cargo + direction once the caravan exists.
+ */
+const villageWantsCaravan = (settlement: Settlement, steward: Actor): boolean => {
+  const pop = settlement.population.total();
+  if (pop <= 0) return false;
+  // Case 1: any exportable above a small per-capita day threshold.
+  for (const r of VILLAGER_EXPORTABLE_RESOURCES) {
+    const stock = getStockAt(steward, settlement.id, r);
+    if (stock <= 0) continue;
+    // Loose threshold: stock equivalent to ≥ N days of the village's own
+    // subsistence-style consumption of that resource. Per-resource rate
+    // varies, but 0.02/adult/day is a safe lower bound across the list
+    // (grain alone is 0.06; bulky materials less). The planner makes the
+    // tight cargo decision; this is just a "do you have meaningful
+    // inventory?" filter.
+    const daysOfLocalUse = stock / Math.max(1, pop * 0.02);
+    if (daysOfLocalUse >= VILLAGER_CARAVAN_SURPLUS_DAYS_THRESHOLD) return true;
+  }
+  // Case 2: import trip — steward has accumulated coin and wants
+  // city-made goods. Even with empty granary, this funds a "go buy us
+  // something useful" run.
+  if (steward.treasury >= VILLAGER_CARAVAN_IMPORT_TRIP_MIN_TREASURY) return true;
+  // Case 3: hard-times resupply — village grain stock under 7 days of
+  // subsistence AND steward has any cash to spend. Caravan goes to city
+  // and buys staples back.
+  const grainStock = getStockAt(steward, settlement.id, resourceId('food.grain'));
+  const grainDays = grainStock / Math.max(1, pop * 0.06);
+  if (grainDays < 7 && steward.treasury >= VILLAGER_CARAVAN_MIN_OPERATING_TREASURY) return true;
+  return false;
+};
+
+const eligibleVillagerCaravanOwners = (
+  world: WorldState,
+  activeByOwner: ReadonlyMap<ActorId, number>,
+): { readonly actor: Actor; readonly settlement: Settlement }[] => {
+  const out: { actor: Actor; settlement: Settlement }[] = [];
+  for (const actor of world.actors.values()) {
+    if (actor.kind !== 'free_village') continue;
+    if ((activeByOwner.get(actor.id) ?? 0) >= VILLAGER_CARAVAN_OWNER_CAP) continue;
+    if (actor.treasury < VILLAGER_CARAVAN_MIN_OPERATING_TREASURY) continue;
+    if (actor.homeSettlement === undefined) continue;
+    const settlement = world.settlements.get(actor.homeSettlement);
+    if (settlement === undefined) continue;
+    if (settlement.tier !== 'village') continue;
+    if (!villageWantsCaravan(settlement, actor)) continue;
+    out.push({ actor, settlement });
+  }
+  // Stable order: deterministic by id; shuffled later when picking the
+  // dispatch slice.
+  out.sort((a, b) => String(a.actor.id).localeCompare(String(b.actor.id)));
+  return out;
+};
+
+const createVillagerCaravan = (
+  world: WorldState,
+  today: Day,
+  owner: Actor,
+  origin: Settlement,
+  rng: Rng,
+  index: number,
+  events: TickEvent[],
+): Caravan | null => {
+  // Allow the village to buy a small herd locally before assembling, just
+  // like the merchant flow — but with a much smaller target.
+  buyOwnerAssemblyStockAtLocalMarket(
+    world,
+    owner,
+    origin,
+    MERCHANT_CARAVAN_EQUINES_RESOURCE,
+    VILLAGER_CARAVAN_PREFERRED_EQUINE_UNITS,
+  );
+  const availablePackAnimals = Math.floor(
+    getStockAt(owner, origin.id, MERCHANT_CARAVAN_EQUINES_RESOURCE) * EQUINE_ANIMALS_PER_HERD_UNIT,
+  );
+  if (availablePackAnimals < VILLAGER_CARAVAN_MIN_PACK_ANIMALS) return null;
+  let muleCount = rng.int(2, 4);
+  let donkeyCount = rng.int(0, 1);
+  while (muleCount + donkeyCount > availablePackAnimals) {
+    if (donkeyCount > 0) donkeyCount -= 1;
+    else muleCount -= 1;
+  }
+  if (muleCount < VILLAGER_CARAVAN_MIN_PACK_ANIMALS) return null;
+  const equineUnitsNeeded = (muleCount + donkeyCount) / EQUINE_ANIMALS_PER_HERD_UNIT;
+  // Per docs/15 §C31: scale operating treasury with the village's coin
+  // reserves so import trips + hard-times resupply can actually fund
+  // meaningful purchases at the city. Lower bound keeps the trip funded;
+  // upper bound is randomized but capped at what the village can afford
+  // while still keeping a small reserve at home.
+  const stewardReserveFloor = VILLAGER_CARAVAN_MIN_OPERATING_TREASURY;
+  const spendable = Math.max(0, owner.treasury - stewardReserveFloor);
+  const operatingTreasury = Math.min(spendable, rng.int(50, 250));
+  if (operatingTreasury < VILLAGER_CARAVAN_MIN_OPERATING_TREASURY) return null;
+  const tag = Math.floor(rng.next() * 1_000_000_000);
+  const caravan = createCaravan({
+    id: makeCaravanIdLocal(
+      `${VILLAGER_CARAVAN_PREFIX}${today}-${index}-${String(owner.id)}-${tag}`,
+    ),
+    ownerActor: owner.id,
+    position: { q: origin.anchor.q, r: origin.anchor.r },
+    destination: { q: origin.anchor.q, r: origin.anchor.r },
+    // Minimal crew: a driver and a single guard. No merchant — the village
+    // headman / steward is back at the granary.
+    crew: [
+      { kind: 'drover', count: 1, weapons: 0.1, armor: 0.05 },
+      { kind: 'caravan_guard', count: 1, weapons: 0.4, armor: 0.2 },
+    ],
+    animals: { mule: muleCount, donkey: donkeyCount },
+    vehicles: { pack_saddle: 1 },
+    treasury: operatingTreasury,
+  });
+  if (!world.grid.has(caravan.position)) return null;
+  const minStarterRationKg =
+    dailyCarriedFoodReserveKg(caravan) * VILLAGER_CARAVAN_MIN_STARTER_RATION_DAYS;
+  if (
+    estimateLocalRationPurchaseKg(world, caravan, [origin], operatingTreasury) < minStarterRationKg
+  ) {
+    return null;
+  }
+  decreaseStockpile(owner, origin.id, MERCHANT_CARAVAN_EQUINES_RESOURCE, equineUnitsNeeded);
+  owner.treasury -= operatingTreasury;
+  buyCaravanRationsAtLocalMarkets(world, caravan, [origin], events);
+  return caravan;
+};
+
+const villagerCaravanAssemblyPhase = (
+  world: WorldState,
+  rng: Rng,
+  today: Day,
+  events: TickEvent[],
+): void => {
+  if (today % VILLAGER_CARAVAN_ASSEMBLY_INTERVAL_DAYS !== 0) return;
+  const worldRoom = remainingWorldCaravanSlots(world);
+  if (worldRoom <= 0) return;
+  const activeByOwner = villagerCaravanCountByOwner(world);
+  const active = Array.from(activeByOwner.values()).reduce((sum, n) => sum + n, 0);
+  const target = villagerCaravanTarget(world);
+  if (active >= target) return;
+
+  const eligible = rng.shuffle(eligibleVillagerCaravanOwners(world, activeByOwner));
+  if (eligible.length === 0) return;
+  const toDispatch = Math.min(
+    VILLAGER_CARAVAN_MAX_DISPATCHED_PER_INTERVAL,
+    target - active,
+    worldRoom,
+  );
+  let dispatched = 0;
+  for (let i = 0; i < eligible.length && dispatched < toDispatch; i++) {
+    const slot = eligible[i];
+    if (slot === undefined) continue;
+    const currentForOwner = activeByOwner.get(slot.actor.id) ?? 0;
+    if (currentForOwner >= VILLAGER_CARAVAN_OWNER_CAP) continue;
+    const caravan = createVillagerCaravan(
+      world,
+      today,
+      slot.actor,
+      slot.settlement,
+      rng.derive(`villager-dispatch-${i}`),
+      dispatched,
+      events,
+    );
+    if (caravan === null) continue;
+    world.caravans.set(caravan.id, caravan);
+    activeByOwner.set(slot.actor.id, currentForOwner + 1);
+    dispatched += 1;
+    events.push({
+      type: 'villager_caravan_dispatched',
       caravan: caravan.id,
       settlement: slot.settlement.id,
       ownerActor: slot.actor.id,

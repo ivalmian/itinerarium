@@ -1049,6 +1049,92 @@ not in re-introducing the hidden hand.
 ownership", `src/sim/politics/actor.ts`,
 `docs/15-v1-5-cleanups.md` §C29.
 
+## C31 — Villager caravans (landed)
+
+**Motivation:** after §C30 the famine regression revealed that the
+trade system wasn't moving enough food and other rural production
+from village granaries to city markets. Patron-funded long-haul
+merchant caravans handle inter-city trade but rarely originate at a
+village. The historical Roman gap is exactly this: a village
+steward + 1-2 mules + a handcart, doing a short out-and-back to the
+nearest city every few weeks. That's a villager caravan.
+
+**The Roman village ↔ city economic relationship the model exposes:**
+
+A village headman / steward routinely sent a small caravan to the
+nearest city for one of three reasons:
+
+1. **Surplus run.** The village has more grain / legumes / wool /
+   flax / lumber / cheese / pigs / cloth than the village itself
+   needs. Cart it to the city, sell at market, come home with coin
+   and/or city-made goods (oil, wine, pottery, salt, iron tools)
+   the village can't make itself.
+2. **Import trip.** The village has accumulated coin from prior
+   trips. The headman wants pottery / tools / oil / salt that the
+   city sells cheap, brings them back, distributes them to
+   villagers, or stockpiles for the off-season.
+3. **Hard-times resupply.** The village's own subsistence grain is
+   running low (bad harvest, locusts, plague), and the headman
+   drains some of the village treasury to send the caravan to buy
+   staples back from the city.
+
+All three are the same caravan with different cargo + direction.
+We model the dispatch trigger as "village has meaningful exportable
+inventory OR has decent treasury to fund an import / resupply
+trip"; the planner picks the actual cargo each leg.
+
+**v1.5 mechanics (landed):**
+
+1. New caravan ID prefix `villager-`. Distinct from the existing
+   `merchant-`, `tax-`, `import-`, `export-` prefixes. The viewer
+   renders these with a dedicated peasant-with-handcart SVG
+   (`viewer/art/units/villager_caravan.svg`) so they read
+   visually distinct from patron-funded long-haul mule trains.
+2. `villagerCaravanAssemblyPhase` runs every 14 days. For each
+   `free_village` actor whose home settlement is a village and that
+   has either:
+   - any of `VILLAGER_EXPORTABLE_RESOURCES` (food, fibre, wood,
+     hides, livestock, cloth) at ≥14 days of local subsistence
+     equivalent, OR
+   - treasury ≥ 200 coin (import-trip threshold), OR
+   - grain stock <7 days AND any treasury (hard-times resupply)
+
+   ...the steward dispatches a villager caravan (one per village
+   at a time).
+
+3. Caravan composition: 2-4 mules + 0-1 donkeys, 1 drover + 1
+   guard, no light cart, 4-day starter rations. Operating
+   treasury 50-250 coin (vs 250-750 for merchant caravans),
+   scaled to leave at least 30 coin at the village.
+4. Movement + trade routes identical to merchant caravans: the
+   shared planner finds profitable arbitrage (village exports →
+   city; city imports → village, depending on price gradient).
+   Same 5% profit floor (§C28) + 45-day no-profit disband (§C25).
+5. Villager caravans count toward a separate fleet target
+   (~0.5 × villageCount) so they don't compete with the standing
+   merchant fleet (~0.25 × settlements).
+6. Profit remittance: when a villager caravan returns to its
+   village home with surplus coin, the same
+   `remitStandingCaravanProfitAtHome` logic that handles
+   merchants pays the steward — coin accumulates at the village
+   for tribute (§C29), wages, or future trips.
+7. New `tribute_paid` companion event `villager_caravan_dispatched`
+   for telemetry.
+
+**Why the 5% profit floor still works for villages:**
+
+Short-haul village→city routes have low transport cost but smaller
+price spreads than long-haul. A village-grain → city-grain spread
+of even 3-4% may not clear the gate, but a village-grain →
+city-grain via the city's higher subsistence price often does, and
+the return-leg arbitrage (city-pottery → village-pottery) also
+clears. The planner picks whichever leg is profitable.
+
+**Cross-refs:** `docs/06-caravans.md` §"NPC caravan AI",
+`docs/11-politics-and-ownership.md` §"Patron-client villages" +
+§"Free villages", `src/sim/tick.ts` `villagerCaravanAssemblyPhase`,
+`viewer/art/units/villager_caravan.svg`.
+
 ## C16 — Cascading consequences of price explosion [TODO]
 
 **Current state:** prices are capped at a sane multiple of base

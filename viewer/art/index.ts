@@ -28,6 +28,7 @@ export const EDGE_DIRS: readonly EdgeDir[] = ['e', 'ne', 'nw', 'w', 'sw', 'se'];
 
 export type UnitKind =
   | 'caravan'
+  | 'villager_caravan'
   | 'migrant_column'
   | 'news_carrier'
   | 'patrol'
@@ -94,10 +95,7 @@ export type TerrainKey =
 /** Resolve a sim Terrain + (optional) settlement tier into a TerrainKey
  *  for art lookup. Urban hexes pick the tier-specific tile; all other
  *  terrains pass through unchanged. */
-export const terrainArtKey = (
-  terrain: Terrain,
-  urbanTier?: SettlementTier,
-): TerrainKey => {
+export const terrainArtKey = (terrain: Terrain, urbanTier?: SettlementTier): TerrainKey => {
   if (terrain !== 'urban') return terrain;
   if (urbanTier === undefined) return 'urban_town';
   return `urban_${urbanTier}` as TerrainKey;
@@ -143,7 +141,9 @@ const loadTexture = async (svg: string, alias: string): Promise<Texture> => {
 const lookupRaw = (relPath: string): string => {
   const raw = RAW_SVGS[relPath];
   if (raw === undefined) {
-    throw new Error(`Art: missing SVG at ${relPath}. Available keys: ${Object.keys(RAW_SVGS).slice(0, 5).join(', ')}…`);
+    throw new Error(
+      `Art: missing SVG at ${relPath}. Available keys: ${Object.keys(RAW_SVGS).slice(0, 5).join(', ')}…`,
+    );
   }
   return raw;
 };
@@ -169,27 +169,75 @@ const TERRAIN_KEYS: readonly TerrainKey[] = [
 ];
 
 const BUILDING_IDS: readonly string[] = [
-  'farm', 'pasture', 'mine', 'quarry', 'forester_camp', 'sawmill', 'mill',
-  'bakery', 'bloomery', 'kiln', 'pottery', 'charcoal_kiln', 'granary',
-  'warehouse', 'cistern', 'smithy', 'weaver_workshop', 'tailor_shop',
-  'winery', 'oil_press', 'dairy', 'tannery', 'fishery', 'vineyard',
-  'olive_grove', 'orchard', 'cart_wright', 'mint', 'temple', 'forum_market',
-  'walls', 'barracks', 'aqueduct_segment', 'road_segment',
+  'farm',
+  'pasture',
+  'mine',
+  'quarry',
+  'forester_camp',
+  'sawmill',
+  'mill',
+  'bakery',
+  'bloomery',
+  'kiln',
+  'pottery',
+  'charcoal_kiln',
+  'granary',
+  'warehouse',
+  'cistern',
+  'smithy',
+  'weaver_workshop',
+  'tailor_shop',
+  'winery',
+  'oil_press',
+  'dairy',
+  'tannery',
+  'fishery',
+  'vineyard',
+  'olive_grove',
+  'orchard',
+  'cart_wright',
+  'mint',
+  'temple',
+  'forum_market',
+  'walls',
+  'barracks',
+  'aqueduct_segment',
+  'road_segment',
 ];
 
 const SETTLEMENT_TIERS: readonly SettlementTier[] = [
-  'hamlet', 'village', 'town', 'small_city', 'large_city',
+  'hamlet',
+  'village',
+  'town',
+  'small_city',
+  'large_city',
 ];
 
 const UNIT_KINDS: readonly UnitKind[] = [
-  'caravan', 'migrant_column', 'news_carrier', 'patrol', 'legion',
-  'bandit_raid', 'bandit_camp',
+  'caravan',
+  'villager_caravan',
+  'migrant_column',
+  'news_carrier',
+  'patrol',
+  'legion',
+  'bandit_raid',
+  'bandit_camp',
 ];
 
 const SCATTER_KINDS: readonly ScatterKind[] = [
-  'tree-oak', 'tree-pine', 'tree-cypress', 'rock-small', 'rock-medium',
-  'grass-tuft', 'flower-yellow', 'flower-purple', 'bush-small',
-  'mushroom', 'fern', 'log', 'cactus',
+  'tree-oak',
+  'tree-pine',
+  'tree-cypress',
+  'rock-small',
+  'rock-medium',
+  'grass-tuft',
+  'flower-yellow',
+  'flower-purple',
+  'bush-small',
+  'mushroom',
+  'fern',
+  'log',
+  'cactus',
 ];
 
 export interface LoadArtOpts {
@@ -220,8 +268,8 @@ export const loadArt = async (opts: LoadArtOpts = {}): Promise<ArtRegistry> => {
     SETTLEMENT_TIERS.length +
     UNIT_KINDS.length +
     SCATTER_KINDS.length +
-    EDGE_DIRS.length * 2 +  // lake_shore + biome_edge
-    64 * 3;                 // 64-bitmask river / dirt / roman atlases
+    EDGE_DIRS.length * 2 + // lake_shore + biome_edge
+    64 * 3; // 64-bitmask river / dirt / roman atlases
   let loaded = 0;
   const tick = (): void => {
     loaded++;
@@ -240,7 +288,10 @@ export const loadArt = async (opts: LoadArtOpts = {}): Promise<ArtRegistry> => {
     tick();
   }
   for (const t of SETTLEMENT_TIERS) {
-    settlement.set(t, await loadTexture(lookupRaw(`./settlements/${t}.svg`), `art-settlement-${t}`));
+    settlement.set(
+      t,
+      await loadTexture(lookupRaw(`./settlements/${t}.svg`), `art-settlement-${t}`),
+    );
     tick();
   }
   for (const u of UNIT_KINDS) {
@@ -256,7 +307,10 @@ export const loadArt = async (opts: LoadArtOpts = {}): Promise<ArtRegistry> => {
     tick();
   }
   for (let bm = 0; bm < 64; bm++) {
-    romanRoad[bm] = await loadTexture(lookupRaw(`./roads/roman/c${bm}.svg`), `art-roadroman-c${bm}`);
+    romanRoad[bm] = await loadTexture(
+      lookupRaw(`./roads/roman/c${bm}.svg`),
+      `art-roadroman-c${bm}`,
+    );
     tick();
   }
   for (const d of EDGE_DIRS) {

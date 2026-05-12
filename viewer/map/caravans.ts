@@ -266,7 +266,11 @@ export const createCaravansLayer = (
       const badge = new Graphics();
       badge.eventMode = 'none';
       container.addChild(badge);
-      const sprite = new Sprite(art.unit('caravan'));
+      // Per docs/15 §C31: villager caravans (id prefix `villager-`) use a
+      // dedicated peasant-farmer-with-handcart glyph so they're visually
+      // distinct from long-haul merchant trains.
+      const unitKind = String(c.id).startsWith('villager-') ? 'villager_caravan' : 'caravan';
+      const sprite = new Sprite(art.unit(unitKind));
       sprite.anchor.set(0.5, 0.5);
       sprite.width = SPRITE_PX;
       sprite.height = SPRITE_PX;

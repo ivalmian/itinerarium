@@ -161,7 +161,8 @@ Two main forms.
   `tributePhase` runs every 90 days and transfers
   `TRIBUTE_FRACTION × village.treasury` coin to the patron).
   Grain physically stays at the village granary unless a caravan
-  hauls it to the city in response to a price gap.
+  hauls it to the city in response to a price gap or a villager
+  caravan (see "Village ↔ city trade" below) takes it.
 
 ### Free villages (less common)
 
@@ -171,6 +172,39 @@ Two main forms.
 - Still owe taxes / military service to the regional governor.
 - More resilient politically but typically poorer than
   patron-client villages.
+
+### Village ↔ city trade — the villager caravan (docs/15 §C31)
+
+Both kinds of village (free and patron-client) share their economic
+relationship with the nearest city: most weeks, the village
+steward / headman organises a small handcart caravan to the nearest
+urban market. This is the everyday Roman village-to-city flow —
+not the prestige long-haul mule-trains that the patrician families
+run, but the modest 2-4 mule local-trade run that sustained rural
+economies.
+
+The same caravan handles three motivations depending on the
+season's pressure:
+
+1. **Surplus run.** The village has more grain / legumes / wool /
+   flax / lumber / cheese / livestock / cloth than it needs.
+   Cart it to the city, sell at market, come back with coin and
+   city-made goods.
+2. **Import trip.** The village has accumulated coin from prior
+   trips. The steward funds a trip to buy pottery / oil / wine /
+   salt / iron tools — the city's specialties — and brings them
+   back.
+3. **Hard-times resupply.** The village's own subsistence is
+   running short (bad harvest, plague). The steward drains some
+   treasury and sends the caravan to buy staples back.
+
+The caravan's id carries the `villager-` prefix and the viewer
+renders it with a dedicated peasant-with-handcart glyph. It uses
+the same planner as merchant caravans, so direction + cargo emerge
+from local price gradients; the dispatch trigger is just "this
+village wants a trip out this fortnight." Per-village cap = 1 active
+villager caravan. Separate fleet target from merchants so the two
+flows don't crowd each other out.
 
 ### Hamlets
 
