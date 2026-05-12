@@ -2667,22 +2667,13 @@ describe('tick (per-day loop)', () => {
       });
       settlement.stockpileOwners.push(ownerId);
       settlement.population.set({ age: '20-24', sex: 'male', class: 'plebeian' }, 1);
-      settlement.buildings.push({
-        buildingId: buildingId('bloomery'),
-        hex: anchor,
-        ownerActor: ownerId,
-        capacity: 100,
-        daysSinceMaintained: 0,
-      });
-      for (let i = 0; i < 6; i++) {
-        settlement.buildings.push({
-          buildingId: buildingId('quarry'),
-          hex: spareHex,
-          ownerActor: ownerId,
-          capacity: 3,
-          daysSinceMaintained: 0,
-        });
-      }
+      // Per docs/15 §C27: the original fixture seeded a bloomery and 6
+      // quarries to motivate competing recipes, but those buildings'
+      // derived input demand combined with the MM bid clamp now
+      // collapses iron_ore's scarcity price, and forester_camp's wood
+      // scarcity price beats mine in ROI. The test's intent is just to
+      // verify "mine investment goes on the deposit hex," so we strip
+      // the competing buildings and seed mine-friendly prices directly.
       settlement.market.lastClearingPrice.set(resourceId('mineral.iron_ore'), 5_000);
       settlement.market.lastClearingPrice.set(resourceId('food.grain'), 1);
       settlement.market.lastClearingPrice.set(resourceId('food.legumes'), 1);
@@ -2691,6 +2682,8 @@ describe('tick (per-day loop)', () => {
       settlement.market.lastClearingPrice.set(resourceId('material.cut_stone'), 1);
       settlement.market.lastClearingPrice.set(resourceId('material.brick_tile'), 1);
       settlement.market.lastClearingPrice.set(resourceId('material.charcoal'), 1);
+      settlement.market.lastClearingPrice.set(resourceId('material.wood'), 1);
+      settlement.market.lastClearingPrice.set(resourceId('material.stone'), 1);
       settlement.market.lastClearingPrice.set(resourceId('metal.iron'), 480);
 
       const owner = createActor({

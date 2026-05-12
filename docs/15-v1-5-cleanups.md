@@ -653,7 +653,7 @@ caravans completing instead of residual transfers firing.
 `docs/15-v1-5-cleanups.md` §C20, `src/sim/tick.ts`
 `fiscalRedistributionPhase`, `completeOffMapExportIfArrived`.
 
-## C23 — Non-cash wealth floor on comfort + status demand (landed)
+## C23 — Non-cash wealth floor on comfort + status demand (REVERTED in §C27)
 
 **Diagnosed during the §C22 bid-book audit:** in a year-1 burn-in
 snapshot a large city had 45 of 61 priced resources with NO bid in
@@ -814,6 +814,65 @@ universal.
 **Cross-refs:** `docs/08-money-and-trade.md` §"Bid-ask book",
 `src/sim/market/scheduleBuilder.ts` `marketMakerSupplySources`,
 `marketMakerDemandSources`.
+
+## C27 — MM as last-resort bidder + revert C23 ghost-bid floor (landed)
+
+**Diagnosed during the §C26 burn-in audit:** the original C26 added
+patrician + city-corp + governor market-making (passive bid 5% below
+last price, passive ask 5% above) ADDITIVELY to concrete demand
+sources. Result: famine deaths jumped 60% (13.7k vs 8.5k baseline).
+The mechanism was that MM bids at 0.95 × last_price competed with
+plebeian subsistence demand on staple grain — and when the household
+treasury was drained (the recurring "wages-in-kind, no coin
+accumulation" pattern), MM cleared the cheap grain first, raising the
+next tick's clearing price further out of reach for poor subsistence
+buyers. Separately, C23's 5% nominal-budget floor was creating
+"ghost bids" — sources that appeared in the book with positive
+quantityAt(p) but failed at trade execution because the actor's
+treasury cap was 0.
+
+**v1.5 mechanics (landed):**
+
+1. **C23's 5% nominal-budget floor is REVERTED.** The
+   `COMFORT_NOMINAL_FLOOR_FRACTION` and `STATUS_NOMINAL_FLOOR_FRACTION`
+   constants are now 0. Comfort and status demand only fire when the
+   actor has real cash (or self-provision credit for subsistence).
+   Bid-book coverage of consumed goods is now provided by §C26
+   market-making (real treasury-backed bids) instead.
+2. **MM bid is clamped strictly below the lowest concrete-bid finite
+   WTP per resource.** `buildSettlementSchedules` builds concrete
+   demand sources first, computes `minFiniteWtpForConcreteSources`
+   (excluding subsistence which has WTP=∞), and passes that to
+   `marketMakerDemandSources`. The MM bid is at
+   `min(0.95 × lastPrice, minConcreteFiniteWtp - 1e-3)`. Since the
+   CDA matches buyers in descending WTP order, concrete bids always
+   fill first; MM only picks up residual supply.
+3. **MM ask stays additive** at +5% above last price. Concrete asks
+   sit at MC (lower); MM ask is a higher-tier price layer that only
+   engages when demand walks up past the natural supply.
+
+**Effect:** MM no longer crowds out subsistence on staples. Famine
+deaths drop back near baseline (9.1k vs 8.5k, +6% instead of +60%).
+Bid-book coverage stays at 95% in cities. Patrician treasuries
+recover (median 481 vs 121 under C26, avg 1741 vs 217). The MM
+quote layer remains the "least tight, least volume" outer edge of
+the book; it just no longer competes for goods that broke
+households legitimately need.
+
+**Test fixture impact:** the `places mine investments only on
+matching mineral deposits` test seeded `iron_ore = 5_000` with a
+bloomery present. C26's MM bid kept the price artificially high
+(MM bid acted as a price-setter when no concrete demand existed at
+that level), so mine investment scored well. With C27's clamp the
+MM bid stays below bloomery's break-even (~120), the scarcity
+price reflects reality, and forester_camp outscores mine on wood
+scarcity. The test was rewritten to seed mine-friendly prices
+directly without the competing bloomery / quarry buildings.
+
+**Cross-refs:** `docs/08-money-and-trade.md` §"Bid-ask book",
+`docs/15-v1-5-cleanups.md` §C23 + §C26,
+`src/sim/market/scheduleBuilder.ts` `marketMakerDemandSources`,
+`minFiniteWtpForConcreteSources`.
 
 ## C16 — Cascading consequences of price explosion [TODO]
 

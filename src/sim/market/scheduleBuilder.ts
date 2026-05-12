@@ -110,14 +110,14 @@ export const buildSettlementSchedules = (inputs: BuildScheduleInputs): Settlemen
   // per-resource bid sizing.
   const marketMakerResourcesByActor = buildMarketMakerResourcesByActor(inputs);
   for (const resource of inputs.resources) {
-    // Per docs/15 §C26: market-making is the "least tight, least
-    // volume" outer layer of the book. It is ADDITIVE to concrete
-    // bid/ask sources — base supply sells at MC, MM ask sells the same
-    // inventory at +5% as a residual price tier; concrete demand bids
-    // at its real cap, MM bids 5% below as a small fallback discount
-    // layer. Both layers populate the book and the CDA crosses
-    // whichever is tighter.
-    const demandSources: DemandSource[] = [
+    // Per docs/15 §C26 + §C27: market-making is the LAST-RESORT bidder.
+    // We build concrete demand sources first, find the minimum finite
+    // maxWillingnessToPay among them, and clamp the MM bid below that
+    // floor. Subsistence has WTP=∞ so it's always above MM; if any
+    // concrete comfort/derived/status/etc. source exists, MM stays
+    // strictly below it. The CDA matches by WTP descending, so concrete
+    // bids always fill first; MM only picks up residual supply.
+    const concreteDemandSources: DemandSource[] = [
       ...subsistenceSources(resource, inputs, context),
       ...comfortSources(resource, inputs, context),
       ...statusSources(resource, inputs, context),
@@ -127,10 +127,20 @@ export const buildSettlementSchedules = (inputs: BuildScheduleInputs): Settlemen
       ...transportCapitalSources(resource, inputs, context),
       ...productiveCapitalSources(resource, inputs, context),
       ...derivedInputSources(resource, inputs, context),
-      ...marketMakerDemandSources(resource, inputs, context, marketMakerResourcesByActor),
     ];
-    const demand = aggregateDemand(demandSources);
+    const minConcreteFiniteWtp = minFiniteWtpForConcreteSources(concreteDemandSources);
+    const mmDemandSources = marketMakerDemandSources(
+      resource,
+      inputs,
+      context,
+      marketMakerResourcesByActor,
+      minConcreteFiniteWtp,
+    );
+    const demand = aggregateDemand([...concreteDemandSources, ...mmDemandSources]);
     const supplySources = supplyForResource(resource, inputs, context, demand);
+    // MM ask remains additive — it's the +5% residual price tier above
+    // concrete asks. Concrete asks sit at MC (lower); MM ask only
+    // engages when demand walks up the supply ladder past MC.
     const supplyWithMM = [...supplySources, ...marketMakerSupplySources(resource, inputs, context)];
     out.set(resource, {
       demand,
@@ -138,6 +148,26 @@ export const buildSettlementSchedules = (inputs: BuildScheduleInputs): Settlemen
     });
   }
   return { schedulesByResource: out };
+};
+
+/**
+ * Per docs/15 §C27: the minimum FINITE maxWillingnessToPay among the
+ * concrete (non-MM) demand sources for a resource. Subsistence has
+ * `maxWillingnessToPay = +Infinity` so it's excluded from this min —
+ * market-makers don't need to outbid an infinite WTP; they only need to
+ * sit below other finite bids. Returns Infinity when there is no finite
+ * concrete bid (i.e., only subsistence or no demand at all), in which
+ * case MM bids at its full -5% offset.
+ */
+const minFiniteWtpForConcreteSources = (sources: readonly DemandSource[]): number => {
+  let min = Number.POSITIVE_INFINITY;
+  for (const src of sources) {
+    const wtp = src.maxWillingnessToPay;
+    if (!Number.isFinite(wtp)) continue;
+    if (wtp <= 0) continue;
+    if (wtp < min) min = wtp;
+  }
+  return min;
 };
 
 // --- Defaults ---------------------------------------------------------------
@@ -700,10 +730,16 @@ const budgetCapForActor = (
   return effectiveMarketBudget(budget);
 };
 
-/** docs/15 §C23: 5% nominal-budget floor for cash-strapped consumers. */
-const COMFORT_NOMINAL_FLOOR_FRACTION = 0.05;
-/** Status buyers (patricians) keep credit + reputation lines of credit. */
-const STATUS_NOMINAL_FLOOR_FRACTION = 0.05;
+/**
+ * docs/15 §C23 was REVERTED in §C27. The original 5% nominal-budget floor
+ * on comfort/status demand created bids that appeared in the residual
+ * book but were cash-capped to 0 at trade execution — ghost bids that
+ * never cleared. The bid-book coverage of consumed goods is now provided
+ * by §C26 market-making (treasury-backed, real bids) instead. The
+ * constants are kept at 0 to preserve the `budgetCapForActor` signature.
+ */
+const COMFORT_NOMINAL_FLOOR_FRACTION = 0;
+const STATUS_NOMINAL_FLOOR_FRACTION = 0;
 
 const minedResourceForRecipe = (recipe: RecipeDef): ResourceId | undefined => {
   if (String(recipe.building) !== 'mine') return undefined;
@@ -1809,16 +1845,29 @@ const marketMakerSupplySources = (
  * they price-track, each bid at -5% of last clearing price. Modeled as
  * a status-style step source (bids at a single threshold price).
  */
+/** Minimum gap below concrete WTP so MM is strictly outranked in CDA matching. */
+const MM_WTP_GAP_BELOW_CONCRETE = 1e-3;
+
 const marketMakerDemandSources = (
   resource: ResourceId,
   inputs: BuildScheduleInputs,
   _context: SettlementScheduleContext,
   resourcesByActor: ReadonlyMap<ActorId, ReadonlySet<string>>,
+  minConcreteFiniteWtp: number,
 ): readonly DemandSource[] => {
   if (getResource(resource).category === 'service') return [];
   const recentPrice = inputs.recentLocalPrices.get(resource);
   if (recentPrice === undefined || recentPrice <= 0 || !Number.isFinite(recentPrice)) return [];
-  const bidPrice = recentPrice * (1 - PASSIVE_BID_DISCOUNT);
+  const nominalBidPrice = recentPrice * (1 - PASSIVE_BID_DISCOUNT);
+  // Per docs/15 §C27: clamp MM bid strictly below the lowest concrete-bid
+  // WTP for this resource so concrete buyers (subsistence/comfort/etc.)
+  // always fill first in the CDA. If there is no finite concrete WTP, MM
+  // bids at its full -5% offset (the book had no other finite bidders
+  // anyway).
+  let bidPrice = nominalBidPrice;
+  if (Number.isFinite(minConcreteFiniteWtp) && minConcreteFiniteWtp > 0) {
+    bidPrice = Math.min(bidPrice, minConcreteFiniteWtp - MM_WTP_GAP_BELOW_CONCRETE);
+  }
   if (bidPrice <= 0) return [];
   const resourceKey = String(resource);
   const out: DemandSource[] = [];
