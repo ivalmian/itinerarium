@@ -1207,23 +1207,57 @@ pillar §1 (no hidden hands) all of this needs to be physical.
    per-day) so two runs with the same seed produce identical event
    sequences (the smoke test's determinism gate still passes).
 
-**Still on the docket** (tasks #34, #35 — separate follow-up):
+9. **Patrol detection + pursuit** (`visibleQuarryForPatrol`,
+   `Patrol.pursuit`): each tick a patrol scans for bandit camps +
+   parties within `PATROL_SIGHT_HEXES = 2` of its current
+   position. If a target is in sight AND the patrol's effective
+   combat strength exceeds the target's (likely-to-win check),
+   the patrol enters pursuit — deviates from its cyclic route to
+   chase the target at `PATROL_PURSUIT_HEXES_PER_DAY = 30` (a
+   small speed bonus so equal-speed targets don't perpetually
+   escape). Pursuit lasts up to `PATROL_PURSUIT_MAX_DAYS = 3`
+   days; if not caught up, the patrol gives up and resumes its
+   route.
+10. **Party flee behaviour** (`visibleThreatForParty`): each tick
+    a bandit party scans for patrols within `PARTY_SIGHT_HEXES = 2`.
+    If a likely-to-win patrol is in sight, the party flips to
+    `fleeing` phase and walks 25 hex/day away from the threat
+    (mission is paused). When the threat clears, the party
+    resumes `outbound` or `returning` depending on where it is
+    relative to the mission target.
+11. **`patrolPartyEngagementPhase`** runs after both movement
+    phases. For each patrol, finds the nearest bandit (camp or
+    party) within 2 hex and resolves a single battle via
+    `resolveBattle`. Casualties apply to both sides; pursuit
+    state clears on a patrol win so the patrol resumes its route.
+    No bribery (every encounter is fought, per the user's spec).
 
-- Patrol detection + pursuit: 2-hex sight radius; deviate from
-  route toward visible bandits when expected combat advantage is
-  positive; give up after 3 days of pursuit; combat only on
-  hex-overlap; no bribery.
-- Party flee behaviour: if a patrol within 2 hexes is likely to
-  win, party steps one hex away per tick and pauses its mission;
-  resume when no threat in sight.
-- Road-bias for patrol cyclic route seeding.
+**Still on the docket** (separate follow-up):
+
+- Road-bias for patrol cyclic route seeding so patrols spend more
+  time on roads (where caravans + villager runs are).
+- Caravan-escort patrols (a `caravan_escort` patrol kind already
+  exists in the type but isn't seeded yet).
+- Battle narrative + survivor news for patrol-vs-party fights
+  (currently camp engagements emit news; party fights don't yet).
 
 **Burn-in (3-year watchdog, 80×80, 3 cities):**
 
-|           | pop end | caravans end | famine | settlements end |
-| --------- | ------- | ------------ | ------ | --------------- |
-| pre-§C32  | 151,810 | 50           | 22,176 | 328             |
-| post-§C32 | 156,636 | 81           | 18,323 | 336             |
+|                   | pop end | caravans end | famine | settlements end |
+| ----------------- | ------- | ------------ | ------ | --------------- |
+| pre-§C32          | 151,810 | 50           | 22,176 | 328             |
+| §C32 (1 hex/day)  | 156,636 | 81           | 18,323 | 336             |
+| §C32 (25 hex/day) | 155,325 | 68           | 20,547 | 333             |
+| §C32 final        | 155,325 | 68           | 20,547 | 333             |
+
+Activity counts (1095 days, watchdog seed):
+
+- 99 bandit parties dispatched, 95 returned home, 4 lost
+- 22 patrol engagements
+- 6 successful settlement raids
+- 3 caravan robberies
+- 5 active parties + 2 camps + 3 patrols at year 3 (steady-state
+  bandit fleet of ~5 visible parties on the map)
 
 (Famine still elevated vs the pre-§C30 baseline because trade
 tuning is incomplete — see §C30 + §C31. The bandit refactor is

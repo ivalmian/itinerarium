@@ -256,11 +256,24 @@ targets ≤3-4 hexes from the home camp.
 returning party founds a new camp at its arrival hex. This is the
 only way a wiped camp's faction survives.
 
-**Patrol intercepts** (planned per `docs/15` §C32 follow-up tasks):
-patrols within 2 hexes detect the party, deviate from their cyclic
-route to pursue, fight on hex-overlap. The party flees when the
-patrol's expected combat advantage is positive. No bribery —
-every engagement is fought.
+**Patrol intercepts** (landed, docs/15 §C32):
+
+- Patrols scan for visible bandit camps + parties within
+  `PATROL_SIGHT_HEXES = 2`. If a target is in sight AND the
+  patrol's effective combat strength exceeds the target's, the
+  patrol enters pursuit — deviates from its cyclic route to chase
+  at `PATROL_PURSUIT_HEXES_PER_DAY = 30` (a small speed bonus so
+  fleeing parties don't perpetually escape at equal speed). After
+  `PATROL_PURSUIT_MAX_DAYS = 3` days of pursuit without catching
+  up, the patrol gives up and resumes its route.
+- Bandit parties scan for patrols within `PARTY_SIGHT_HEXES = 2`.
+  If a likely-to-win patrol is in sight, the party flips to
+  `fleeing` phase and walks away at 25 hex/day. Mission is paused
+  while fleeing; resumes when the threat clears.
+- `patrolPartyEngagementPhase` runs after both movement phases.
+  Any patrol within 2 hex of a bandit (camp or party) resolves a
+  single battle via `resolveBattle`. No bribery — every encounter
+  is fought.
 
 ## Bandit emergence in the tick loop (locked)
 

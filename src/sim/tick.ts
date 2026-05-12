@@ -35,12 +35,20 @@ import { allBuildings, getBuilding } from './buildings/catalog.js';
 import { tickCaravanMovement } from './caravan/movement.js';
 import { MAX_ACTIVE_WORLD_CARAVANS } from './caravan/limits.js';
 import { expectedRiskOnApproximatePath, planCaravanRoute } from './caravan/ai.js';
-import { createCamp, decideCampAction, recruit, type BanditCamp } from './bandit/camp.js';
+import {
+  campAsCombatUnit,
+  createCamp,
+  decideCampAction,
+  recruit,
+  type BanditCamp,
+} from './bandit/camp.js';
 import {
   createBanditParty,
   missionTargetHex,
+  partyAsCombatUnit,
   partyAtHome,
   partyAtMissionTarget,
+  partyEffectiveStrength,
   stepAwayFromHex,
   stepTowardHex,
   type BanditParty,
@@ -4636,6 +4644,11 @@ const politicsPhase = (world: WorldState, rng: Rng, today: Day, events: TickEven
   // garrison + city-watch units seeded by procgen do this — without it,
   // bandits face no enforcement and grow unchecked.
   patrolPhase(world, rng.derive('patrol'), today, events);
+  // Per docs/15 §C32: after both movement phases, any patrol that
+  // overlaps a bandit party fights on-hex. The cyclic-route patrol
+  // logic in patrolPhase handles patrol-vs-camp; this catches the
+  // patrol-vs-party case the route logic doesn't see.
+  patrolPartyEngagementPhase(world, rng.derive('patrol-party'), today, events);
   // Process arrived news carriers → apply reputation deltas to local
   // characters. Per docs/13: news doesn't teleport, every reputation
   // update is anchored to a specific carrier walking a specific route.
@@ -7616,6 +7629,89 @@ const advanceAwayFromHex = (from: Hex, away: Hex, maxHexes: number, world: World
   return cur;
 };
 
+/**
+ * Per docs/15 §C32: shared sight + pursuit/flee parameters. Vision range
+ * is *uniform* per the user's spec — 2 hex for both patrol → bandit
+ * detection and party → patrol detection. Pursuit gives the patrol a
+ * small speed bonus so a target one hex away can actually be caught.
+ */
+const PATROL_SIGHT_HEXES = 2;
+const PARTY_SIGHT_HEXES = 2;
+const PATROL_PURSUIT_HEXES_PER_DAY = 30;
+const PATROL_PURSUIT_MAX_DAYS = 3;
+
+/**
+ * Effective combat strength used for "do I think I can win" / "will I
+ * be caught" heuristics. Mirrors the formula in
+ * `partyEffectiveStrength` but works for both camps and patrols.
+ */
+const banditCampStrength = (camp: BanditCamp): number => {
+  const kit = 1 + camp.weaponsPerBandit + camp.armorPerBandit;
+  return camp.banditCount * kit * Math.max(0.1, camp.averageHealth) * 0.25;
+};
+
+const patrolStrength = (patrol: Patrol): number => {
+  const u = patrol.unit;
+  const kit = 1 + (u.weapons ?? 0) + (u.armor ?? 0);
+  return u.count * kit * Math.max(0.1, u.health ?? 1) * Math.max(0.25, u.training ?? 0.25);
+};
+
+const partyStrength = partyEffectiveStrength;
+
+/**
+ * For a bandit party, find the nearest patrol within sight that is
+ * likely to win an engagement. Returns the patrol or undefined.
+ */
+const visibleThreatForParty = (world: WorldState, party: BanditParty): Patrol | undefined => {
+  if (world.patrols === undefined) return undefined;
+  let best: Patrol | undefined;
+  let bestD = Infinity;
+  const myStrength = partyStrength(party);
+  for (const p of world.patrols.values()) {
+    if (p.unit.count <= 0) continue;
+    const d = hexDistance(p.position, party.position);
+    if (d > PARTY_SIGHT_HEXES) continue;
+    if (patrolStrength(p) <= myStrength) continue; // not a threat
+    if (d < bestD) {
+      bestD = d;
+      best = p;
+    }
+  }
+  return best;
+};
+
+/**
+ * For a patrol, find the nearest visible bandit target (camp or party)
+ * the patrol believes it can defeat. Returns the target hex.
+ */
+const visibleQuarryForPatrol = (
+  world: WorldState,
+  patrol: Patrol,
+): { hex: Hex; kind: 'camp' | 'party' } | undefined => {
+  const myStrength = patrolStrength(patrol);
+  let best: { hex: Hex; kind: 'camp' | 'party'; d: number } | undefined;
+  if (world.banditCamps !== undefined) {
+    for (const c of world.banditCamps.values()) {
+      if (c.banditCount <= 0) continue;
+      const d = hexDistance(c.hex, patrol.position);
+      if (d > PATROL_SIGHT_HEXES) continue;
+      if (banditCampStrength(c) >= myStrength) continue; // unlikely to win
+      if (best === undefined || d < best.d) best = { hex: c.hex, kind: 'camp', d };
+    }
+  }
+  if (world.banditParties !== undefined) {
+    for (const party of world.banditParties.values()) {
+      if (party.banditCount <= 0) continue;
+      const d = hexDistance(party.position, patrol.position);
+      if (d > PATROL_SIGHT_HEXES) continue;
+      if (partyStrength(party) >= myStrength) continue;
+      if (best === undefined || d < best.d) best = { hex: party.position, kind: 'party', d };
+    }
+  }
+  if (best === undefined) return undefined;
+  return { hex: best.hex, kind: best.kind };
+};
+
 const banditPartyPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[]): void => {
   if (world.banditParties === undefined) return;
   for (const [partyId, party] of Array.from(world.banditParties.entries())) {
@@ -7634,6 +7730,19 @@ const banditPartyPhase = (world: WorldState, rng: Rng, today: Day, events: TickE
     if (party.phase === 'done') {
       world.banditParties.delete(partyId);
       continue;
+    }
+    // Per docs/15 §C32: each tick scan for likely-to-win patrols within
+    // sight. If one's there, flee; if the threat clears, resume.
+    const threat = visibleThreatForParty(world, party);
+    if (threat !== undefined) {
+      party.phase = 'fleeing';
+      party.fleeingFromHex = { q: threat.position.q, r: threat.position.r };
+    } else if (party.phase === 'fleeing') {
+      // Threat is gone — resume mission. If we've been driven far away,
+      // the planner falls back to returning home empty rather than
+      // wandering further.
+      party.phase = partyAtMissionTarget(party) ? 'returning' : 'outbound';
+      delete party.fleeingFromHex;
     }
     // Per-phase movement decision — advance up to 25 hex toward the
     // current waypoint (target / home) or away from a threat.
@@ -8147,6 +8256,113 @@ const buildActorToFactionIndex = (world: WorldState): Map<string, FactionId> => 
   return out;
 };
 
+// --- Patrol-vs-party engagement (docs/15 §C32) ---------------------------
+
+/**
+ * After both movement phases, any patrol whose position overlaps (within
+ * the 2-hex sight radius) a bandit party fights on-hex. The cyclic-route
+ * patrol logic in `patrolPhase` handles patrol-vs-camp engagements;
+ * this catches the patrol-vs-party case the route logic doesn't see.
+ *
+ * Combat uses `resolveBattle` with `partyAsCombatUnit` adapter. The
+ * patrol attacker bonus reflects "patrol charges to engage." On a
+ * patrol win, the party's bandits are reduced (potentially to zero,
+ * which the next `banditPartyPhase` cleans up). On a bandit win, the
+ * patrol unit shrinks (potentially to zero, which clears the patrol
+ * from `world.patrols`). No bribery (per the user's spec).
+ */
+const PATROL_PARTY_ENGAGEMENT_HEXES = PATROL_SIGHT_HEXES;
+
+const patrolPartyEngagementPhase = (
+  world: WorldState,
+  rng: Rng,
+  today: Day,
+  events: TickEvent[],
+): void => {
+  if (world.patrols === undefined || world.patrols.size === 0) return;
+  // For each patrol, find the nearest bandit (camp or party) within
+  // engagement range and resolve a single battle.
+  for (const [patrolId, patrol] of [...world.patrols]) {
+    if (patrol.unit.count <= 0) {
+      world.patrols.delete(patrolId);
+      continue;
+    }
+    type Target = { kind: 'party'; party: BanditParty } | { kind: 'camp'; camp: BanditCamp };
+    let best: { target: Target; d: number } | undefined;
+    if (world.banditParties !== undefined) {
+      for (const party of world.banditParties.values()) {
+        if (party.banditCount <= 0) continue;
+        const d = hexDistance(party.position, patrol.position);
+        if (d > PATROL_PARTY_ENGAGEMENT_HEXES) continue;
+        if (best === undefined || d < best.d) best = { target: { kind: 'party', party }, d };
+      }
+    }
+    if (world.banditCamps !== undefined) {
+      for (const camp of world.banditCamps.values()) {
+        if (camp.banditCount <= 0) continue;
+        const d = hexDistance(camp.hex, patrol.position);
+        if (d > PATROL_PARTY_ENGAGEMENT_HEXES) continue;
+        if (best === undefined || d < best.d) best = { target: { kind: 'camp', camp }, d };
+      }
+    }
+    if (best === undefined) continue;
+
+    const subRng = rng.derive(`engage-${patrolId}`);
+    const defender =
+      best.target.kind === 'party'
+        ? partyAsCombatUnit(best.target.party, 'defending')
+        : campAsCombatUnit(best.target.camp, 'defending');
+    const battle = resolveBattle(patrol.unit, defender, {
+      ambush: false,
+      rng: subRng,
+    });
+    let outcome: 'patrol_won' | 'bandits_won' | 'mutual_rout';
+    if (battle.winnerId === patrol.unit.id) outcome = 'patrol_won';
+    else if (battle.winnerId === defender.id) outcome = 'bandits_won';
+    else outcome = 'mutual_rout';
+
+    const patrolCas = battle.casualties.find((c) => c.unitId === patrol.unit.id);
+    const defCas = battle.casualties.find((c) => c.unitId === defender.id);
+    const patrolDeaths = patrolCas?.deaths ?? 0;
+    const defDeaths = defCas?.deaths ?? 0;
+
+    const survivingPatrol = Math.max(0, patrol.unit.count - patrolDeaths);
+    patrol.unit = { ...patrol.unit, count: survivingPatrol };
+    if (survivingPatrol <= 0) {
+      world.patrols.delete(patrolId);
+    } else {
+      delete patrol.pursuit;
+      world.patrols.set(patrolId, patrol);
+    }
+
+    if (best.target.kind === 'party') {
+      best.target.party.banditCount = Math.max(0, best.target.party.banditCount - defDeaths);
+    } else if (world.banditCamps !== undefined) {
+      const survivingCamp = Math.max(0, best.target.camp.banditCount - defDeaths);
+      if (survivingCamp <= 0) {
+        world.banditCamps.delete(best.target.camp.id);
+      } else {
+        world.banditCamps.set(best.target.camp.id, {
+          ...best.target.camp,
+          banditCount: survivingCamp,
+        });
+      }
+    }
+
+    events.push({
+      type: 'patrol_engaged',
+      patrolId,
+      camp:
+        best.target.kind === 'camp'
+          ? best.target.camp.id
+          : (best.target.party.homeCamp ??
+            (`party:${String(best.target.party.id)}` as BanditCampId)),
+      outcome,
+    });
+    void today;
+  }
+};
+
 // --- Patrol phase ----------------------------------------------------------
 
 /**
@@ -8180,6 +8396,45 @@ const patrolPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[
       continue;
     }
     const subRng = rng.derive(`patrol-${patrolId}`);
+
+    // Per docs/15 §C32: pursuit pre-pass. If a likely-to-win quarry
+    // (camp or bandit party) is within the 2-hex sight radius, set the
+    // pursuit target — patrol deviates from its cyclic route to chase
+    // for up to PATROL_PURSUIT_MAX_DAYS. While pursuing we bypass
+    // `tickPatrol` and walk straight toward the target at the slightly
+    // faster pursuit speed.
+    const quarry = visibleQuarryForPatrol(world, patrol);
+    if (quarry !== undefined) {
+      patrol.pursuit = { targetHex: { q: quarry.hex.q, r: quarry.hex.r }, daysActive: 0 };
+    }
+    if (patrol.pursuit !== undefined) {
+      patrol.pursuit.daysActive += 1;
+      // If we've burned the budget, give up. (Setting `pursuit` to
+      // undefined via delete keeps the TickEvent[] free of churn.)
+      if (patrol.pursuit.daysActive > PATROL_PURSUIT_MAX_DAYS) {
+        delete patrol.pursuit;
+      }
+    }
+    if (patrol.pursuit !== undefined) {
+      // Direct pursuit movement (bypasses tickPatrol's cyclic route).
+      const before = patrol.position;
+      patrol.position = advanceTowardHex(
+        patrol.position,
+        patrol.pursuit.targetHex,
+        PATROL_PURSUIT_HEXES_PER_DAY,
+        world,
+      );
+      // Combat triggers on hex-overlap with the quarry. Handled below
+      // by the post-phase scan; here we just walk + persist.
+      world.patrols.set(patrolId, patrol);
+      void before;
+      // Trail wear: count the distance walked.
+      const walked = hexDistance(before, patrol.position);
+      if (walked > 0) {
+        addRoadWear(world, patrol.position, patrol.unit.count * WEAR_PER_PATROL_SOLDIER * walked);
+      }
+      continue; // skip the cyclic route for this tick
+    }
 
     // Detection: a patrol "knows" any camp within DETECTION hexes of EITHER
     // its current position OR the next hex on its route. Real Roman patrols
