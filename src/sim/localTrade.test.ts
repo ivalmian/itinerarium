@@ -239,7 +239,7 @@ describe('localTradePhase (docs/06 §"Local trade between nearby settlements")',
     });
     const household = createActor({
       id: householdId,
-      kind: 'common_household',
+      kind: 'plebeian_household',
       name: 'Bread Household',
       homeSettlement: buyerSettlement.id,
       treasury: 100_000,

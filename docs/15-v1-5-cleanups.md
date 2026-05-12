@@ -498,6 +498,100 @@ discipline", `docs/10-scope-and-questions.md` Decision 33,
 `docs/11-politics-and-ownership.md` §"Tax revenue is real",
 `src/sim/tick.ts` `fiscalRedistributionPhase`.
 
+## C21 — Disaggregate `common_household` by class (landed)
+
+**Diagnosed during the C19/C20 burn-in audit:** even with the C20
+redistribution flowing, a town/city's "common household" actor still
+appeared with avg treasury ~0 most of the time, suppressing comfort
+and status demand from the urban free population. The structural
+cause was that `common_household` was a single aggregate ledger
+representing thousands of plebeians + freedmen + foreigners. When
+the schedule builder capped demand at "actor treasury", it was
+capping the buying power of an entire city's free population at a
+single number. Spending by ANY class drained the treasury for ALL
+classes; wages routed to ONE actor regardless of who actually
+worked the recipe.
+
+**v1.5 mechanics (landed):**
+
+1. **Three new actor kinds replace `common_household`:**
+   `plebeian_household`, `freedman_household`, `foreigner_household`.
+   Per the CLAUDE.md "no backwards compatibility — ever" rule,
+   `common_household` is removed entirely; no shim, no deprecated
+   enum value. The three kinds carry the same ownership semantics
+   `common_household` did (own no hexes, own no buildings by
+   default, exist to anchor per-class household cash + stockpile).
+2. **Per-settlement seeding** — every settlement that previously
+   got a `common_household` actor now gets up to three actors, one
+   per class WITH POSITIVE POPULATION in that settlement. A
+   settlement with no plebeians (rare, but possible in tiny
+   slave-only estates) gets no `plebeian_household`. Initial
+   treasury per class:
+   plebeian_household = plebeian_count × 30 coin
+   freedman_household = freedman_count × 15 coin
+   foreigner_household = foreigner_count × 50 coin
+   Same totals as the old `common_household` seed, just split.
+3. **Hamlets and free villages keep their existing actor.**
+   `hamlet_household` and `free_village` are settlement-political
+   concepts (they own land, they have elders, they pay rent to a
+   patron) — they are not the same thing as a class-level household
+   aggregate. They continue to represent the dominant smallholder
+   population of those tiers.
+4. **Wage routing splits by class.** When a recipe runs at a
+   town/city building, its `payProductionWages` call now splits the
+   wage bill across `plebeian_household` / `freedman_household` /
+   `foreigner_household` IN PROPORTION to the recipe's actual class
+   mix consumed (computed via the same LaborClassContext that the
+   production engine already uses). Hamlet/free-village settlements
+   route wages to their single `hamlet_household` / `free_village`
+   actor as before — those settlements typically have a single
+   class dominant anyway.
+5. **Slaves stay on the owner's books.** No `slave_household`
+   actor. Slave subsistence demand still bids through the slave's
+   owner (`patrician_family`, `city_corporation`, `governor_office`,
+   `temple`, `hamlet_household` / `free_village` as appropriate),
+   exactly as before. Per docs/11: enslaved labor is owner-funded
+   subsistence; the slave does not hold personal coin.
+6. **Schedule builder buyer selection.** The
+   `CONSUMER_BUYER_KIND_PRIORITY` table that previously mapped
+   `plebeian → [common_household, hamlet_household, free_village,
+...]` becomes the cleaner mapping `plebeian →
+[plebeian_household, hamlet_household, free_village, ...]`.
+   Direct 1:1 lookup; no shared bucket.
+
+**Why this matters for the bid-ask book:**
+
+With three class-level actors instead of one, the residual book per
+resource is genuinely **richer**: plebeian comfort-demand and
+freedman comfort-demand show up as separate quote sources, each with
+their own WTP cap derived from their own treasury. A city of 50k
+plebeians + 10k freedmen + 5k foreigners produces three independent
+DemandSource entries per resource per day instead of one merged
+schedule. The CDA matches highest-WTP first, so freedmen with a
+slightly higher reservation can clear before plebeians get squeezed
+out.
+
+This also unlocks volume-based caravan planning (docs/06 §"NPC
+caravan AI" follow-up): a caravan arriving with cargo can read each
+class's residual bid depth and price its sales against the actual
+absorption ceiling at each WTP step, rather than against the
+single-actor aggregate that treated the whole city as one ledger.
+
+**Acceptance:** at year 3, every city has at least
+`plebeian_household` with treasury > 0 most of the time, comfort
+markets (wine, oil, cheese, cloth, pottery) clear regularly, the
+viewer's per-resource book ladder shows multiple distinct bid
+sources per resource.
+
+**Cross-refs:** `docs/04-population.md` §"Class structure"
+(plebeian/freedman/foreigner are the wage-earning + bidding classes,
+slaves are owner-funded), `docs/08-money-and-trade.md` §"Cash
+circulation discipline" + §"Bid-ask book" (richer per-class book),
+`docs/11-politics-and-ownership.md` §"Every faction has named
+characters" (the common-household actor concept), `src/sim/politics/
+actor.ts` `ActorKind`, `src/procgen/seed.ts` household seeding,
+`src/sim/tick.ts` wage routing.
+
 ## C16 — Cascading consequences of price explosion [TODO]
 
 **Current state:** prices are capped at a sane multiple of base

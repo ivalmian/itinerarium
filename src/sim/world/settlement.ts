@@ -118,7 +118,53 @@ export interface MarketSnapshot {
   midPrice: Map<ResourceId, number>;
   spread: Map<ResourceId, number>;
   lastClearedDay: Map<ResourceId, Day>;
+
+  /**
+   * Per docs/15 §C19 the bid-ask book also surfaces the per-source ladder
+   * so the viewer + diagnostics can show WHO is bidding/asking, not just the
+   * aggregate best quote. The ladder is sampled at the end of each tick's
+   * clearing — entries are the *residual* book (orders that did NOT clear
+   * today) sorted by aggressiveness (asks ascending, bids descending). The
+   * entries are deliberately COMPACT (no DemandSource/SupplySource objects;
+   * just the four fields a UI/AI consumer needs) so they serialize cheaply
+   * and don't pin GC roots from the per-tick schedule build.
+   *
+   * `lastBookSampleDay` records the day the ladder was last populated so the
+   * viewer can decide whether to show "today's book" vs "stale".
+   */
+  bookLadder: Map<ResourceId, MarketBookLadder>;
+  lastBookSampleDay: Map<ResourceId, Day>;
 }
+
+export interface MarketBookOrder {
+  readonly actorId: ActorId;
+  readonly actorKind: ActorKindForBook;
+  /** Asks: reservation price. Bids: max willingness-to-pay. */
+  readonly price: number;
+  /** Residual quantity at that price (availableToSell for asks, peak for bids). */
+  readonly quantity: number;
+  /**
+   * For demand sources, which curve the bid came from. Useful for the player
+   * to understand "this is subsistence demand at infinity, that's a derived
+   * input cap, that's a comfort buyer walking away". Optional on the supply
+   * side because supply curves are uniform step functions.
+   */
+  readonly curve?: 'subsistence' | 'comfort' | 'status' | 'derived';
+}
+
+export interface MarketBookLadder {
+  /** Residual asks, sorted ascending by price (best/cheapest first). */
+  readonly asks: readonly MarketBookOrder[];
+  /** Residual bids, sorted descending by price (best/highest first). */
+  readonly bids: readonly MarketBookOrder[];
+}
+
+/**
+ * Local re-declaration of the ActorKind so the settlement module doesn't have
+ * to import politics/actor.ts and create a cycle. Treat as a string lookup
+ * key — populated by the caller from `Actor.kind`.
+ */
+export type ActorKindForBook = string;
 
 export interface Settlement {
   readonly id: SettlementId;
@@ -284,6 +330,8 @@ export const createSettlement = (input: CreateSettlementInput): Settlement => {
       midPrice: new Map(),
       spread: new Map(),
       lastClearedDay: new Map(),
+      bookLadder: new Map(),
+      lastBookSampleDay: new Map(),
     },
     catchmentBaselinePop: input.catchmentBaselinePop ?? 0,
     catchmentDayLastChanged: input.catchmentDayLastChanged ?? 0,
@@ -561,6 +609,28 @@ export const clearMarketBook = (s: Settlement, resource: ResourceId): void => {
   market.bidDepth.delete(resource);
   market.midPrice.delete(resource);
   market.spread.delete(resource);
+  market.bookLadder.delete(resource);
+};
+
+/**
+ * Per docs/15 §C19: record the per-source bid/ask ladder for a resource.
+ * Callers pass already-sorted arrays (asks ascending, bids descending);
+ * we just store + stamp the day. Passing an empty ladder is the same as
+ * deleting it.
+ */
+export const recordMarketBookLadder = (
+  s: Settlement,
+  resource: ResourceId,
+  ladder: MarketBookLadder,
+  today: Day,
+): void => {
+  if (ladder.asks.length === 0 && ladder.bids.length === 0) {
+    s.market.bookLadder.delete(resource);
+    s.market.lastBookSampleDay.delete(resource);
+    return;
+  }
+  s.market.bookLadder.set(resource, ladder);
+  s.market.lastBookSampleDay.set(resource, today);
 };
 
 // --- Dynamic catchment recompute (docs/05 §"Dynamic catchment recompute") ---

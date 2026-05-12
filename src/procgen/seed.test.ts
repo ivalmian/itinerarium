@@ -221,14 +221,22 @@ describe('seedWorld', () => {
     });
   });
 
-  describe('common households', () => {
-    it('creates common household cash actors for towns, cities, and patron-client villages', () => {
+  describe('per-class households (docs/15 §C21)', () => {
+    it('creates per-class household actors for towns, cities, and patron-client villages', () => {
       const w = buildFixtureWorld();
       for (const settlement of w.settlements.values()) {
         const owners = settlement.stockpileOwners
           .map((id) => w.actors.get(id))
           .filter((a): a is NonNullable<typeof a> => a !== undefined);
-        const hasCommon = owners.some((a) => a.kind === 'common_household');
+        // The legacy common_household actor is replaced by class-specific
+        // households. We expect at least one of them in towns/cities/
+        // patron-client villages (per docs/15 §C21).
+        const hasClassHousehold = owners.some(
+          (a) =>
+            a.kind === 'plebeian_household' ||
+            a.kind === 'freedman_household' ||
+            a.kind === 'foreigner_household',
+        );
         const isUrban =
           settlement.tier === 'town' ||
           settlement.tier === 'small_city' ||
@@ -236,7 +244,7 @@ describe('seedWorld', () => {
         const isPatronClientVillage =
           settlement.tier === 'village' && owners.some((a) => a.kind === 'patrician_family');
         if (isUrban || isPatronClientVillage) {
-          expect(hasCommon).toBe(true);
+          expect(hasClassHousehold).toBe(true);
         }
       }
     });

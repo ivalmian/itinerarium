@@ -27,7 +27,10 @@ describe('ACTOR_KINDS', () => {
     const expected: readonly ActorKind[] = [
       'patrician_family',
       'free_village',
-      'common_household',
+      // docs/15 §C21: per-class household disaggregation.
+      'plebeian_household',
+      'freedman_household',
+      'foreigner_household',
       'hamlet_household',
       'governor_office',
       'temple',

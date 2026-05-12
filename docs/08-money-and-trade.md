@@ -752,6 +752,42 @@ them buy a new clay pot. The procgen + bootstrap pass therefore has
 to seed plausible initial treasuries AND continuous income mechanics
 on every owner kind that the schedule builder draws from.
 
+### Per-class household actors (locked, v1.5 C21)
+
+Free urban populations are NOT modeled as a single aggregate
+`common_household` ledger anymore. A town or city's free residents
+break into three class-level actors:
+
+```
+plebeian_household   — wage-earning urban poor + smallholder commoners
+freedman_household   — former slaves, free legally, often clientela
+foreigner_household  — itinerant traders, mercenaries, resident
+                       non-citizens
+```
+
+Each carries its own treasury and stockpile. Wages from recipes
+that run on city land split across the three IN PROPORTION to the
+recipe's actual class mix (computed from the LaborClassContext the
+production engine already uses). Subsistence and comfort demand
+from each class bid against THAT class's actor treasury — so a
+plebeian's empty pocket no longer suppresses a freedman's wine
+purchase, and the residual bid-ask book naturally has three
+distinct demand sources per resource instead of one merged curve.
+
+Hamlets and free villages keep their existing
+`hamlet_household` / `free_village` actor because those are
+political/ownership entities, not class aggregates. They route
+wages to the single household actor as before.
+
+Slaves do NOT have a `slave_household` actor. Per docs/11
+§"Slaves", they are owned property and consume on their owner's
+ledger. Slave subsistence demand bids through `patrician_family` /
+`city_corporation` / `governor_office` / `temple` / `hamlet_household`
+/ `free_village` as appropriate to who owns them.
+
+This is the C21 disaggregation. See docs/15 §C21 for the
+implementation details and the diagnosis that motivated it.
+
 ## In-settlement money flows (locked)
 
 A market is not "the settlement" — it is the **set of actors

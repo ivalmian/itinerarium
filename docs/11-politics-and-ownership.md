@@ -31,13 +31,21 @@ one to three; a city has 5–10 (multiple patrician families, the
 city watch, the temple, the magistrates) often in active
 competition with each other.
 
-The economic ledger also has **common household** actors in towns,
-cities, and patron-client villages. They are not landowners; they
-stand for plebeian/freedman/foreigner household cash and wage
-receipts so food, fuel, and comfort purchases are paid by workers
-rather than by the city corporation. Free villages and hamlets use
-their village/hamlet household actor directly. Common households do
-not command enslaved labor; if a common-owned workshop runs, it hires
+The economic ledger also has **per-class household actors** in towns,
+cities, and patron-client villages — one each for `plebeian_household`,
+`freedman_household`, and `foreigner_household` (whichever classes have
+positive population). They are not landowners; they stand for the
+class's household cash and wage receipts so food, fuel, and comfort
+purchases are paid by workers rather than by the city corporation.
+Each class bids and accumulates wages independently — so when an
+empty plebeian pocket suppresses bread bids, a freedman with savings
+can still buy a clay pot. See docs/15 §C21 for the disaggregation
+rationale (prior `common_household` consolidation merged all three
+classes into one ledger, dampening per-class demand). Free villages
+and hamlets use their village/hamlet household actor directly,
+because those are political entities (with land, elders, patron
+relations), not class aggregates. None of these household actors
+command enslaved labor; if a household-owned workshop runs, it hires
 free/freed/foreigner labor and pays the local reservation wage.
 
 ## Province governor

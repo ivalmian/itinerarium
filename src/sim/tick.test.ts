@@ -418,7 +418,7 @@ describe('tick (per-day loop)', () => {
       producer.stockpile.set(tools, 1);
       const household = createActor({
         id: householdId,
-        kind: 'common_household',
+        kind: 'plebeian_household',
         name: 'Paid Workers',
         homeSettlement: sId,
         treasury: 0,
@@ -676,7 +676,7 @@ describe('tick (per-day loop)', () => {
 
       const producer = createActor({
         id: producerId,
-        kind: 'common_household',
+        kind: 'plebeian_household',
         name: 'Common Producer',
         homeSettlement: sId,
         treasury: 100,
@@ -742,7 +742,7 @@ describe('tick (per-day loop)', () => {
       seller.stockpile.set(grain, 100);
       const buyer = createActor({
         id: buyerId,
-        kind: 'common_household',
+        kind: 'plebeian_household',
         name: 'Tenant Households',
         homeSettlement: sId,
         treasury: 0,
@@ -897,7 +897,7 @@ describe('tick (per-day loop)', () => {
       const city = w.actors.get(actorId('city-corp-1'))!;
       const household = createActor({
         id: actorId('cashless-household'),
-        kind: 'common_household',
+        kind: 'plebeian_household',
         name: 'Cashless Households',
         homeSettlement: settlement.id,
         treasury: 0,
@@ -1491,7 +1491,7 @@ describe('tick (per-day loop)', () => {
       });
       const household = createActor({
         id: householdId,
-        kind: 'common_household',
+        kind: 'plebeian_household',
         name: 'Temple Household',
         homeSettlement: sId,
         treasury: 500,

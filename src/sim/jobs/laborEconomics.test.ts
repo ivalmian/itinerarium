@@ -44,23 +44,23 @@ describe('labor class economics', () => {
 
     const context = buildLaborClassContext(settlement);
 
-    expect(allocatedWorkersForJobForOwner(context, jobId('farmer'), 'patrician_family')).toBeCloseTo(
-      10,
-    );
-    expect(wageEarningShareForJobForOwner(context, jobId('farmer'), 'patrician_family')).toBeCloseTo(
-      0.5,
-    );
-    expect(allocatedWorkersForJobForOwner(context, jobId('farmer'), 'common_household')).toBeCloseTo(
-      5,
-    );
-    expect(wageEarningShareForJobForOwner(context, jobId('farmer'), 'common_household')).toBeCloseTo(
-      1,
-    );
+    expect(
+      allocatedWorkersForJobForOwner(context, jobId('farmer'), 'patrician_family'),
+    ).toBeCloseTo(10);
+    expect(
+      wageEarningShareForJobForOwner(context, jobId('farmer'), 'patrician_family'),
+    ).toBeCloseTo(0.5);
+    expect(
+      allocatedWorkersForJobForOwner(context, jobId('farmer'), 'plebeian_household'),
+    ).toBeCloseTo(5);
+    expect(
+      wageEarningShareForJobForOwner(context, jobId('farmer'), 'plebeian_household'),
+    ).toBeCloseTo(1);
     expect(
       wageEarningWorkerDaysForLaborForOwner(
         context,
         new Map([[jobId('farmer'), 4]]),
-        'common_household',
+        'plebeian_household',
       ),
     ).toBeCloseTo(4);
   });

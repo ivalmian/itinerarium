@@ -400,7 +400,7 @@ describe('buildSettlementSchedules — comfort', () => {
       recentLocalPrices: new Map(),
       today: 0 as Day,
       season: 'spring',
-      ownerKindByActor: new Map([[PLEBEIAN, 'common_household']]),
+      ownerKindByActor: new Map([[PLEBEIAN, 'plebeian_household']]),
       actorTreasuryByActor: new Map([[PLEBEIAN, 1e-12]]),
     });
     const pair = result.schedulesByResource.get(RES.wine);
@@ -549,7 +549,7 @@ describe('buildSettlementSchedules — services', () => {
       season: 'spring',
       ownerKindByActor: new Map([
         [PATRICIAN, 'temple'],
-        [PLEBEIAN, 'common_household'],
+        [PLEBEIAN, 'plebeian_household'],
       ]),
       actorTreasuryByActor: new Map([
         [PATRICIAN, 0],
@@ -1244,7 +1244,7 @@ describe('buildSettlementSchedules — labor class pricing', () => {
   });
 
   it('does not emit derived input demand for common producers when only slave labor is allocated', () => {
-    const hasToolDemandFor = (ownerKind: 'patrician_family' | 'common_household'): boolean => {
+    const hasToolDemandFor = (ownerKind: 'patrician_family' | 'plebeian_household'): boolean => {
       const s = baseSettlement(`owner-labor-${ownerKind}`);
       setSegment(s, 'slave', 10);
       s.jobAllocations.set(jobId('farmer'), 10);
@@ -1270,7 +1270,7 @@ describe('buildSettlementSchedules — labor class pricing', () => {
     };
 
     expect(hasToolDemandFor('patrician_family')).toBe(true);
-    expect(hasToolDemandFor('common_household')).toBe(false);
+    expect(hasToolDemandFor('plebeian_household')).toBe(false);
   });
 });
 

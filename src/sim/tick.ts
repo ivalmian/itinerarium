@@ -109,10 +109,13 @@ import {
   recordImport,
   recordLastClearedDay,
   recordMarketBook,
+  recordMarketBookLadder,
   recordProduction,
   removeBuilding,
   shouldRecomputeCatchment,
   type MarketBookEntry,
+  type MarketBookLadder,
+  type MarketBookOrder,
   type PendingBuilding,
   type PendingDemolition,
   type Settlement,
@@ -153,6 +156,7 @@ import {
   isWageEarningLaborClass,
   ownerCanUseLaborClass,
   type LaborClassContext,
+  wageEarningWorkerDaysByClassForLaborForOwner,
   wageEarningWorkerDaysForLaborForOwner,
 } from './jobs/laborEconomics.js';
 import type { CharacterClass } from './population/types.js';
@@ -692,16 +696,16 @@ const productionPhase = (
             depleteMineDeposit(world, b, recipe, result);
             // Decrement the labor pool we estimated locally so subsequent
             // recipes in this phase don't double-count workers.
-            const paidWorkerDays = consumeLaborFromPoolsForOwner(
+            const consumed = consumeLaborFromPoolsForOwner(
               laborPools,
               result.laborUsed,
               ownerActor.kind,
             );
-            payProductionWagesForWorkerDays(
+            payProductionWagesForWorkerDaysByClass(
               world,
               settlement,
               ownerActor,
-              paidWorkerDays,
+              consumed.paidWorkerDaysByClass,
               wagePriceSignal,
             );
             // Decrement building capacity for the day.
@@ -726,15 +730,58 @@ const productionPhase = (
   }
 };
 
-const WAGE_RECIPIENT_KIND_PRIORITY: readonly Actor['kind'][] = [
-  'common_household',
-  'hamlet_household',
-  'free_village',
-  'city_corporation',
-  'patrician_family',
-  'governor_office',
-  'player',
-];
+/**
+ * Per docs/15 §C21: wages route to the per-class household actor matching
+ * the worker class that actually ran the recipe. Fallback chains let a
+ * settlement without an explicit `plebeian_household` (e.g., a hamlet) route
+ * plebeian wages to the `hamlet_household` instead.
+ *
+ * Slaves are not in this table — slave worker-days do not generate a cash
+ * wage (their upkeep flows through owner-funded subsistence, docs/11).
+ */
+const WAGE_RECIPIENT_KIND_PRIORITY_BY_CLASS: Readonly<
+  Record<'plebeian' | 'freedman' | 'foreigner' | 'patrician', readonly Actor['kind'][]>
+> = {
+  plebeian: [
+    'plebeian_household',
+    'hamlet_household',
+    'free_village',
+    'city_corporation',
+    'patrician_family',
+    'governor_office',
+    'player',
+  ],
+  freedman: [
+    'freedman_household',
+    'plebeian_household',
+    'hamlet_household',
+    'free_village',
+    'city_corporation',
+    'patrician_family',
+    'governor_office',
+    'player',
+  ],
+  foreigner: [
+    'foreigner_household',
+    'plebeian_household',
+    'hamlet_household',
+    'free_village',
+    'city_corporation',
+    'patrician_family',
+    'governor_office',
+    'player',
+  ],
+  patrician: [
+    // Wage-earning patrician class is rare (paid skilled labor like
+    // physicians, scribes-for-hire). Route to the patrician household
+    // ladder first; fall back to plebeian household / city_corp.
+    'patrician_family',
+    'governor_office',
+    'plebeian_household',
+    'city_corporation',
+    'player',
+  ],
+};
 
 const wagePriceSignalForSettlement = (settlement: Settlement): ReadonlyMap<ResourceId, number> => {
   const prices = new Map<ResourceId, number>();
@@ -747,19 +794,37 @@ const wagePriceSignalForSettlement = (settlement: Settlement): ReadonlyMap<Resou
   return prices;
 };
 
-const selectWageRecipient = (
+const selectWageRecipientForClass = (
   world: WorldState,
   settlement: Settlement,
   payer: Actor,
+  klass: 'plebeian' | 'freedman' | 'foreigner' | 'patrician',
 ): Actor | undefined => {
   const candidates = settlement.stockpileOwners
     .map((id) => world.actors.get(id))
     .filter((a): a is Actor => a !== undefined);
-  for (const kind of WAGE_RECIPIENT_KIND_PRIORITY) {
+  const priority = WAGE_RECIPIENT_KIND_PRIORITY_BY_CLASS[klass];
+  for (const kind of priority) {
     const found = candidates.find((a) => a.kind === kind && a.id !== payer.id);
     if (found !== undefined) return found;
   }
   return candidates.find((a) => a.id === payer.id);
+};
+
+/**
+ * Find any wage recipient available at the settlement, used by
+ * `wageAffordableCapacityForRecipe` which only needs to know whether *some*
+ * recipient is available before authorizing a recipe run. The actual class
+ * split happens later in `payProductionWagesForWorkerDaysByClass`.
+ */
+const hasAnyWageRecipient = (world: WorldState, settlement: Settlement, payer: Actor): boolean => {
+  for (const oId of settlement.stockpileOwners) {
+    const candidate = world.actors.get(oId);
+    if (candidate === undefined) continue;
+    if (candidate.id === payer.id) continue;
+    return true;
+  }
+  return false;
 };
 
 const wageAffordableCapacityForRecipe = (
@@ -778,8 +843,7 @@ const wageAffordableCapacityForRecipe = (
     payer.kind,
   );
   if (paidWorkerDaysPerRun <= 0) return Infinity;
-  const recipient = selectWageRecipient(world, settlement, payer);
-  if (recipient === undefined || recipient.id === payer.id) return Infinity;
+  if (!hasAnyWageRecipient(world, settlement, payer)) return Infinity;
   const liquidBudget = payer.treasury + inKindWageBudget(payer, prices);
   return Math.max(0, liquidBudget / (paidWorkerDaysPerRun * wagePerDay));
 };
@@ -792,35 +856,50 @@ const payProductionWages = (
   laborUsed: ReadonlyMap<JobId, number>,
   prices: ReadonlyMap<ResourceId, number>,
 ): void => {
-  const workerDays = wageEarningWorkerDaysForLaborForOwner(
+  const byClass = wageEarningWorkerDaysByClassForLaborForOwner(
     laborClassContext,
     laborUsed,
     payer.kind,
   );
-  payProductionWagesForWorkerDays(world, settlement, payer, workerDays, prices);
+  payProductionWagesForWorkerDaysByClass(world, settlement, payer, byClass, prices);
 };
 
-const payProductionWagesForWorkerDays = (
+/**
+ * Per docs/15 §C21: pay the wage bill for a recipe run, splitting the
+ * total across per-class household recipients in proportion to which
+ * classes did the work. Each class's wage portion follows the same
+ * coin-then-in-kind cascade as before.
+ */
+const payProductionWagesForWorkerDaysByClass = (
   world: WorldState,
   settlement: Settlement,
   payer: Actor,
-  workerDays: number,
+  workerDaysByClass: ReadonlyMap<CharacterClass, number>,
   prices: ReadonlyMap<ResourceId, number>,
 ): void => {
-  if (workerDays <= 0) return;
+  if (workerDaysByClass.size === 0) return;
   const wagePerDay = laborCostPerWorkerDay(prices);
   if (wagePerDay <= 0) return;
-  const recipient = selectWageRecipient(world, settlement, payer);
-  if (recipient === undefined || recipient.id === payer.id) return;
-  const wageBill = workerDays * wagePerDay;
-  let remaining = wageBill;
-  const paidCoin = Math.min(remaining, payer.treasury);
-  if (paidCoin > 0) {
-    payer.treasury -= paidCoin;
-    recipient.treasury += paidCoin;
-    remaining -= paidCoin;
+  for (const [klass, workerDays] of workerDaysByClass) {
+    if (workerDays <= 0) continue;
+    if (klass === 'slave') continue; // no cash wages for slave labor
+    const recipient = selectWageRecipientForClass(
+      world,
+      settlement,
+      payer,
+      klass as 'plebeian' | 'freedman' | 'foreigner' | 'patrician',
+    );
+    if (recipient === undefined || recipient.id === payer.id) continue;
+    const wageBill = workerDays * wagePerDay;
+    let remaining = wageBill;
+    const paidCoin = Math.min(remaining, payer.treasury);
+    if (paidCoin > 0) {
+      payer.treasury -= paidCoin;
+      recipient.treasury += paidCoin;
+      remaining -= paidCoin;
+    }
+    if (remaining > 1e-9) payInKindWages(payer, recipient, remaining, prices);
   }
-  if (remaining > 1e-9) payInKindWages(payer, recipient, remaining, prices);
 };
 
 const WAGE_IN_KIND_RESOURCES: readonly ResourceId[] = [
@@ -951,12 +1030,25 @@ const LABOR_CONSUMPTION_CLASS_ORDER: readonly CharacterClass[] = [
   'patrician',
 ];
 
+interface ConsumedLaborByClass {
+  /** Total wage-earning worker-days consumed across all classes (paid in coin). */
+  readonly paidWorkerDays: number;
+  /**
+   * Per docs/15 §C21: how those wage-earning worker-days break down by class.
+   * The wage routing splits each recipe's wage bill across the matching
+   * per-class household actors using this breakdown. Slave worker-days are
+   * NOT in this map — they are owner-funded upkeep, not cash wages.
+   */
+  readonly paidWorkerDaysByClass: ReadonlyMap<CharacterClass, number>;
+}
+
 const consumeLaborFromPoolsForOwner = (
   pools: LaborClassPools,
   laborUsed: ReadonlyMap<JobId, number>,
   ownerKind: Actor['kind'],
-): number => {
+): ConsumedLaborByClass => {
   let paidWorkerDays = 0;
+  const paidWorkerDaysByClass = new Map<CharacterClass, number>();
   for (const [job, required] of laborUsed) {
     let remaining = required;
     if (remaining <= 0) continue;
@@ -971,11 +1063,14 @@ const consumeLaborFromPoolsForOwner = (
       const next = available - used;
       if (next > 1e-9) byClass.set(klass, next);
       else byClass.delete(klass);
-      if (isWageEarningLaborClass(klass)) paidWorkerDays += used;
+      if (isWageEarningLaborClass(klass)) {
+        paidWorkerDays += used;
+        paidWorkerDaysByClass.set(klass, (paidWorkerDaysByClass.get(klass) ?? 0) + used);
+      }
       remaining -= used;
     }
   }
-  return paidWorkerDays;
+  return { paidWorkerDays, paidWorkerDaysByClass };
 };
 
 /**
@@ -1457,7 +1552,12 @@ const buyFallbackRationsFromOwner = (
 };
 
 const FALLBACK_RATION_BUYER_KIND_PRIORITY: readonly Actor['kind'][] = [
-  'common_household',
+  // Per docs/15 §C21 the legacy single common_household actor split into
+  // per-class household actors. Plebeian household first because that's the
+  // bulk of the urban free population.
+  'plebeian_household',
+  'freedman_household',
+  'foreigner_household',
   'hamlet_household',
   'free_village',
   'city_corporation',
@@ -1492,7 +1592,9 @@ const fallbackRationBuyers = (
 
 const sellerCanSelfProvisionRations = (settlement: Settlement, seller: Actor): boolean => {
   switch (seller.kind) {
-    case 'common_household':
+    case 'plebeian_household':
+    case 'freedman_household':
+    case 'foreigner_household':
     case 'hamlet_household':
     case 'free_village':
     case 'city_corporation':
@@ -2955,6 +3057,120 @@ const recordBookFromClearing = (
   recordMarketBook(settlement, resource, entry);
 };
 
+const BOOK_LADDER_MAX_ORDERS_PER_SIDE = 12;
+
+/**
+ * Per docs/15 §C19: build the per-source bid/ask ladder from the residual
+ * schedules and stamp it on the settlement. Asks ascending, bids descending,
+ * capped to BOOK_LADDER_MAX_ORDERS_PER_SIDE entries per side so the snapshot
+ * doesn't balloon when a city has hundreds of tiny producer-input bids.
+ */
+const recordBookLadderFromClearing = (
+  world: WorldState,
+  settlement: Settlement,
+  resource: ResourceId,
+  demandSources: readonly {
+    readonly id: string;
+    readonly curve: 'subsistence' | 'comfort' | 'status' | 'derived';
+    quantityAt(price: number): number;
+    readonly peakQuantity: number;
+    readonly maxWillingnessToPay: number;
+    readonly buyerActor?: ActorId;
+  }[],
+  supplySources: readonly {
+    readonly id: string;
+    readonly ownerActor: ActorId;
+    readonly reservationPrice: number;
+    readonly availableToSell: number;
+  }[],
+  result: {
+    readonly clearingPrice: number;
+    readonly totalTraded: number;
+    readonly trades: readonly {
+      readonly buyerSourceId: string;
+      readonly sellerSourceId: string;
+      readonly quantity: number;
+    }[];
+  },
+  today: Day,
+): void => {
+  // How much of each demand/supply source was filled today?
+  const filledByBuyer = new Map<string, number>();
+  const filledBySeller = new Map<string, number>();
+  for (const trade of result.trades) {
+    filledByBuyer.set(
+      trade.buyerSourceId,
+      (filledByBuyer.get(trade.buyerSourceId) ?? 0) + trade.quantity,
+    );
+    filledBySeller.set(
+      trade.sellerSourceId,
+      (filledBySeller.get(trade.sellerSourceId) ?? 0) + trade.quantity,
+    );
+  }
+  const evalPrice = Number.isFinite(result.clearingPrice)
+    ? result.clearingPrice
+    : Number.MAX_SAFE_INTEGER;
+  const asks: MarketBookOrder[] = [];
+  for (const s of supplySources) {
+    const filled = filledBySeller.get(s.id) ?? 0;
+    const remaining = Math.max(0, s.availableToSell - filled);
+    if (remaining <= 1e-6) continue;
+    if (!Number.isFinite(s.reservationPrice)) continue;
+    const actor = world.actors.get(s.ownerActor);
+    if (actor === undefined) continue;
+    asks.push({
+      actorId: s.ownerActor,
+      actorKind: actor.kind,
+      price: s.reservationPrice,
+      quantity: remaining,
+    });
+  }
+  asks.sort((a, b) => a.price - b.price);
+  const bids: MarketBookOrder[] = [];
+  for (const d of demandSources) {
+    const filled = filledByBuyer.get(d.id) ?? 0;
+    // Residual quantity that would still trade at the curve's max-WTP.
+    // For subsistence (maxWtp = Infinity) we use quantityAt(eval) as a
+    // representative current-day order size.
+    const sampleQty = Number.isFinite(d.maxWillingnessToPay)
+      ? d.peakQuantity
+      : d.quantityAt(evalPrice);
+    const remaining = Math.max(0, sampleQty - filled);
+    if (remaining <= 1e-6) continue;
+    if (!Number.isFinite(d.maxWillingnessToPay)) {
+      // Subsistence: infinite-WTP. Show the bid at the current clearing
+      // price for ladder purposes (its effective floor in this market).
+      if (!Number.isFinite(result.clearingPrice) || result.clearingPrice <= 0) continue;
+      const buyer = d.buyerActor !== undefined ? world.actors.get(d.buyerActor) : undefined;
+      if (buyer === undefined) continue;
+      bids.push({
+        actorId: d.buyerActor as ActorId,
+        actorKind: buyer.kind,
+        price: result.clearingPrice,
+        quantity: remaining,
+        curve: d.curve,
+      });
+      continue;
+    }
+    if (d.buyerActor === undefined) continue;
+    const buyer = world.actors.get(d.buyerActor);
+    if (buyer === undefined) continue;
+    bids.push({
+      actorId: d.buyerActor,
+      actorKind: buyer.kind,
+      price: d.maxWillingnessToPay,
+      quantity: remaining,
+      curve: d.curve,
+    });
+  }
+  bids.sort((a, b) => b.price - a.price);
+  const ladder: MarketBookLadder = {
+    asks: asks.slice(0, BOOK_LADDER_MAX_ORDERS_PER_SIDE),
+    bids: bids.slice(0, BOOK_LADDER_MAX_ORDERS_PER_SIDE),
+  };
+  recordMarketBookLadder(settlement, resource, ladder, today);
+};
+
 const tradePhase = (
   world: WorldState,
   season: Season,
@@ -3066,6 +3282,18 @@ const tradePhase = (
       // today. Caravans, viewer panels, and dormant-market diagnostics all read
       // from it.
       recordBookFromClearing(settlement, resId, result);
+      // Per docs/15 §C19: also record the full per-source ladder so the
+      // viewer can show the actual book depth (who is bidding/asking, not
+      // just the best quote).
+      recordBookLadderFromClearing(
+        world,
+        settlement,
+        resId,
+        pair.demand.sources,
+        pair.supply.sources,
+        result,
+        today,
+      );
       if (result.totalTraded <= 0) {
         if (
           pair.demand.sources.length > 0 &&

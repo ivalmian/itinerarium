@@ -19,11 +19,21 @@
 
 import type { ActorId, Coin, Quantity, ResourceId, SettlementId } from '../types.js';
 
-/** Kinds of Actor. See docs/11 §"Every faction has named characters". */
+/**
+ * Kinds of Actor. See docs/11 §"Every faction has named characters".
+ *
+ * Per docs/15 §C21 the legacy `common_household` aggregate was split into
+ * three per-class household kinds: `plebeian_household`, `freedman_household`,
+ * `foreigner_household`. Each carries its own treasury and stockpile so
+ * per-class demand is bounded by that class's own cash, not a city-wide
+ * aggregate pool. Slaves remain owner-funded (no `slave_household` kind).
+ */
 export type ActorKind =
   | 'patrician_family'
   | 'free_village'
-  | 'common_household'
+  | 'plebeian_household'
+  | 'freedman_household'
+  | 'foreigner_household'
   | 'hamlet_household'
   | 'governor_office'
   | 'temple'
@@ -37,7 +47,9 @@ export type ActorKind =
 export const ACTOR_KINDS = [
   'patrician_family',
   'free_village',
-  'common_household',
+  'plebeian_household',
+  'freedman_household',
+  'foreigner_household',
   'hamlet_household',
   'governor_office',
   'temple',
@@ -48,6 +60,20 @@ export const ACTOR_KINDS = [
   'city_corporation',
   'merchant_guild',
 ] as const satisfies readonly ActorKind[];
+
+/**
+ * The set of household kinds whose treasury / stockpile represents a single
+ * class of free residents at one settlement. Hamlet / free-village actors are
+ * NOT in this set — they are political entities that own land and exist
+ * regardless of class mix.
+ */
+export const CLASS_HOUSEHOLD_KINDS = [
+  'plebeian_household',
+  'freedman_household',
+  'foreigner_household',
+] as const satisfies readonly ActorKind[];
+
+export type ClassHouseholdKind = (typeof CLASS_HOUSEHOLD_KINDS)[number];
 
 export interface Actor {
   readonly id: ActorId;

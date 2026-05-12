@@ -35,10 +35,16 @@ export interface SettlementPopupOpts {
   readonly id: SettlementId;
   readonly state: ViewerState;
   readonly history: ViewerHistory;
+  /**
+   * Called when the player clicks a resource row in the stockpile / market
+   * table. The app uses this to open the per-resource bid-ask book popup
+   * (docs/15 §C19 + §C21). When omitted, rows are not clickable.
+   */
+  readonly onResourceClick?: (resource: ResourceId) => void;
 }
 
 export const renderSettlementPopup = (opts: SettlementPopupOpts): SettlementPopupContent | null => {
-  const { world, id, state, history } = opts;
+  const { world, id, state, history, onResourceClick } = opts;
   const s = world.settlements.get(id);
   if (s === undefined) return null;
 
@@ -48,7 +54,7 @@ export const renderSettlementPopup = (opts: SettlementPopupOpts): SettlementPopu
   root.appendChild(renderPopulationSection(s));
   root.appendChild(renderTreasurySection(world, s));
   root.appendChild(renderBuildingsSection(s));
-  root.appendChild(renderStockpileSection(world, s, history));
+  root.appendChild(renderStockpileSection(world, s, history, onResourceClick));
   const events = renderEventsSection(history, s.id);
   if (events !== null) root.appendChild(events);
 
@@ -451,6 +457,7 @@ const renderStockpileSection = (
   world: WorldState,
   s: Settlement,
   history: ViewerHistory,
+  onResourceClick?: (resource: ResourceId) => void,
 ): HTMLElement => {
   const section = popupSection('Stockpile & market goods');
 
@@ -563,7 +570,18 @@ const renderStockpileSection = (
   for (const r of rows) {
     const tr = document.createElement('tr');
     const c1 = document.createElement('td');
-    c1.textContent = r.resource;
+    if (onResourceClick !== undefined) {
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.className = 'popup-link';
+      link.textContent = r.resource;
+      link.title = 'View bid-ask book ladder';
+      link.style.cursor = 'pointer';
+      link.addEventListener('click', () => onResourceClick(r.resource as ResourceId));
+      c1.appendChild(link);
+    } else {
+      c1.textContent = r.resource;
+    }
     const c2 = document.createElement('td');
     c2.className = 'num';
     c2.textContent = r.quantity === 0 ? '—' : Math.round(r.quantity).toLocaleString();
