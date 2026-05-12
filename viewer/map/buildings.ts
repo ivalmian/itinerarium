@@ -25,8 +25,24 @@ import { hexKey, type Hex } from '../../src/sim/world/hex.js';
 import { hexToPixel } from './coords.js';
 import type { ArtRegistry } from '../art/index.js';
 
-const ICON_PX = 10;
+const ICON_PX = 7;
 const ICON_ALPHA = 0.92;
+
+/**
+ * Stable zIndex hash for a building id. Pixi orders siblings by `zIndex`
+ * when `sortableChildren = true`; without a stable order, pooled sprites
+ * get re-attached in pool-pop (LIFO) order, which makes the foreground /
+ * background pairing of buildings on a shared hex flip every rebuild.
+ */
+const buildingZIndex = (id: BuildingId): number => {
+  const s = String(id);
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+};
 
 export interface BuildingsLayer {
   readonly container: Container;
@@ -37,12 +53,16 @@ export const createBuildingsLayer = (art: ArtRegistry): BuildingsLayer => {
   const container = new Container();
   container.label = 'buildings';
   container.eventMode = 'none';
+  // Enable z-ordering so sibling building sprites on a shared hex never
+  // flip front/back across rebuilds — each sprite picks up a stable
+  // zIndex from its buildingId hash in `drawBuildingIcon`.
+  container.sortableChildren = true;
   const spritePool: Sprite[] = [];
   const labelPool: Text[] = [];
   const activeSprites: Sprite[] = [];
   const activeLabels: Text[] = [];
 
-  const acquireSprite = (tex: Texture): Sprite => {
+  const acquireSprite = (tex: Texture, zIndex: number): Sprite => {
     const s = spritePool.pop() ?? new Sprite();
     if (s.parent === null) container.addChild(s);
     s.texture = tex;
@@ -51,6 +71,7 @@ export const createBuildingsLayer = (art: ArtRegistry): BuildingsLayer => {
     s.height = ICON_PX;
     s.alpha = ICON_ALPHA;
     s.visible = true;
+    s.zIndex = zIndex;
     activeSprites.push(s);
     return s;
   };
@@ -63,6 +84,9 @@ export const createBuildingsLayer = (art: ArtRegistry): BuildingsLayer => {
     if (t.parent === null) container.addChild(t);
     t.visible = true;
     t.alpha = 0.85;
+    // Labels always render above their icons regardless of icon zIndex
+    // hash. The constant is well above any 32-bit hash.
+    t.zIndex = 0x1_0000_0000;
     activeLabels.push(t);
     return t;
   };
@@ -116,7 +140,7 @@ const drawSettlementBuildings = (
   s: Settlement,
   hexSize: number,
   art: ArtRegistry,
-  acquireSprite: (tex: Texture) => Sprite,
+  acquireSprite: (tex: Texture, zIndex: number) => Sprite,
   acquireLabel: () => Text,
 ): void => {
   if (s.buildings.length === 0) return;
@@ -145,11 +169,17 @@ const drawSettlementBuildings = (
 
   for (const [, list] of byHex) {
     const center = hexToPixel(list[0]!.hex, hexSize);
-    if (list.length === 1) {
-      drawBuildingIcon(list[0]!, center.x, center.y, art, acquireSprite, acquireLabel);
+    // Sort buckets by buildingId for a deterministic ring layout. The
+    // z-order is independent (it comes from the buildingId hash) so the
+    // sprites themselves don't flip front/back across rebuilds even as
+    // pooled Sprite instances get reused in LIFO order.
+    const sorted = list
+      .slice()
+      .sort((a, b) => String(a.buildingId).localeCompare(String(b.buildingId)));
+    if (sorted.length === 1) {
+      drawBuildingIcon(sorted[0]!, center.x, center.y, art, acquireSprite, acquireLabel);
     } else {
-      const sorted = list.slice().sort((a, b) => String(a.buildingId).localeCompare(String(b.buildingId)));
-      const ringR = hexSize * 0.35;
+      const ringR = hexSize * 0.32;
       for (let i = 0; i < sorted.length; i++) {
         const angle = (2 * Math.PI * i) / sorted.length - Math.PI / 2;
         const x = center.x + Math.cos(angle) * ringR;
@@ -165,16 +195,16 @@ const drawBuildingIcon = (
   x: number,
   y: number,
   art: ArtRegistry,
-  acquireSprite: (tex: Texture) => Sprite,
+  acquireSprite: (tex: Texture, zIndex: number) => Sprite,
   acquireLabel: () => Text,
 ): void => {
   const tex = art.building(bucket.buildingId);
-  const s = acquireSprite(tex);
+  const s = acquireSprite(tex, buildingZIndex(bucket.buildingId));
   s.position.set(x, y);
 
   if (bucket.count > 1) {
     const t = acquireLabel();
     t.text = `×${bucket.count}`;
-    t.position.set(x + 4, y - 5);
+    t.position.set(x + 3, y - 4);
   }
 };

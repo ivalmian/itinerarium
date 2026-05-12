@@ -31,6 +31,13 @@ import { createSparkline, fmtCompact } from './sparkline.js';
 import { popupEmpty, popupKv, popupSection } from './popup.js';
 import { createFactionLink } from './factionLink.js';
 import { findFactionByActor } from './factionScreen.js';
+import {
+  appendEventSummary,
+  caravanLabel,
+  caravanLink,
+  hexDestinationNode,
+  settlementLink,
+} from './entityLinks.js';
 
 export interface CaravanPopupContent {
   readonly element: HTMLElement;
@@ -49,23 +56,20 @@ export const renderCaravanPopup = (opts: CaravanPopupOpts): CaravanPopupContent 
   const c = world.caravans.get(id);
   if (c === undefined) return null;
 
-  const owner = world.actors.get(c.ownerActor);
-  const ownerLabel = owner?.name ?? String(c.ownerActor);
-
   const root = document.createElement('div');
   root.appendChild(renderHeader(world, c, state));
-  root.appendChild(renderRouteSection(c));
+  root.appendChild(renderRouteSection(world, c, state));
   root.appendChild(renderCargoSection(world, c));
   root.appendChild(renderCrewSection(c));
   root.appendChild(renderHistorySection(c, history));
-  const transactions = renderTransactionsSection(history, c.id);
+  const transactions = renderTransactionsSection(world, history, c.id, state);
   if (transactions !== null) root.appendChild(transactions);
-  const events = renderEventsSection(history, c.id);
+  const events = renderEventsSection(world, history, c.id, state);
   if (events !== null) root.appendChild(events);
 
   return {
     element: root,
-    title: `${ownerLabel}'s caravan`,
+    title: caravanLabel(world, c.id),
   };
 };
 
@@ -78,7 +82,6 @@ const renderHeader = (world: WorldState, c: Caravan, state: ViewerState): HTMLEl
   const overview = popupKv([
     ['Owner', owner?.name ?? String(c.ownerActor)],
     ['Owner kind', owner?.kind ?? 'unknown'],
-    ['Caravan id', shortId(String(c.id))],
     ['Treasury', `${Math.round(c.treasury).toLocaleString()} coin`],
     ['Health', `${(c.health * 100).toFixed(0)}%`],
     ['MP today', `${Math.round(c.mpRemainingToday)}`],
@@ -127,7 +130,11 @@ const renderHeader = (world: WorldState, c: Caravan, state: ViewerState): HTMLEl
 
 // --- Route + ETA + why -----------------------------------------------------
 
-const renderRouteSection = (c: Caravan): HTMLElement => {
+const renderRouteSection = (
+  world: WorldState,
+  c: Caravan,
+  state: ViewerState,
+): HTMLElement => {
   const section = popupSection('Route');
 
   const dist =
@@ -152,12 +159,16 @@ const renderRouteSection = (c: Caravan): HTMLElement => {
     }
   }
 
+  // Render "Destination" as a clickable settlement / bandit camp link
+  // (where possible) instead of bare hex coords, per docs/00 pillars
+  // (no hidden hands — show the actual place the caravan is heading to).
+  const destNode: Node = c.destination !== null
+    ? hexDestinationNode(world, state, c.destination)
+    : document.createTextNode('— (idle)');
+
   const overview = popupKv([
     ['Position', `(${c.position.q}, ${c.position.r})`],
-    [
-      'Destination',
-      c.destination !== null ? `(${c.destination.q}, ${c.destination.r})` : '— (idle)',
-    ],
+    ['Destination', destNode],
     ['Distance', dist !== null ? `${dist} hex` : '—'],
     ['Estimated days', etaText],
     ['Base MP/day', stats.baseMp.toFixed(1)],
@@ -165,39 +176,76 @@ const renderRouteSection = (c: Caravan): HTMLElement => {
   ]);
   section.appendChild(overview);
 
-  // "Why?" — synthesize from the goal stack if any, else infer.
-  const reason = describeWhy(c);
-  if (reason !== null) {
-    const why = document.createElement('div');
-    why.style.marginTop = '8px';
-    why.style.padding = '6px 10px';
-    why.style.background = 'var(--panel-2)';
-    why.style.borderLeft = '3px solid var(--accent)';
-    why.style.fontStyle = 'italic';
-    why.textContent = reason;
-    section.appendChild(why);
+  // "Why?" — synthesize from the goal stack if any, else infer. Built
+  // as DOM so settlement / caravan references stay clickable.
+  const why = describeWhy(world, c, state);
+  if (why !== null) {
+    const box = document.createElement('div');
+    box.style.marginTop = '8px';
+    box.style.padding = '6px 10px';
+    box.style.background = 'var(--panel-2)';
+    box.style.borderLeft = '3px solid var(--accent)';
+    box.style.fontStyle = 'italic';
+    box.appendChild(why);
+    section.appendChild(box);
   }
 
   return section;
 };
 
-const describeWhy = (c: Caravan): string | null => {
+const describeWhy = (
+  world: WorldState,
+  c: Caravan,
+  state: ViewerState,
+): HTMLElement | null => {
   const stack = c.goalStack;
+  const text = (s: string): Text => document.createTextNode(s);
+  const span = document.createElement('span');
   if (stack !== undefined && stack.length > 0) {
     const top = stack[stack.length - 1] as Goal;
     switch (top.type) {
-      case 'move_to':
-        return `Travelling to (${top.hex.q}, ${top.hex.r}).`;
-      case 'trade_at':
-        return `Trading at ${shortId(String(top.settlement))}${top.buy && top.buy.length > 0 ? `; buying ${top.buy.map(String).join(', ')}` : ''}${top.sell && top.sell.length > 0 ? `; selling ${top.sell.map(String).join(', ')}` : ''}.`;
-      case 'escort':
-        return `Escorting ${shortId(String(top.target))} (within ${top.maxDistanceHexes} hex).`;
+      case 'move_to': {
+        span.appendChild(text('Travelling to '));
+        span.appendChild(hexDestinationNode(world, state, top.hex));
+        span.appendChild(text('.'));
+        return span;
+      }
+      case 'trade_at': {
+        span.appendChild(text('Trading at '));
+        span.appendChild(settlementLink(world, state, top.settlement));
+        const tail = [
+          top.buy && top.buy.length > 0 ? `buying ${top.buy.map(String).join(', ')}` : '',
+          top.sell && top.sell.length > 0 ? `selling ${top.sell.map(String).join(', ')}` : '',
+        ]
+          .filter((s) => s.length > 0)
+          .join('; ');
+        if (tail.length > 0) {
+          span.appendChild(text(`; ${tail}`));
+        }
+        span.appendChild(text('.'));
+        return span;
+      }
+      case 'escort': {
+        span.appendChild(text('Escorting '));
+        span.appendChild(caravanLink(world, state, top.target));
+        span.appendChild(text(` (within ${top.maxDistanceHexes} hex).`));
+        return span;
+      }
       case 'patrol':
-        return `Patrolling — ${top.cyclesRemaining} cycles remaining.`;
-      case 'return_home':
-        return `Returning home to (${top.home.q}, ${top.home.r}).`;
-      case 'flee_to':
-        return `Fleeing to (${top.safe.q}, ${top.safe.r}).`;
+        span.textContent = `Patrolling — ${top.cyclesRemaining} cycles remaining.`;
+        return span;
+      case 'return_home': {
+        span.appendChild(text('Returning home to '));
+        span.appendChild(hexDestinationNode(world, state, top.home));
+        span.appendChild(text('.'));
+        return span;
+      }
+      case 'flee_to': {
+        span.appendChild(text('Fleeing to '));
+        span.appendChild(hexDestinationNode(world, state, top.safe));
+        span.appendChild(text('.'));
+        return span;
+      }
     }
   }
   // No goal stack: infer from cargo + destination.
@@ -205,12 +253,17 @@ const describeWhy = (c: Caravan): string | null => {
   for (const v of c.cargo.values()) cargoUnits += v;
   if (c.destination !== null) {
     if (cargoUnits > 0) {
-      return `Hauling ${Math.round(cargoUnits)} units of cargo toward (${c.destination.q}, ${c.destination.r}).`;
+      span.appendChild(text(`Hauling ${Math.round(cargoUnits)} units of cargo toward `));
+    } else {
+      span.appendChild(text('Travelling empty toward '));
     }
-    return `Travelling empty toward (${c.destination.q}, ${c.destination.r}).`;
+    span.appendChild(hexDestinationNode(world, state, c.destination));
+    span.appendChild(text('.'));
+    return span;
   }
   if (cargoUnits > 0) {
-    return `Stationary with ${Math.round(cargoUnits)} units of cargo aboard.`;
+    span.textContent = `Stationary with ${Math.round(cargoUnits)} units of cargo aboard.`;
+    return span;
   }
   return null;
 };
@@ -543,8 +596,10 @@ const TRANSACTION_KINDS: ReadonlySet<string> = new Set([
 ]);
 
 const renderEventsSection = (
+  world: WorldState,
   history: ViewerHistory,
   id: CaravanId,
+  state: ViewerState,
 ): HTMLElement | null => {
   const events = history.caravanEvents.get(id);
   if (events === undefined || events.length === 0) return null;
@@ -560,7 +615,7 @@ const renderEventsSection = (
     day.className = 'day';
     day.textContent = `d${e.day}`;
     row.appendChild(day);
-    row.appendChild(document.createTextNode(e.summary));
+    appendEventSummary(row, world, state, e.summary);
     list.appendChild(row);
   }
   section.appendChild(list);
@@ -572,10 +627,16 @@ const renderEventsSection = (
  * off-map export event, newest at the bottom, with a running net P/L
  * shown at the bottom. Coin sign convention: buys are negative cash flow
  * (the caravan spent coin), sells are positive (the caravan received it).
+ *
+ * The event-buffer's `summary` strings are kept as a fallback; when the
+ * event carries a `settlement` reference we splice in a clickable
+ * settlement link in place of the short-id substring.
  */
 const renderTransactionsSection = (
+  world: WorldState,
   history: ViewerHistory,
   id: CaravanId,
+  state: ViewerState,
 ): HTMLElement | null => {
   const events = history.caravanEvents.get(id);
   if (events === undefined || events.length === 0) return null;
@@ -584,9 +645,6 @@ const renderTransactionsSection = (
   const section = popupSection('Transactions');
   const list = document.createElement('div');
   list.className = 'popup-event-list';
-  // Show the last 40 to keep the popup bounded; the per-entity buffer
-  // already caps at ~250 (history.ts pushBoundedEvents) so this is a
-  // soft display cap.
   const recent = tx.slice(-40);
   for (const e of recent) {
     const row = document.createElement('div');
@@ -595,12 +653,13 @@ const renderTransactionsSection = (
     day.className = 'day';
     day.textContent = `d${e.day}`;
     row.appendChild(day);
-    row.appendChild(document.createTextNode(e.summary));
+    appendEventSummary(row, world, state, e.summary);
     list.appendChild(row);
   }
   section.appendChild(list);
   return section;
 };
+
 
 // --- Helpers ---------------------------------------------------------------
 
@@ -608,12 +667,6 @@ const cargoUnits = (c: Caravan): number => {
   let n = 0;
   for (const v of c.cargo.values()) n += v;
   return n;
-};
-
-const shortId = (id: string): string => {
-  const parts = id.split(':');
-  if (parts.length <= 1) return id.slice(-8);
-  return parts[parts.length - 1] ?? id;
 };
 
 const sparkCell = (

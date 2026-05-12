@@ -13,6 +13,7 @@ import { setSelection, type ViewerState } from '../state/viewerState.js';
 import type { ViewerHistory } from '../state/history.js';
 import { createSparkline, fmtCompact } from './sparkline.js';
 import { createFactionLink } from './factionLink.js';
+import { appendEventSummary } from './entityLinks.js';
 
 export interface SettlementPanel {
   update(world: WorldState): void;
@@ -185,7 +186,7 @@ export const createSettlementPanel = (opts: SettlementPanelOpts): SettlementPane
     }
 
     // Historical trajectories from the per-entity history buffer.
-    renderHistory(root, history, s.id);
+    renderHistory(root, history, s.id, world, state);
 
     addCopyButton(root, () => JSON.stringify(serializeSettlement(world, s.id), null, 2));
 
@@ -210,7 +211,13 @@ export const createSettlementPanel = (opts: SettlementPanelOpts): SettlementPane
  * compressed into ~10 buckets averaged so a city's slow population drift
  * shows as a smooth line, not a 100-pixel jitter.
  */
-const renderHistory = (root: HTMLElement, history: ViewerHistory, id: SettlementId): void => {
+const renderHistory = (
+  root: HTMLElement,
+  history: ViewerHistory,
+  id: SettlementId,
+  world: WorldState,
+  state: ViewerState,
+): void => {
   const buf = history.settlements.get(id);
   if (buf === undefined || buf.length < 2) return;
 
@@ -269,7 +276,8 @@ const renderHistory = (root: HTMLElement, history: ViewerHistory, id: Settlement
       const row = document.createElement('div');
       row.style.color = 'var(--muted)';
       row.style.padding = '1px 0';
-      row.textContent = `d${e.day} · ${e.summary}`;
+      row.appendChild(document.createTextNode(`d${e.day} · `));
+      appendEventSummary(row, world, state, e.summary);
       list.appendChild(row);
     }
     root.appendChild(list);

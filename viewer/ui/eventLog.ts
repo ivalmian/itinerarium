@@ -1,5 +1,8 @@
 /**
- * Scrolling event log — last 50 high-magnitude TickEvents.
+ * Scrolling event log — last 50 high-magnitude TickEvents, rendered with
+ * clickable named entities (settlements, caravans, bandit camps) so the
+ * player can drill into the parties involved in an incident instead of
+ * staring at branded ids.
  *
  * "High magnitude" = the events the rolling counters track plus
  * settlement_raided / fence_traded etc. Recipe runs and per-tick market
@@ -8,6 +11,12 @@
 
 import type { TickEvent } from '../../src/sim/tick.js';
 import type { WorldState } from '../../src/procgen/seed.js';
+import type { ViewerState } from '../state/viewerState.js';
+import {
+  banditCampLink,
+  caravanLink,
+  settlementLink,
+} from './entityLinks.js';
 
 const MAX_LINES = 50;
 
@@ -18,6 +27,7 @@ export interface EventLog {
 
 export interface EventLogOpts {
   readonly host: HTMLElement;
+  readonly state: ViewerState;
 }
 
 export const createEventLog = (opts: EventLogOpts): EventLog => {
@@ -29,11 +39,11 @@ export const createEventLog = (opts: EventLogOpts): EventLog => {
     const day = world.day;
     const year = Math.floor(day / 365) + 1;
     for (const e of events) {
-      const line = formatEvent(e, day, year);
+      const line = formatEvent(world, opts.state, e, day, year);
       if (line === null) continue;
       const div = document.createElement('div');
       div.className = `event ${line.cls}`;
-      div.textContent = line.text;
+      for (const node of line.parts) div.appendChild(node);
       root.appendChild(div);
     }
     while (root.childElementCount > MAX_LINES) {
@@ -49,43 +59,146 @@ export const createEventLog = (opts: EventLogOpts): EventLog => {
   return { append, clear };
 };
 
+interface FormattedEvent {
+  readonly parts: readonly Node[];
+  readonly cls: string;
+}
+
+const stamp = (day: number, year: number): string => `Y${year} d${day % 365} `;
+
+const txt = (s: string): Text => document.createTextNode(s);
+
 const formatEvent = (
+  world: WorldState,
+  state: ViewerState,
   e: TickEvent,
   day: number,
   year: number,
-): { text: string; cls: string } | null => {
-  const stamp = `Y${year} d${day % 365}`;
+): FormattedEvent | null => {
+  const head = txt(stamp(day, year));
   switch (e.type) {
     case 'caravan_robbed':
-      return { text: `${stamp} caravan ${shortId(String(e.caravan))} robbed (${e.cargoLost} cargo lost)`, cls: 'bad' };
+      return {
+        cls: 'bad',
+        parts: [
+          head,
+          caravanLink(world, state, e.caravan),
+          txt(` robbed (${e.cargoLost} cargo lost)`),
+        ],
+      };
     case 'settlement_raided':
-      return { text: `${stamp} settlement raided by ${shortId(String(e.by))}: ${e.cargoLost} taken, ${e.defendersKilled} dead`, cls: 'bad' };
+      return {
+        cls: 'bad',
+        parts: [
+          head,
+          settlementLink(world, state, e.settlement),
+          txt(` raided by `),
+          banditCampLink(world, state, e.by),
+          txt(`: ${e.cargoLost} taken, ${e.defendersKilled} dead`),
+        ],
+      };
     case 'patrol_engaged':
-      return { text: `${stamp} patrol engaged ${shortId(String(e.camp))}: ${e.outcome}`, cls: 'high' };
+      return {
+        cls: 'high',
+        parts: [
+          head,
+          txt(`patrol engaged `),
+          banditCampLink(world, state, e.camp),
+          txt(`: ${e.outcome}`),
+        ],
+      };
     case 'news_carrier_arrived':
-      return { text: `${stamp} news arrived at ${shortId(String(e.settlement))} (${e.deltasApplied} deltas)`, cls: '' };
-    case 'reputation_updated':
-      return { text: `${stamp} rep Δ ${e.delta.toFixed(1)} ${shortId(String(e.holder))} → ${shortId(String(e.subject))}`, cls: '' };
+      return {
+        cls: '',
+        parts: [
+          head,
+          txt(`news arrived at `),
+          settlementLink(world, state, e.settlement),
+          txt(` (${e.deltasApplied} deltas)`),
+        ],
+      };
+    case 'reputation_updated': {
+      // Holder/subject are reputation keys (CharacterId | ActorId).
+      // Look them up in `world.actors`; characters aren't a top-level
+      // selectable yet, so fall through to id text.
+      const holderName =
+        world.actors.get(e.holder as unknown as Parameters<typeof world.actors.get>[0])?.name ??
+        String(e.holder);
+      const subjectName =
+        world.actors.get(e.subject as unknown as Parameters<typeof world.actors.get>[0])?.name ??
+        String(e.subject);
+      return {
+        cls: '',
+        parts: [
+          head,
+          txt(`rep Δ ${e.delta.toFixed(1)} ${holderName} → ${subjectName}`),
+        ],
+      };
+    }
     case 'epidemic_started':
-      return { text: `${stamp} epidemic in ${shortId(String(e.settlement))}: ${e.disease}`, cls: 'bad' };
+      return {
+        cls: 'bad',
+        parts: [
+          head,
+          txt(`epidemic in `),
+          settlementLink(world, state, e.settlement),
+          txt(`: ${e.disease}`),
+        ],
+      };
     case 'cohort_deaths':
       if (e.cause === 'famine' || e.cause === 'disease') {
-        return { text: `${stamp} ${e.deaths} died (${e.cause}) at ${shortId(String(e.settlement))}`, cls: 'bad' };
+        return {
+          cls: 'bad',
+          parts: [
+            head,
+            txt(`${e.deaths} died (${e.cause}) at `),
+            settlementLink(world, state, e.settlement),
+          ],
+        };
       }
       return null;
     case 'fence_traded':
-      return { text: `${stamp} ${shortId(String(e.camp))} fenced loot through ${shortId(String(e.through))} for ${e.coinPaid}`, cls: 'high' };
+      return {
+        cls: 'high',
+        parts: [
+          head,
+          banditCampLink(world, state, e.camp),
+          txt(` fenced loot through `),
+          settlementLink(world, state, e.through),
+          txt(` for ${e.coinPaid}`),
+        ],
+      };
     case 'bandit_recruited':
-      return { text: `${stamp} ${shortId(String(e.camp))} recruited ${e.count} from ${shortId(String(e.fromSettlement))}`, cls: 'high' };
-    case 'patrol_dispatched':
-      return { text: `${stamp} patrol dispatched from ${shortId(String(e.from))} to (${e.target.q},${e.target.r})`, cls: '' };
+      return {
+        cls: 'high',
+        parts: [
+          head,
+          banditCampLink(world, state, e.camp),
+          txt(` recruited ${e.count} from `),
+          settlementLink(world, state, e.fromSettlement),
+        ],
+      };
+    case 'patrol_dispatched': {
+      // Render the target as a settlement / camp link where possible.
+      let targetNode: Node = txt(`(${e.target.q},${e.target.r})`);
+      for (const s of world.settlements.values()) {
+        if (s.anchor.q === e.target.q && s.anchor.r === e.target.r) {
+          targetNode = settlementLink(world, state, s.id);
+          break;
+        }
+      }
+      return {
+        cls: '',
+        parts: [
+          head,
+          txt(`patrol dispatched from `),
+          settlementLink(world, state, e.from),
+          txt(` to `),
+          targetNode,
+        ],
+      };
+    }
     default:
       return null;
   }
-};
-
-const shortId = (id: string): string => {
-  const parts = id.split(':');
-  if (parts.length <= 1) return id.slice(-10);
-  return parts[parts.length - 1] ?? id;
 };

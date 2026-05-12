@@ -24,6 +24,7 @@ import { setSelection, type ViewerState } from '../state/viewerState.js';
 import { createSparkline, fmtCompact } from './sparkline.js';
 import { popupEmpty, popupKv, popupSection } from './popup.js';
 import { createFactionLink } from './factionLink.js';
+import { appendEventSummary } from './entityLinks.js';
 
 export interface SettlementPopupContent {
   readonly element: HTMLElement;
@@ -55,7 +56,7 @@ export const renderSettlementPopup = (opts: SettlementPopupOpts): SettlementPopu
   root.appendChild(renderTreasurySection(world, s));
   root.appendChild(renderBuildingsSection(s));
   root.appendChild(renderStockpileSection(world, s, history, onResourceClick));
-  const events = renderEventsSection(history, s.id);
+  const events = renderEventsSection(world, history, s.id, state);
   if (events !== null) root.appendChild(events);
 
   return {
@@ -684,7 +685,12 @@ const renderStockpileSection = (
   return section;
 };
 
-const renderEventsSection = (history: ViewerHistory, id: SettlementId): HTMLElement | null => {
+const renderEventsSection = (
+  world: WorldState,
+  history: ViewerHistory,
+  id: SettlementId,
+  state: ViewerState,
+): HTMLElement | null => {
   const events = history.settlementEvents.get(id);
   if (events === undefined || events.length === 0) return null;
   const section = popupSection('Recent events');
@@ -697,7 +703,7 @@ const renderEventsSection = (history: ViewerHistory, id: SettlementId): HTMLElem
     day.className = 'day';
     day.textContent = `d${e.day}`;
     row.appendChild(day);
-    row.appendChild(document.createTextNode(e.summary));
+    appendEventSummary(row, world, state, e.summary);
     list.appendChild(row);
   }
   section.appendChild(list);

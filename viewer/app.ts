@@ -64,6 +64,11 @@ import { renderSettlementPopup } from './ui/settlementPopup.js';
 import { renderCaravanPopup } from './ui/caravanPopup.js';
 import { renderBanditCampPopup } from './ui/banditCampPopup.js';
 import { renderMarketBookPopup } from './ui/marketBookPopup.js';
+import {
+  renderBanditPartyPopup,
+  renderNewsCarrierPopup,
+  renderPatrolPopup,
+} from './ui/unitPopup.js';
 
 export interface ViewerApp {
   destroy(): void;
@@ -114,7 +119,6 @@ export const VIEWER_DEFAULTS: Required<
   sidebarHostId: 'sidebar',
 };
 
-const UNIT_MIN_VISUAL_TICK_MS = 160;
 
 interface BuildResult {
   world: WorldState;
@@ -178,12 +182,29 @@ const buildWorldFromOpts = (
   return { world };
 };
 
+/**
+ * Visual budget for one sim tick's worth of motion. The contract is
+ * direct: one tick at the current speed should take exactly
+ * `tickIntervalMs` of wall-clock to animate. No floor — at 256×
+ * (tick interval ~15 ms) animations are tight and snappy; at 1×
+ * (tick interval 4 s) caravans glide visibly.
+ *
+ * If a single tick's path is long enough that the layer's per-frame
+ * advance cap (MAX_VISUAL_HEX_ADVANCE_PER_FRAME) can't drain it in
+ * `tickIntervalMs`, the tick gate in `app.ticker.add` simply waits —
+ * the sim lags rather than diverges from the rendered state. This is
+ * the desired behaviour: ticks lag when visuals can't keep up, but
+ * sim and rendering remain locked in step.
+ *
+ * Paused state has no live tick interval; we use the most recent
+ * non-zero speed so the initial sync (and any sync issued while the
+ * sim is paused) picks a reasonable default that matches what the
+ * user will see once they unpause.
+ */
 const unitVisualDurationMs = (state: ViewerState): number => {
-  const tickIntervalMs =
-    !state.paused && state.speed > 0 ? 1000 / speedToTicksPerSecond(state.speed) : 0;
-  return tickIntervalMs > 0
-    ? Math.max(UNIT_MIN_VISUAL_TICK_MS, tickIntervalMs)
-    : UNIT_MIN_VISUAL_TICK_MS;
+  const speed = state.paused || state.speed === 0 ? state.lastNonZeroSpeed : state.speed;
+  if (speed === 0) return 1000;
+  return 1000 / speedToTicksPerSecond(speed);
 };
 
 const buildLayers = (
@@ -242,12 +263,23 @@ const buildLayers = (
 
   // Patrols + news carriers + bandit parties — moving sim entities that
   // previously had glyphs in the art registry but no map layer. Per
-  // docs/15 §C32 every moving sim entity gets a visible sprite.
-  const patrolsLayer = createPatrolsLayer(art);
+  // docs/15 §C32 every moving sim entity gets a visible sprite. Each is
+  // selectable so the player can click a patrol or refugee on the map
+  // and see who they are / where they're headed.
+  const patrolsLayer = createPatrolsLayer(art, (id) => {
+    setSelection(state, { kind: 'patrol', id });
+  });
   worldRoot.addChild(patrolsLayer.container);
-  const newsCarriersLayer = createNewsCarriersLayer(art);
+  const newsCarriersLayer = createNewsCarriersLayer(art, (id) => {
+    setSelection(state, { kind: 'news_carrier', id });
+  });
   worldRoot.addChild(newsCarriersLayer.container);
-  const banditPartiesLayer = createBanditPartiesLayer(art);
+  const banditPartiesLayer = createBanditPartiesLayer(art, (id) => {
+    setSelection(state, {
+      kind: 'bandit_party',
+      id: id as unknown as import('../src/sim/types.js').BanditPartyId,
+    });
+  });
   worldRoot.addChild(banditPartiesLayer.container);
 
   // Initial sync.
@@ -471,10 +503,21 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
   // popup should leave the settlement popup intact and overlay the faction
   // screen on top.
   let detailPopup: Popup;
+  // Selections that have a detail popup associated with them. Patrols,
+  // news carriers, and bandit parties are unit selections that the new
+  // unitPopup module renders; the original settlement/caravan/camp
+  // popups continue to live in their own files.
+  const POPUP_ELIGIBLE: ReadonlySet<string> = new Set([
+    'settlement',
+    'caravan',
+    'bandit_camp',
+    'bandit_party',
+    'patrol',
+    'news_carrier',
+  ]);
   // Forward declaration so the onClose closure below can re-read it.
   const closeDetailPopupIfStale = (): void => {
-    const kind = state.selection.kind;
-    if (kind !== 'settlement' && kind !== 'caravan' && kind !== 'bandit_camp') {
+    if (!POPUP_ELIGIBLE.has(state.selection.kind)) {
       if (detailPopup !== undefined && detailPopup.isOpen) detailPopup.close();
     }
   };
@@ -483,8 +526,7 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
       // Dismissed by Escape / backdrop / X. If the selection still points
       // at a popup-eligible entity, clear it so the sidebar and selection
       // visuals also reset.
-      const k = state.selection.kind;
-      if (k === 'settlement' || k === 'caravan' || k === 'bandit_camp') {
+      if (POPUP_ELIGIBLE.has(state.selection.kind)) {
         setSelection(state, { kind: 'none' });
       }
       // Closing the parent popup also closes the per-resource book popup.
@@ -562,6 +604,36 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
       else detailPopup.open(c.element, c.title);
       return;
     }
+    if (sel.kind === 'patrol') {
+      const c = renderPatrolPopup({ world, id: sel.id, state });
+      if (c === null) {
+        if (detailPopup.isOpen) detailPopup.close();
+        return;
+      }
+      if (detailPopup.isOpen) detailPopup.setContent(c.element, c.title);
+      else detailPopup.open(c.element, c.title);
+      return;
+    }
+    if (sel.kind === 'news_carrier') {
+      const c = renderNewsCarrierPopup({ world, id: sel.id, state });
+      if (c === null) {
+        if (detailPopup.isOpen) detailPopup.close();
+        return;
+      }
+      if (detailPopup.isOpen) detailPopup.setContent(c.element, c.title);
+      else detailPopup.open(c.element, c.title);
+      return;
+    }
+    if (sel.kind === 'bandit_party') {
+      const c = renderBanditPartyPopup({ world, id: sel.id, state });
+      if (c === null) {
+        if (detailPopup.isOpen) detailPopup.close();
+        return;
+      }
+      if (detailPopup.isOpen) detailPopup.setContent(c.element, c.title);
+      else detailPopup.open(c.element, c.title);
+      return;
+    }
     // Any other selection kind: close the popup if it's open.
     closeDetailPopupIfStale();
   };
@@ -612,6 +684,15 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     layers.banditCampsLayer.setHighlight(
       state.selection.kind === 'bandit_camp' ? state.selection.id : null,
     );
+    layers.patrolsLayer.setHighlight(
+      state.selection.kind === 'patrol' ? state.selection.id : null,
+    );
+    layers.newsCarriersLayer.setHighlight(
+      state.selection.kind === 'news_carrier' ? state.selection.id : null,
+    );
+    layers.banditPartiesLayer.setHighlight(
+      state.selection.kind === 'bandit_party' ? String(state.selection.id) : null,
+    );
     // Re-create the outline if it was destroyed by a worldRoot tear-down.
     if (hexHighlight.destroyed) {
       hexHighlight = makeHexHighlight(hexSize);
@@ -641,7 +722,7 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     // this tick's events into per-entity event buffers. Done before the
     // sidebar.update call so panels render against fresh history.
     recordTick(history, world);
-    recordEvents(history, world.day, result.events);
+    recordEvents(history, world.day, result.events, world);
 
     // Build per-caravan path from caravan_moved events so the layer
     // interpolates along the actual hex path (not a straight line that
@@ -757,22 +838,42 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
   });
 
   // PIXI ticker drives both interpolation and tick scheduling.
+  //
+  // The speed multiplier (1×, 4×, …, 256×) is a CAP on how fast sim
+  // ticks may fire, not a target. The next sim tick fires once:
+  //   (a) at least `tickIntervalMs` of wall-clock has elapsed since
+  //       the last tick (the cap — at 256× this is ~15 ms) AND
+  //   (b) every animated unit layer has finished interpolating the
+  //       previous tick's motion (`isIdle`).
+  //
+  // If animations can't complete inside `tickIntervalMs` (long routes,
+  // slow frame budgets), ticks lag — the cap drops to the rate the
+  // visuals can sustain. This keeps the simulation and the rendered
+  // state in lock-step: no backlog of unfinished animations can pile
+  // up while the sim races ahead, and pause genuinely stops everything.
+  const allUnitsIdle = (): boolean =>
+    layers.caravansLayer.isIdle() &&
+    layers.patrolsLayer.isIdle() &&
+    layers.newsCarriersLayer.isIdle() &&
+    layers.banditPartiesLayer.isIdle();
   app.ticker.add(() => {
     const now = performance.now();
     const tickIntervalMs =
       !state.paused && state.speed > 0 ? 1000 / speedToTicksPerSecond(state.speed) : 0;
     const visualDeltaMs = Math.max(0, now - lastCaravanVisualFrameMs);
     lastCaravanVisualFrameMs = now;
+    // Always advance visuals — animations run to completion regardless
+    // of pause. The sim is the thing that pauses; an in-flight
+    // animation (≤ one tick's worth of motion thanks to the isIdle
+    // gate below) finishes draining to its destination hex and then
+    // sits still until the user unpauses. No snapping, no cancellation.
     layers.caravansLayer.advanceVisual(world, visualDeltaMs, hexSize);
     layers.patrolsLayer.advanceVisual(world, visualDeltaMs, hexSize);
     layers.newsCarriersLayer.advanceVisual(world, visualDeltaMs, hexSize);
     layers.banditPartiesLayer.advanceVisual(world, visualDeltaMs, hexSize);
     if (!state.paused && state.speed > 0) {
-      // Draw interpolation before advancing the sim. At high speeds, visual
-      // interpolation is deliberately slower than sim time; the caravan layer
-      // begins each new visual leg from the current rendered position.
       const elapsed = now - lastTickWallMs;
-      if (elapsed >= tickIntervalMs) {
+      if (elapsed >= tickIntervalMs && allUnitsIdle()) {
         advanceOneTick();
       }
     }

@@ -106,6 +106,16 @@ export interface UnitLayer {
   ): void;
   /** Advance interpolation by elapsed wall-clock time (per render frame). */
   advanceVisual(world: WorldState, deltaMs: number, hexSize: number): void;
+  /**
+   * `true` when every entity has finished interpolating from its last
+   * `syncTick`; the layer has no pending visual motion. Used by the
+   * tick scheduler to gate the next sim tick: a new tick only fires
+   * once every visible unit's animation has completed, so the sim and
+   * the rendered state stay locked in step (pause genuinely pauses;
+   * 256× is fast because every animation is fast, not because the sim
+   * has raced past the visuals).
+   */
+  isIdle(): boolean;
   /** Highlight a specific entity (or `null` to clear). No-op if `enableHighlight` is false. */
   setHighlight(id: string | null): void;
 }
@@ -486,5 +496,12 @@ export const createUnitLayer = (art: ArtRegistry, opts: UnitLayerOpts): UnitLaye
     highlightedId = id;
   };
 
-  return { container, syncTick, advanceVisual, setHighlight };
+  const isIdle = (): boolean => {
+    for (const e of entries.values()) {
+      if (pathDistance(e.path) > POINT_EPSILON) return false;
+    }
+    return true;
+  };
+
+  return { container, syncTick, advanceVisual, isIdle, setHighlight };
 };

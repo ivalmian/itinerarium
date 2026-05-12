@@ -131,21 +131,29 @@ On each sim tick the unit's `position` may change by a full day of
 travel (~25 hex/day). The viewer interpolates the sprite over the
 **full tick interval** (`unitVisualDurationMs(state)` in
 `viewer/app.ts`), so the sprite glides continuously rather than
-sliding fast then sitting still. At high sim speeds the
-interpolation has a 160 ms minimum so animations don't compress
-below visibility.
+sliding fast then sitting still. The visual duration tracks the
+tick interval directly with no floor — at 256× a tick is ~15 ms
+and animations are tight; at 1× a tick is ~4 s and caravans glide
+visibly.
+
+**Sim/visual lockstep.** Speed multipliers (1×, 4×, …, 256×) are a
+*cap* on tick rate, not a target. The next sim tick fires only
+when (a) at least `tickIntervalMs` of wall-clock has elapsed AND
+(b) every unit layer reports `isIdle()` — meaning every animated
+sprite has finished interpolating to its sim hex. If animations
+can't complete inside the requested cap (long routes, slow paint
+budget), ticks lag: the effective tick rate drops to whatever the
+visuals can sustain. The sim never races ahead of the rendered
+state, and pause stops everything — no animation backlog drains
+after pausing (the longest residual motion is one in-flight tick,
+≤ `tickIntervalMs`).
 
 Two animation modes (chosen by whether the caller passes
 `pathPerEntity`):
 
 - **Path-driven** (caravans): the sim emits the explicit hex path
   the unit walked during the day; the sprite follows it segment by
-  segment so multi-hex moves trace the planned route. If the next
-  sim day arrives before the current animation is finished, the
-  viewer keeps the unfinished route tail and appends the next
-  emitted path instead of replacing it with a straight catch-up
-  segment. The sim state remains authoritative; the visual layer
-  may trail it slightly rather than snapping units across the map.
+  segment so multi-hex moves trace the planned route.
 - **Straight-line fallback** (patrols, news carriers, bandit
   parties): when no explicit path is provided, the layer
   interpolates straight from the previous display position to the
@@ -153,11 +161,6 @@ Two animation modes (chosen by whether the caller passes
   one-hex-per-day movers; for fast movers it's a straight slide
   rather than a curved trace, which is fine since these units don't
   have planned route data.
-
-If high-speed burn-in builds a long visual backlog the renderer
-drains the queued route at a bounded wall-clock speed and caps
-per-frame catch-up distance; it must degrade by trailing, not by
-teleporting.
 
 Per-type glyphs:
 
@@ -179,6 +182,19 @@ dispatched a raid party out: the party (rendered separately as a
 `bandit_raid` sprite per docs/15 §C32) walks toward the target and
 back.
 
+## Building rendering
+
+Sub-hex building markers are small (~7 px) SVG glyphs from the
+`viewer/art/buildings/` registry. A hex with several different
+buildings arrays them in a deterministic ring around the centre;
+multiples of the same building collapse into one icon plus a
+`×N` count label. The container has `sortableChildren = true` and
+each sprite picks up a stable `zIndex` from a hash of its
+`buildingId` so multi-building hexes never flip front/back across
+rebuilds — without this, pooled sprites would re-attach in LIFO
+order and the visual stacking would shuffle every time a tick
+triggers a buildings-layer rebuild.
+
 ## Time controls
 
 - ▶ Play (current speed)
@@ -186,11 +202,10 @@ back.
 - ▶▶ Speed up (toggle through 1×, 4×, 16×, 64×, 256×)
 - ⏹ Reset (re-seed and re-run from day 0 with same seed)
 
-Internally, the Pixi ticker advances the sim according to the selected
-speed. We don't tick more than once per requestAnimationFrame to avoid
-blocking the renderer. Caravan rendering uses a separate interpolation
-clock so a slow frame at high speed does not make every caravan appear
-to teleport or respawn.
+The speed multiplier is a *cap* on tick rate. The actual rate is
+the slower of (cap, what the visuals can sustain). See "Sim/visual
+lockstep" under Unit rendering — sim ticks are gated on animation
+completion so the rendered state never trails the sim.
 
 ## Stats sidebar
 
@@ -210,9 +225,10 @@ panel (whatever the user last clicked). Below: scrolling event log
 
 ## Detail popup
 
-Clicking a settlement, caravan, or bandit camp opens a modal popup
-above the map with the rich inspector view — much larger than the
-sidebar's compact panel. The popup is dismissed by Escape, by
+Clicking a settlement, caravan, bandit camp, patrol, news carrier,
+or bandit raid party opens a modal popup above the map with the
+rich inspector view — much larger than the sidebar's compact
+panel. The popup is dismissed by Escape, by
 clicking the dark backdrop, or by the close button; any of those
 also clears the selection so the sidebar reverts to "nothing
 selected". The sidebar's compact selected-entity panel keeps
@@ -247,6 +263,27 @@ Content per kind:
   weapons %, armor %, health). Loot stockpile table. Bandit
   demographics pyramid (when seeded). 60-day sparkline trio
   (bandits / hangers-on / treasury / health). Recent action events.
+- **Patrol.** Header (kind, base settlement, owning faction).
+  Strength + kit + health, days on patrol, current pursuit target.
+  Route summary with the next stop linked.
+- **News carrier.** Position, speed, destination (as a settlement
+  link), and the news being carried (perpetrator, victim,
+  magnitude). Per docs/13 — the player can see who's about to learn
+  what, and from whose mouth.
+- **Bandit raid party.** Mission type (raid / fence / recruit /
+  migrate / bribe), phase, current strength, days on trip, target
+  (as a settlement link where applicable), home camp link, cargo
+  manifest if any.
+
+**Named-entity links throughout.** Per docs/00 pillar 1 ("no
+hidden hands") the UI never displays a raw branded id. Every
+reference to a settlement / caravan / bandit camp / faction is a
+clickable named link that selects the underlying entity. Caravan
+destinations show the destination settlement's name (or the
+bandit-camp name on the target hex) rather than `(q, r)`
+coordinates. The trade history / event log goes through the
+shared `viewer/ui/entityLinks.ts` placeholder substitution so the
+same event summary renders with links inside any popup.
 
 The popup refreshes on every sim tick while open AND the selection
 still matches — the renderer is gated so non-popup-eligible

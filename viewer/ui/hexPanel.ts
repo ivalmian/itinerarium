@@ -361,35 +361,67 @@ export const createHexPanel = (opts: HexPanelOpts): HexPanel => {
       }
     }
 
-    let patrolsHere = 0;
+    const patrolsHere = [];
     if (world.patrols !== undefined) {
       for (const p of world.patrols.values()) {
-        if (hexEquals(p.position, hex)) patrolsHere++;
+        if (hexEquals(p.position, hex)) patrolsHere.push(p);
       }
     }
-    let newsCarriersHere = 0;
+    const newsCarriersHere = [];
     if (world.newsCarriers !== undefined) {
       for (const n of world.newsCarriers.values()) {
-        if (hexEquals(n.position, hex)) newsCarriersHere++;
+        if (hexEquals(n.position, hex)) newsCarriersHere.push(n);
       }
     }
-    if (patrolsHere > 0 || newsCarriersHere > 0) {
+    const banditPartiesHere = [];
+    if (world.banditParties !== undefined) {
+      for (const p of world.banditParties.values()) {
+        if (p.phase === 'done') continue;
+        if (hexEquals(p.position, hex)) banditPartiesHere.push(p);
+      }
+    }
+    if (patrolsHere.length > 0 || newsCarriersHere.length > 0 || banditPartiesHere.length > 0) {
       const h = document.createElement('div');
       h.style.color = 'var(--muted)';
       h.style.marginTop = '6px';
       h.textContent = 'Other units here:';
       root.appendChild(h);
-      if (patrolsHere > 0) {
-        const row = document.createElement('div');
-        row.style.fontSize = '11px';
-        row.textContent = `· ${patrolsHere} patrol(s)`;
-        root.appendChild(row);
+      for (const p of patrolsHere) {
+        const base = world.settlements.get(p.basedAt);
+        const link = document.createElement('button');
+        link.className = 'copy-btn';
+        link.style.marginRight = '4px';
+        link.style.marginBottom = '2px';
+        link.textContent = `patrol from ${base?.name ?? '?'} (${p.unit.count} soldiers)`;
+        link.addEventListener('click', () => {
+          setSelection(state, { kind: 'patrol', id: p.id });
+        });
+        root.appendChild(link);
       }
-      if (newsCarriersHere > 0) {
-        const row = document.createElement('div');
-        row.style.fontSize = '11px';
-        row.textContent = `· ${newsCarriersHere} news carrier(s)`;
-        root.appendChild(row);
+      for (const n of newsCarriersHere) {
+        const link = document.createElement('button');
+        link.className = 'copy-btn';
+        link.style.marginRight = '4px';
+        link.style.marginBottom = '2px';
+        link.textContent = `news carrier (started d${n.carrying.occurredOnDay})`;
+        link.addEventListener('click', () => {
+          setSelection(state, { kind: 'news_carrier', id: n.id });
+        });
+        root.appendChild(link);
+      }
+      for (const p of banditPartiesHere) {
+        const home = p.homeCamp !== null ? world.banditCamps?.get(p.homeCamp) : undefined;
+        const link = document.createElement('button');
+        link.className = 'copy-btn';
+        link.style.marginRight = '4px';
+        link.style.marginBottom = '2px';
+        link.textContent = home !== undefined
+          ? `${home.name}'s raid party (${p.banditCount} bandits)`
+          : `bandit party (${p.banditCount} bandits)`;
+        link.addEventListener('click', () => {
+          setSelection(state, { kind: 'bandit_party', id: p.id });
+        });
+        root.appendChild(link);
       }
     }
 
