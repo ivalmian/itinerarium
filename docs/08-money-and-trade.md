@@ -423,6 +423,46 @@ This is a **continuous double auction**, a standard market
 microstructure model for price discovery with heterogeneous buyers
 and sellers. It gives all the right emergent behavior:
 
+### Whole-unit transactions (locked)
+
+Every cross-actor trade in a tangible good crosses ownership in
+**integer multiples of the resource's native unit**. A caravan
+selling cloth sells 12 bolts, not 12.4. A pickup cart hauling
+charcoal between villages hauls 120 sacks, not 120.7. An off-map
+amphora export ships 30 amphorae, not 30.5.
+
+What this rules out:
+
+- Phantom price-arbitrage trades — when raw price-spread arithmetic
+  would deliver a fractional quote that rounds to zero whole units,
+  no trade fires. The price signal still moves through the regional
+  bid-ask layer, but no goods change hands until someone wants a
+  whole unit.
+
+What this preserves (intentionally fractional):
+
+- **Internal settlement market clearing.** A town clearing wine
+  among 200 plebeian households per tick clears the aggregate
+  demand (≈ 0.06 amphora today) against aggregate supply. The
+  internal market book-keeps in fractions so daily perishable
+  consumption is correctly accounted; it's the aggregate-of-many-
+  households step, not a player-visible single transaction.
+- **Service capacity.** `service.priesthood`, `service.garrison`,
+  `service.administration`, and `service.public_works` represent
+  intangible per-day capacity (priest-days, garrison-days), which
+  is legitimately fractional — half a priest's daily attention on
+  a small village ritual is meaningful.
+- **Recipe outputs.** A farm running at 0.4 capacity outputs 0.4
+  recipe-instances worth of grain into the owner's stockpile.
+  Outputs accumulate in the stockpile and round to whole units
+  when they're transacted out.
+
+Implementation: `src/sim/market/wholeUnits.ts` exposes
+`wholeUnitsForTransaction(resource, qty)` — floors tangible goods
+to integer units; passes service resources through unchanged.
+Applied at every external trade site: caravan buy / sell / ration,
+local trade between settlements, off-map export.
+
 - **Famine**: prices spike, rich survive, poor starve, granaries
   empty, caravans flood in until supply meets demand or the city
   dies.
