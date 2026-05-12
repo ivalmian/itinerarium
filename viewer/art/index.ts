@@ -119,23 +119,88 @@ const svgToBlobUrl = (svg: string): string => {
 /**
  * Rasterize one SVG string into a Pixi Texture.
  *
- * Pixi v8's Assets.load can't reliably auto-detect SVG when handed a blob
- * URL (no file extension, MIME hint not always honored), so we load the
- * SVG through an HTMLImageElement and let the browser's native SVG
- * rasterizer handle it. The resulting raster image is then wrapped in a
- * Texture. Resolution = the SVG's natural viewBox size, which is plenty
- * for the small on-screen hexes (~14×16 px) and zooms in cleanly to a
- * factor of ~10 before pixelation becomes visible.
+ * Two failure modes drove the current approach, both observed in the
+ * dev viewer:
+ *
+ *  1. `Texture.from(htmlImg)` uploaded the texture before the SVG had
+ *     finished rasterizing in some browsers — texImage2D rejected it
+ *     and the texture rendered solid black. We work around it by
+ *     forcing a full decode via `createImageBitmap`, which is
+ *     spec-guaranteed to return a fully-decoded bitmap.
+ *
+ *  2. Whatever path produced the texture rasterized at the SVG's
+ *     viewBox size (128×148 here). The viewer zooms up to 6× and is
+ *     viewed on retina displays (devicePixelRatio = 2 typical) for
+ *     a maximum of ~12 device pixels per CSS pixel. A 1× raster then
+ *     looks bilinear-blurred at zoom. We supersample at
+ *     `SUPERSAMPLE`× the viewBox and tell Pixi the texture is denser
+ *     via `texture.source.resolution`.
+ *
+ * Memory budget: ~50 SVGs × 128×148 × SUPERSAMPLE² ≈ 240 MB raw RGBA
+ * at SUPERSAMPLE=8. WebGL keeps these as mipmapped GPU textures so
+ * the actual VRAM footprint after upload is ~1/3 lower; well within
+ * budget for a desktop browser.
  */
+const SUPERSAMPLE = 8;
+
 const loadTexture = async (svg: string, alias: string): Promise<Texture> => {
-  const url = svgToBlobUrl(svg);
-  const img = new Image();
-  await new Promise<void>((resolve, reject) => {
-    img.onload = () => resolve();
-    img.onerror = () => reject(new Error(`Art: failed to load SVG ${alias}`));
-    img.src = url;
-  });
-  return Texture.from(img);
+  const viewBox = parseViewBox(svg);
+  const sized = ensureSvgPixelDimensions(svg, viewBox);
+  const url = svgToBlobUrl(sized);
+  try {
+    const img = new Image();
+    img.width = viewBox.width;
+    img.height = viewBox.height;
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error(`Art: failed to load SVG ${alias}`));
+      img.src = url;
+    });
+    const targetW = Math.round(viewBox.width * SUPERSAMPLE);
+    const targetH = Math.round(viewBox.height * SUPERSAMPLE);
+    const bitmap = await createImageBitmap(img, {
+      resizeWidth: targetW,
+      resizeHeight: targetH,
+      resizeQuality: 'high',
+    });
+    const texture = Texture.from(bitmap);
+    texture.source.resolution = SUPERSAMPLE;
+    return texture;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+};
+
+interface ViewBox {
+  readonly width: number;
+  readonly height: number;
+}
+
+const VIEW_BOX_RE = /viewBox\s*=\s*"\s*([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s*"/;
+
+const parseViewBox = (svg: string): ViewBox => {
+  const match = VIEW_BOX_RE.exec(svg);
+  if (match !== null) {
+    const w = Number(match[3]);
+    const h = Number(match[4]);
+    if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+      return { width: w, height: h };
+    }
+  }
+  return { width: 128, height: 148 };
+};
+
+/**
+ * Some browsers refuse `createImageBitmap` on an `<img>` whose `<svg>`
+ * root has no `width`/`height` attributes ("InvalidStateError: ...
+ * without natural dimensions"). We splice in the viewBox-derived
+ * dimensions when missing.
+ */
+const ensureSvgPixelDimensions = (svg: string, viewBox: ViewBox): string => {
+  if (/<svg\b[^>]*\bwidth\s*=/.test(svg) && /<svg\b[^>]*\bheight\s*=/.test(svg)) {
+    return svg;
+  }
+  return svg.replace(/<svg\b/, `<svg width="${viewBox.width}" height="${viewBox.height}"`);
 };
 
 const lookupRaw = (relPath: string): string => {

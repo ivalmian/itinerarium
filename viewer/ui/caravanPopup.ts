@@ -33,8 +33,10 @@ import { createFactionLink } from './factionLink.js';
 import { findFactionByActor } from './factionScreen.js';
 import {
   appendEventSummary,
+  banditCampLink,
   caravanLabel,
   caravanLink,
+  findTripOrigin,
   hexDestinationNode,
   settlementLink,
 } from './entityLinks.js';
@@ -58,7 +60,7 @@ export const renderCaravanPopup = (opts: CaravanPopupOpts): CaravanPopupContent 
 
   const root = document.createElement('div');
   root.appendChild(renderHeader(world, c, state));
-  root.appendChild(renderRouteSection(world, c, state));
+  root.appendChild(renderRouteSection(world, c, state, history));
   root.appendChild(renderCargoSection(world, c));
   root.appendChild(renderCrewSection(c));
   root.appendChild(renderHistorySection(c, history));
@@ -134,6 +136,7 @@ const renderRouteSection = (
   world: WorldState,
   c: Caravan,
   state: ViewerState,
+  history: ViewerHistory,
 ): HTMLElement => {
   const section = popupSection('Route');
 
@@ -178,7 +181,7 @@ const renderRouteSection = (
 
   // "Why?" — synthesize from the goal stack if any, else infer. Built
   // as DOM so settlement / caravan references stay clickable.
-  const why = describeWhy(world, c, state);
+  const why = describeWhy(world, c, state, history);
   if (why !== null) {
     const box = document.createElement('div');
     box.style.marginTop = '8px';
@@ -197,21 +200,47 @@ const describeWhy = (
   world: WorldState,
   c: Caravan,
   state: ViewerState,
+  history: ViewerHistory,
 ): HTMLElement | null => {
   const stack = c.goalStack;
   const text = (s: string): Text => document.createTextNode(s);
   const span = document.createElement('span');
+  // Trip origin: the most recent named place (settlement / bandit
+  // camp) the caravan visited before its current leg. Derived from
+  // the viewer history buffer — we scan backward through the
+  // caravan's snapshots looking for the most recent hex that
+  // coincides with a settlement anchor or bandit camp hex.
+  // Per the user's example: "A → B → C, while on B→C the line
+  // reads 'from B to C'". We never claim the owner's home as the
+  // origin unless the caravan actually came from there.
+  const tripOrigin = findTripOrigin(world, history, c);
+  const appendFromClause = (): void => {
+    if (tripOrigin === null) return;
+    span.appendChild(text(' from '));
+    if (tripOrigin.kind === 'settlement') {
+      span.appendChild(settlementLink(world, state, tripOrigin.id));
+    } else if (tripOrigin.kind === 'camp') {
+      span.appendChild(banditCampLink(world, state, tripOrigin.id));
+    } else {
+      span.appendChild(hexDestinationNode(world, state, tripOrigin.hex));
+    }
+  };
+
   if (stack !== undefined && stack.length > 0) {
     const top = stack[stack.length - 1] as Goal;
     switch (top.type) {
       case 'move_to': {
-        span.appendChild(text('Travelling to '));
+        span.appendChild(text('Travelling'));
+        appendFromClause();
+        span.appendChild(text(' to '));
         span.appendChild(hexDestinationNode(world, state, top.hex));
         span.appendChild(text('.'));
         return span;
       }
       case 'trade_at': {
-        span.appendChild(text('Trading at '));
+        span.appendChild(text('Trading'));
+        appendFromClause();
+        span.appendChild(text(' at '));
         span.appendChild(settlementLink(world, state, top.settlement));
         const tail = [
           top.buy && top.buy.length > 0 ? `buying ${top.buy.map(String).join(', ')}` : '',
@@ -241,8 +270,24 @@ const describeWhy = (
         return span;
       }
       case 'flee_to': {
-        span.appendChild(text('Fleeing to '));
-        span.appendChild(hexDestinationNode(world, state, top.safe));
+        // For flee, the meaningful framing is "running away from X"
+        // (the threat that caused the flee). The threat itself isn't
+        // stored on the goal — fall back to the previous origin.
+        if (tripOrigin !== null) {
+          span.appendChild(text('Running away from '));
+          if (tripOrigin.kind === 'settlement') {
+            span.appendChild(settlementLink(world, state, tripOrigin.id));
+          } else if (tripOrigin.kind === 'camp') {
+            span.appendChild(banditCampLink(world, state, tripOrigin.id));
+          } else {
+            span.appendChild(hexDestinationNode(world, state, tripOrigin.hex));
+          }
+          span.appendChild(text(' toward '));
+          span.appendChild(hexDestinationNode(world, state, top.safe));
+        } else {
+          span.appendChild(text('Fleeing toward '));
+          span.appendChild(hexDestinationNode(world, state, top.safe));
+        }
         span.appendChild(text('.'));
         return span;
       }
@@ -253,16 +298,18 @@ const describeWhy = (
   for (const v of c.cargo.values()) cargoUnits += v;
   if (c.destination !== null) {
     if (cargoUnits > 0) {
-      span.appendChild(text(`Hauling ${Math.round(cargoUnits)} units of cargo toward `));
+      span.appendChild(text(`Hauling ${Math.round(cargoUnits)} units of cargo`));
     } else {
-      span.appendChild(text('Travelling empty toward '));
+      span.appendChild(text('Travelling empty'));
     }
+    appendFromClause();
+    span.appendChild(text(' toward '));
     span.appendChild(hexDestinationNode(world, state, c.destination));
     span.appendChild(text('.'));
     return span;
   }
   if (cargoUnits > 0) {
-    span.textContent = `Stationary with ${Math.round(cargoUnits)} units of cargo aboard.`;
+    span.appendChild(text(`Stationary with ${Math.round(cargoUnits)} units of cargo aboard.`));
     return span;
   }
   return null;
@@ -552,36 +599,10 @@ const renderHistorySection = (c: Caravan, history: ViewerHistory): HTMLElement =
   );
   section.appendChild(tri);
 
-  // Trip history: condensed route (consecutive-equal hexes collapsed).
-  const route: { day: number; q: number; r: number }[] = [];
-  for (const snap of recent) {
-    const last = route[route.length - 1];
-    if (last !== undefined && last.q === snap.position.q && last.r === snap.position.r) continue;
-    route.push({ day: snap.day, q: snap.position.q, r: snap.position.r });
-  }
-  if (route.length > 0) {
-    const rh = document.createElement('div');
-    rh.style.marginTop = '10px';
-    rh.style.color = 'var(--muted)';
-    rh.style.fontSize = '11px';
-    rh.textContent = `Trip history — ${route.length} distinct stops over the last ${recent.length} days:`;
-    section.appendChild(rh);
-    const list = document.createElement('div');
-    list.style.fontSize = '11px';
-    list.style.fontFamily = 'ui-monospace, monospace';
-    list.style.maxHeight = '160px';
-    list.style.overflowY = 'auto';
-    list.style.background = 'var(--panel-2)';
-    list.style.padding = '6px 8px';
-    list.style.border = '1px solid var(--border)';
-    for (const r of route.slice(-20)) {
-      const row = document.createElement('div');
-      row.style.color = 'var(--muted)';
-      row.textContent = `d${r.day}  (${r.q}, ${r.r})`;
-      list.appendChild(row);
-    }
-    section.appendChild(list);
-  }
+  // Trip history (the raw "(q, r) at day X" list) was removed per UX
+  // feedback — the same information is implied by the route + cargo
+  // sparkline, and the bare hex coords were the opposite of the named-
+  // entity-link principle that the rest of the popup follows.
 
   return section;
 };

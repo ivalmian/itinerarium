@@ -155,6 +155,80 @@ export const hexDestinationNode = (
   });
 };
 
+// --- Trip-origin lookup ----------------------------------------------------
+
+/**
+ * Cheap reverse lookup: is this hex the anchor of a settlement?
+ * Linear over `world.settlements` which is small at viewer scale (<300).
+ */
+const settlementAtHex = (
+  world: WorldState,
+  hex: { q: number; r: number },
+): SettlementId | null => {
+  for (const s of world.settlements.values()) {
+    if (s.anchor.q === hex.q && s.anchor.r === hex.r) return s.id;
+  }
+  return null;
+};
+
+const banditCampAtHex = (
+  world: WorldState,
+  hex: { q: number; r: number },
+): BanditCampId | null => {
+  if (world.banditCamps === undefined) return null;
+  for (const c of world.banditCamps.values()) {
+    if (c.hex.q === hex.q && c.hex.r === hex.r) return c.id;
+  }
+  return null;
+};
+
+export type TripOrigin =
+  | { readonly kind: 'settlement'; readonly id: SettlementId; readonly hex: { q: number; r: number } }
+  | { readonly kind: 'camp'; readonly id: BanditCampId; readonly hex: { q: number; r: number } }
+  | { readonly kind: 'hex'; readonly hex: { q: number; r: number } };
+
+/**
+ * Where the caravan's current leg started. Scans backward through the
+ * viewer history's per-caravan position snapshots looking for the most
+ * recent hex that's NOT the current position — preferring named
+ * places (settlement anchors / bandit camp hexes) over wilderness.
+ *
+ * Per the user's framing: "A→B→C, on the B→C leg the line reads 'from
+ * B to C'." We don't claim the owner's home as origin — the origin is
+ * literally where this leg began.
+ */
+export const findTripOrigin = (
+  world: WorldState,
+  history: import('../state/history.js').ViewerHistory,
+  caravan: { id: import('../../src/sim/types.js').CaravanId; position: { q: number; r: number } },
+): TripOrigin | null => {
+  const buf = history.caravans.get(caravan.id);
+  if (buf === undefined || buf.length === 0) return null;
+  const curQ = caravan.position.q;
+  const curR = caravan.position.r;
+  // Walk backward; remember the most recent named place seen at a
+  // different hex than the current one. A bare-hex fallback is used
+  // only if no named place is found in the whole buffer.
+  let bareHex: { q: number; r: number } | null = null;
+  for (let i = buf.length - 1; i >= 0; i--) {
+    const snap = buf[i]!;
+    if (snap.position.q === curQ && snap.position.r === curR) continue;
+    const sid = settlementAtHex(world, snap.position);
+    if (sid !== null) {
+      return { kind: 'settlement', id: sid, hex: { q: snap.position.q, r: snap.position.r } };
+    }
+    const cid = banditCampAtHex(world, snap.position);
+    if (cid !== null) {
+      return { kind: 'camp', id: cid, hex: { q: snap.position.q, r: snap.position.r } };
+    }
+    if (bareHex === null) {
+      bareHex = { q: snap.position.q, r: snap.position.r };
+    }
+  }
+  if (bareHex !== null) return { kind: 'hex', hex: bareHex };
+  return null;
+};
+
 // --- Event-summary rendering ----------------------------------------------
 
 /**
