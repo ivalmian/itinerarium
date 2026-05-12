@@ -32,6 +32,7 @@
  */
 
 import { allBuildings, getBuilding } from './buildings/catalog.js';
+import { pickBestHex, type PlacementCandidate } from './buildings/placement.js';
 import { tickCaravanMovement } from './caravan/movement.js';
 import { MAX_ACTIVE_WORLD_CARAVANS } from './caravan/limits.js';
 import { expectedRiskOnApproximatePath, planCaravanRoute } from './caravan/ai.js';
@@ -9442,38 +9443,49 @@ const pickBuildingHex = (
   preferredDeposit?: ResourceId,
 ): Hex | null => {
   const occupied = occupiedHexesForBuilding(settlement, buildingId);
-  // Per the user's note: workshops (mill, smithy, kiln, etc.) belong inside
-  // the village/city. Land-use buildings (farm, mine, forester) need
-  // catchment land. Filter both for passable terrain.
-  const isLandUse = LAND_USE_BUILDINGS.has(String(buildingId));
   if (buildingId === MINE_BUILDING_ID && preferredDeposit !== undefined) {
     return findFreeDepositHexForResource(world, settlement, preferredDeposit);
   }
-  if (isLandUse) {
-    for (const c of settlement.catchmentHexes) {
-      if (occupied.has(hexKey(c))) continue;
-      if (!isBuildableForBuilding(world, c, buildingId, preferredDeposit)) continue;
-      return c;
+
+  // Build terrain-affinity candidate pools — urban-only or catchment-
+  // preferred depending on the building category. We hand both pools
+  // to `pickBestHex` which ranks each candidate by the
+  // `terrainAffinity` matrix in src/sim/buildings/placement.ts. The
+  // result: vineyards land on hill hexes, fisheries on water-adjacent
+  // hexes, workshops in the urban core — never the first-passable
+  // hex regardless of fit.
+  const isLandUse = LAND_USE_BUILDINGS.has(String(buildingId));
+  const buildPool = (hexes: readonly Hex[], isUrban: boolean): PlacementCandidate[] => {
+    const out: PlacementCandidate[] = [];
+    for (const h of hexes) {
+      if (occupied.has(hexKey(h))) continue;
+      const tile = world.grid.get(h);
+      if (tile === undefined) continue;
+      if (!isBuildableForBuilding(world, h, buildingId, preferredDeposit)) continue;
+      let waterAdjacent =
+        tile.hasRiver || tile.terrain === 'river' || tile.terrain === 'lake';
+      if (!waterAdjacent) {
+        for (const n of hexesWithinRange(h, 1)) {
+          const nt = world.grid.get(n);
+          if (nt === undefined) continue;
+          if (nt.hasRiver || nt.terrain === 'river' || nt.terrain === 'lake') {
+            waterAdjacent = true;
+            break;
+          }
+        }
+      }
+      out.push({ hex: h, tile, waterAdjacent, isUrban });
     }
-    // Fallback: urban hex (rare — only when catchment is fully claimed).
-    for (const u of settlement.urbanHexes) {
-      if (occupied.has(hexKey(u))) continue;
-      if (!isBuildableForBuilding(world, u, buildingId, preferredDeposit)) continue;
-      return u;
-    }
-  } else {
-    for (const u of settlement.urbanHexes) {
-      if (occupied.has(hexKey(u))) continue;
-      if (!isBuildableForBuilding(world, u, buildingId, preferredDeposit)) continue;
-      return u;
-    }
-    for (const c of settlement.catchmentHexes) {
-      if (occupied.has(hexKey(c))) continue;
-      if (!isBuildableForBuilding(world, c, buildingId, preferredDeposit)) continue;
-      return c;
-    }
-  }
-  return null;
+    return out;
+  };
+
+  const urbanPool = buildPool(settlement.urbanHexes, true);
+  const catchmentPool = buildPool(settlement.catchmentHexes, false);
+  const combined = isLandUse
+    ? [...catchmentPool, ...urbanPool]
+    : [...urbanPool, ...catchmentPool];
+  const pick = pickBestHex(buildingId, combined);
+  return pick === null ? null : pick.hex;
 };
 
 // --- Annual hook ------------------------------------------------------------

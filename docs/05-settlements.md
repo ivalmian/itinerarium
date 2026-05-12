@@ -339,6 +339,42 @@ tools). A city near both ore AND forest is a metalworking city. The
 *specialization emerges from the geography* — and, through current
 dynamic investment, from observed market spreads.
 
+### Per-hex placement: terrain affinity (current)
+
+The seeding rules above decide *whether* a settlement gets a building.
+A second pass decides *which hex* within the settlement's footprint
+hosts each one. Every building has a terrain-affinity matrix in
+[`src/sim/buildings/placement.ts`](../src/sim/buildings/placement.ts);
+both the procgen seeder and the dynamic investment placer pick the
+highest-scoring free hex among the candidate pool.
+
+A representative slice of the matrix (full table in code):
+
+| Building | Top-scoring terrain | Notes |
+|---|---|---|
+| `farm` | `fertile_valley` > `plains` > `hills` > `steppe` | Cereals: alluvial first |
+| `pasture` | `steppe` > `plains` > `hills` | Grazing: open grassland |
+| `vineyard` | mediterranean `hills` | Slopes + climate |
+| `olive_grove` | mediterranean `hills` | Climate-locked |
+| `forester_camp` | `forest` > `dense_forest` | Stand of timber |
+| `fishery` | `river` hex or water-adjacent | Adjacency required |
+| `mine` | `hills` > `mountains` | Plus deposit-gated |
+| `quarry` | `hills` > `mountains` | Stone outcrops |
+| `mill` / `sawmill` | river-adjacent urban | Water power preferred |
+| `tannery` | river-adjacent | Soaking pits |
+| `charcoal_kiln` | `forest` edge → urban fallback | Smoky, near fuel |
+| Workshops (`bakery`, `smithy`, `pottery`, `kiln`, `weaver_workshop`, `tailor_shop`, `cart_wright`, `mint`, `oil_press`, `winery`, `dairy`, `bloomery`) | `urban` | Town-core production |
+| Storage (`granary`, `warehouse`, `cistern`) | `urban` | City-core stockpiles |
+| Civic (`temple`, `forum_market`) | `urban` | City-core institutions |
+| Military (`walls`, `barracks`) | `urban` | Perimeter |
+
+Scoring returns 0 for unbuildable terrain (lake, mountains except
+mines/quarries, dense forest), which prevents the placer from ever
+choosing it. Ties break by `(q, r)` order so seeded worlds stay
+reproducible. Unknown / future building ids fall back to a uniform
+mid-score on every buildable hex — the system is extensible without
+forcing the matrix to enumerate every catalog entry.
+
 **Why a settlement starves**: when its specialty stockpile (the thing
 it exports) builds up to capacity AND the food it needs to import
 isn't arriving (caravan disrupted, road closed, neighbor hostile),
