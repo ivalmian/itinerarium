@@ -10,8 +10,10 @@ export {
 } from './recipes.js';
 
 export {
+  planRecipeRun,
   runRecipe,
   type ProductionRecipe,
+  type RecipeRunPlan,
   type RecipeRunRequest,
   type RecipeRunResult,
   type RecipeRunShortfall,

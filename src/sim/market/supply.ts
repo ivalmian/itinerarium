@@ -110,17 +110,16 @@ export const ownerSupply = (opts: OwnerSupplyOpts): SupplySource => {
 };
 
 export const aggregateSupply = (sources: readonly SupplySource[]): SupplySchedule => {
-  const cached: SupplySource[] = sources.slice();
   return {
-    sources: cached,
+    sources,
     totalAt(price: number): number {
       let sum = 0;
-      for (const s of cached) sum += s.quantityAt(price);
+      for (const s of sources) sum += s.quantityAt(price);
       return sum;
     },
     breakpoints(): readonly SupplyBreakpoint[] {
       const bps: SupplyBreakpoint[] = [];
-      for (const s of cached) {
+      for (const s of sources) {
         if (s.availableToSell > 0) {
           bps.push({ price: s.reservationPrice, quantityChange: s.availableToSell });
         }

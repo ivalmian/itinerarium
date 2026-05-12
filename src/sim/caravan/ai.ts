@@ -106,6 +106,29 @@ export const expectedRisk = (
   return Math.max(0, Math.min(1, loss));
 };
 
+export const expectedRiskOnApproximatePath = (
+  banditDensity: ReadonlyMap<string, number>,
+  from: Hex,
+  to: Hex,
+): number => {
+  if (hexEquals(from, to)) return 0;
+  const dq = to.q - from.q;
+  const dr = to.r - from.r;
+  const steps = Math.max(Math.abs(dq), Math.abs(dr), Math.abs(dq + dr));
+  if (steps <= 0) return 0;
+  let pSurvive = 1;
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    const q = Math.round(from.q + dq * t);
+    const r = Math.round(from.r + dr * t);
+    const raw = banditDensity.get(`${q},${r}`) ?? 0;
+    const p = Math.max(0, Math.min(1, raw));
+    pSurvive *= 1 - p;
+  }
+  const loss = 1 - pSurvive;
+  return Math.max(0, Math.min(1, loss));
+};
+
 // --- Cargo selection --------------------------------------------------------
 
 interface OriginDestObservation {
@@ -335,6 +358,7 @@ export interface PlanCaravanRouteInputs {
   readonly candidateSettlements: readonly CandidateSettlement[];
   readonly knownPrices: Caravan['priceBook'];
   readonly knownBanditDensity: ReadonlyMap<string, number>;
+  readonly expectedRiskForRoute?: (fromHex: Hex, toHex: Hex) => number;
   readonly knownToll: (fromHex: Hex, toHex: Hex) => number;
   readonly rng: Rng;
   readonly ownerPreferences?: {
@@ -441,7 +465,8 @@ const evaluateCandidate = (
   const riskMultiplier =
     inputs.knownBanditDensity.size === 0
       ? 0
-      : expectedRisk(inputs.knownBanditDensity, approximatePath(origin, candidate.hex));
+      : (inputs.expectedRiskForRoute?.(origin, candidate.hex) ??
+        expectedRiskOnApproximatePath(inputs.knownBanditDensity, origin, candidate.hex));
   const riskLossCoin = grossSpread * riskMultiplier;
   const tollCoin = inputs.knownToll(origin, candidate.hex);
 
@@ -487,7 +512,9 @@ export const planCaravanRoute = (inputs: PlanCaravanRouteInputs): RoutePlan | nu
   const minAbsProfit = Math.max(0, inputs.minNetProfitCoin ?? 0);
   const minFractionalProfit = Math.max(0, inputs.minNetProfitFraction ?? 0);
 
-  const evaluations: Evaluation[] = [];
+  let best: Evaluation | undefined;
+  let familyEval: Evaluation | undefined;
+  const pref = inputs.ownerPreferences;
   for (const candidate of inputs.candidateSettlements) {
     const obs = observationsByDest.get(hexKey(candidate.hex));
     if (obs === undefined) continue;
@@ -504,28 +531,27 @@ export const planCaravanRoute = (inputs: PlanCaravanRouteInputs): RoutePlan | nu
     ) {
       continue;
     }
-    evaluations.push(ev);
+    if (best === undefined || compareEvaluations(ev, best) < 0) best = ev;
+    if (pref?.preferOwnFamilyFlows && candidate.id === pref.familyHomeSettlement) {
+      familyEval = ev;
+    }
   }
-  if (evaluations.length === 0) return null;
+  if (best === undefined) return null;
 
   // The rng is reserved for future stochastic tie-breaking; for v1 the
-  // sort is deterministic and we drain a single number to keep the
+  // choice is deterministic and we drain a single number to keep the
   // RNG advance predictable.
   inputs.rng.next();
-
-  evaluations.sort(compareEvaluations);
-  let best = evaluations[0] as Evaluation;
 
   // Family preference override: if the family-home settlement is among
   // the candidates and clears the floor fraction of the best profit,
   // pick it instead. The merchant accepts a discount to keep the
   // family's logistics moving.
-  const pref = inputs.ownerPreferences;
-  if (pref?.preferOwnFamilyFlows && pref.familyHomeSettlement !== undefined) {
-    const familyEval = evaluations.find((e) => e.candidate.id === pref.familyHomeSettlement);
-    if (familyEval && familyEval.netProfit >= best.netProfit * FAMILY_PREFERENCE_FLOOR_FRACTION) {
-      best = familyEval;
-    }
+  if (
+    familyEval !== undefined &&
+    familyEval.netProfit >= best.netProfit * FAMILY_PREFERENCE_FLOOR_FRACTION
+  ) {
+    best = familyEval;
   }
 
   return {

@@ -10,7 +10,14 @@ import {
   type SettlementId,
 } from '../types.js';
 import { hex, hexKey } from '../world/hex.js';
-import { expectedRisk, planCaravanRoute, travelCost, type PlanCaravanRouteInputs } from './ai.js';
+import {
+  approximatePath,
+  expectedRisk,
+  expectedRiskOnApproximatePath,
+  planCaravanRoute,
+  travelCost,
+  type PlanCaravanRouteInputs,
+} from './ai.js';
 import {
   createCaravan,
   dailyCarriedFoodReserveKg,
@@ -136,6 +143,20 @@ describe('expectedRisk', () => {
   it('clamps individual probabilities to [0,1]', () => {
     const risk = new Map<string, number>([[hexKey(hex(1, 0)), 5]]);
     expect(expectedRisk(risk, [hex(0, 0), hex(1, 0)])).toBe(1);
+  });
+
+  it('no-allocation approximate-path helper matches the array path helper', () => {
+    const risk = new Map<string, number>([
+      [hexKey(hex(1, 0)), 0.05],
+      [hexKey(hex(2, -1)), 0.1],
+      [hexKey(hex(3, -2)), 0.2],
+      [hexKey(hex(4, -2)), 0.01],
+    ]);
+    const from = hex(0, 0);
+    const to = hex(5, -3);
+    expect(expectedRiskOnApproximatePath(risk, from, to)).toBe(
+      expectedRisk(risk, approximatePath(from, to)),
+    );
   });
 });
 

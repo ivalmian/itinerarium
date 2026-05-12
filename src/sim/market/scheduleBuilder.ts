@@ -88,6 +88,8 @@ export interface BuildScheduleInputs {
   readonly ownerKindByActor?: ReadonlyMap<ActorId, ActorKind>;
   /** Optional live treasury lookup. When present, demand is cash-budgeted. */
   readonly actorTreasuryByActor?: ReadonlyMap<ActorId, number>;
+  /** Optional precomputed labor context for callers already walking the settlement this tick. */
+  readonly laborClassContext?: LaborClassContext;
   /** Optional terrain grid; when present, extraction demand respects deposits. */
   readonly grid?: HexGrid;
 }
@@ -97,6 +99,13 @@ export interface SettlementSchedules {
     ResourceId,
     { readonly demand: DemandSchedule; readonly supply: SupplySchedule }
   >;
+}
+
+export interface SettlementDemandSourceBuilder {
+  sourcesFor(
+    resource: ResourceId,
+    actorTreasuryByActor?: ReadonlyMap<ActorId, number>,
+  ): readonly DemandSource[];
 }
 
 export const buildSettlementSchedules = (inputs: BuildScheduleInputs): SettlementSchedules => {
@@ -110,33 +119,13 @@ export const buildSettlementSchedules = (inputs: BuildScheduleInputs): Settlemen
   // per-resource bid sizing.
   const marketMakerResourcesByActor = buildMarketMakerResourcesByActor(inputs);
   for (const resource of inputs.resources) {
-    // Per docs/15 §C26 + §C27: market-making is the LAST-RESORT bidder.
-    // We build concrete demand sources first, find the minimum finite
-    // maxWillingnessToPay among them, and clamp the MM bid below that
-    // floor. Subsistence has WTP=∞ so it's always above MM; if any
-    // concrete comfort/derived/status/etc. source exists, MM stays
-    // strictly below it. The CDA matches by WTP descending, so concrete
-    // bids always fill first; MM only picks up residual supply.
-    const concreteDemandSources: DemandSource[] = [
-      ...subsistenceSources(resource, inputs, context),
-      ...comfortSources(resource, inputs, context),
-      ...statusSources(resource, inputs, context),
-      ...serviceDemandSources(resource, inputs, context),
-      ...institutionalSources(resource, inputs, context),
-      ...constructionReserveSources(resource, inputs, context),
-      ...transportCapitalSources(resource, inputs, context),
-      ...productiveCapitalSources(resource, inputs, context),
-      ...derivedInputSources(resource, inputs, context),
-    ];
-    const minConcreteFiniteWtp = minFiniteWtpForConcreteSources(concreteDemandSources);
-    const mmDemandSources = marketMakerDemandSources(
+    const demandSources = demandSourcesForResource(
       resource,
       inputs,
       context,
       marketMakerResourcesByActor,
-      minConcreteFiniteWtp,
     );
-    const demand = aggregateDemand([...concreteDemandSources, ...mmDemandSources]);
+    const demand = aggregateDemand(demandSources);
     const supplySources = supplyForResource(resource, inputs, context, demand);
     // MM ask remains additive — it's the +5% residual price tier above
     // concrete asks. Concrete asks sit at MC (lower); MM ask only
@@ -148,6 +137,92 @@ export const buildSettlementSchedules = (inputs: BuildScheduleInputs): Settlemen
     });
   }
   return { schedulesByResource: out };
+};
+
+export const createSettlementDemandSourceBuilder = (
+  inputs: Omit<BuildScheduleInputs, 'resources'>,
+): SettlementDemandSourceBuilder => {
+  const baseInputs: BuildScheduleInputs = { ...inputs, resources: [] };
+  const baseContext = buildSettlementScheduleContext(baseInputs);
+  return {
+    sourcesFor(
+      resource: ResourceId,
+      actorTreasuryByActor: ReadonlyMap<ActorId, number> | undefined = inputs.actorTreasuryByActor,
+    ): readonly DemandSource[] {
+      const resourceInputs: BuildScheduleInputs = {
+        ...baseInputs,
+        resources: [resource],
+        ...(actorTreasuryByActor !== undefined ? { actorTreasuryByActor } : {}),
+      };
+      const context: SettlementScheduleContext =
+        actorTreasuryByActor === baseContext.actorTreasuryByActor
+          ? baseContext
+          : {
+              ...baseContext,
+              ...(actorTreasuryByActor !== undefined ? { actorTreasuryByActor } : {}),
+            };
+      const marketMakerResourcesByActor = buildSingleResourceMarketMakerResourcesByActor(
+        resource,
+        resourceInputs,
+        context.ownerCandidates,
+      );
+      return demandSourcesForResource(
+        resource,
+        resourceInputs,
+        context,
+        marketMakerResourcesByActor,
+      );
+    },
+  };
+};
+
+const demandSourcesForResource = (
+  resource: ResourceId,
+  inputs: BuildScheduleInputs,
+  context: SettlementScheduleContext,
+  marketMakerResourcesByActor: ReadonlyMap<ActorId, ReadonlySet<string>>,
+): DemandSource[] => {
+  const resourceKey = String(resource);
+  const demandSources: DemandSource[] = [];
+  if (SUBSISTENCE_RESOURCE_KEYS.has(resourceKey)) {
+    appendDemandSources(demandSources, subsistenceSources(resource, inputs, context));
+  }
+  if (COMFORT_WANTS.has(resourceKey)) {
+    appendDemandSources(demandSources, comfortSources(resource, inputs, context));
+  }
+  if (STATUS_WANTS.has(resourceKey)) {
+    appendDemandSources(demandSources, statusSources(resource, inputs, context));
+  }
+  if (SERVICE_DEMAND_RESOURCE_KEYS.has(resourceKey)) {
+    appendDemandSources(demandSources, serviceDemandSources(resource, inputs, context));
+  }
+  if (INSTITUTIONAL_PROCUREMENT_RESOURCE_KEYS.has(resourceKey)) {
+    appendDemandSources(demandSources, institutionalSources(resource, inputs, context));
+  }
+  if ((CONSTRUCTION_RESERVE_TARGET_BY_RESOURCE[resourceKey] ?? 0) > 0) {
+    appendDemandSources(demandSources, constructionReserveSources(resource, inputs, context));
+  }
+  if ((TRANSPORT_CAPITAL_TARGET_BY_RESOURCE[resourceKey] ?? 0) > 0) {
+    appendDemandSources(demandSources, transportCapitalSources(resource, inputs, context));
+  }
+  if (RECIPES_BY_REQUIREMENT.has(resourceKey)) {
+    appendDemandSources(demandSources, productiveCapitalSources(resource, inputs, context));
+  }
+  if (RECIPES_BY_INPUT.has(resourceKey)) {
+    appendDemandSources(demandSources, derivedInputSources(resource, inputs, context));
+  }
+  const minConcreteFiniteWtp = minFiniteWtpForConcreteSources(demandSources);
+  appendDemandSources(
+    demandSources,
+    marketMakerDemandSources(
+      resource,
+      inputs,
+      context,
+      marketMakerResourcesByActor,
+      minConcreteFiniteWtp,
+    ),
+  );
+  return demandSources;
 };
 
 /**
@@ -169,6 +244,12 @@ const minFiniteWtpForConcreteSources = (sources: readonly DemandSource[]): numbe
   }
   return min;
 };
+
+const appendDemandSources = (target: DemandSource[], sources: readonly DemandSource[]): void => {
+  for (const source of sources) target.push(source);
+};
+
+const NO_DEMAND_SOURCES: readonly DemandSource[] = Object.freeze([]);
 
 // --- Defaults ---------------------------------------------------------------
 
@@ -232,6 +313,11 @@ const SUBSISTENCE_NEEDS_SLAVE: Readonly<Record<string, number>> = Object.freeze(
   'food.legumes': 0.008,
   'mineral.salt': 0.00028,
 });
+
+const SUBSISTENCE_RESOURCE_KEYS: ReadonlySet<string> = new Set([
+  ...Object.keys(SUBSISTENCE_NEEDS_FREE),
+  ...Object.keys(SUBSISTENCE_NEEDS_SLAVE),
+]);
 
 const HOUSEHOLD_BAKING_SHIFT_BY_TIER: Readonly<Record<Settlement['tier'], number>> = Object.freeze({
   hamlet: 0.85,
@@ -507,6 +593,14 @@ const INSTITUTIONAL_PROCUREMENT_BY_BUILDING: ReadonlyMap<
   ],
 ]);
 
+const INSTITUTIONAL_PROCUREMENT_RESOURCE_KEYS: ReadonlySet<string> = (() => {
+  const out = new Set<string>();
+  for (const lines of INSTITUTIONAL_PROCUREMENT_BY_BUILDING.values()) {
+    for (const line of lines) out.add(String(line.resource));
+  }
+  return out;
+})();
+
 interface ServiceCapacityLine {
   readonly resource: ResourceId;
   readonly quantityPerCapacity: number;
@@ -557,6 +651,10 @@ const SERVICE_DEMAND_RESOURCES: readonly ResourceId[] = Object.freeze([
   'service.priesthood' as ResourceId,
   'service.public_works' as ResourceId,
 ]);
+
+const SERVICE_DEMAND_RESOURCE_KEYS: ReadonlySet<string> = new Set(
+  SERVICE_DEMAND_RESOURCES.map((resource) => String(resource)),
+);
 
 export const serviceMarketResources = (): readonly ResourceId[] => SERVICE_DEMAND_RESOURCES;
 
@@ -654,9 +752,14 @@ export const institutionalProcurementResourcesForBuilding = (
 
 interface SettlementScheduleContext {
   readonly adultEquivalentByClass: ReadonlyMap<CharacterClass, number>;
+  readonly adultEquivalentTotal: number;
   readonly headsByClass: ReadonlyMap<CharacterClass, number>;
   readonly buildingsByKind: ReadonlyMap<string, number>;
+  readonly buildingsById: ReadonlyMap<BuildingId, ReadonlyArray<Settlement['buildings'][number]>>;
   readonly buildings: Settlement['buildings'];
+  readonly wagePerWorkerDay: number;
+  readonly ownerCandidates: readonly ActorId[];
+  readonly ownerCandidatesByKind?: ReadonlyMap<ActorKind, readonly ActorId[]>;
   readonly stockpilesByOwner: ReadonlyMap<ActorId, ReadonlyMap<ResourceId, Quantity>>;
   /**
    * Per docs/15 §C21 the buyer for a consumer class can be multiple actors:
@@ -678,20 +781,31 @@ const buildSettlementScheduleContext = (inputs: BuildScheduleInputs): Settlement
   const settlement = inputs.settlement;
   const adultEquivalentByClass = new Map<CharacterClass, number>();
   const headsByClass = new Map<CharacterClass, number>();
+  let adultEquivalentTotal = 0;
   for (const cls of CHARACTER_CLASSES) {
     const adultEq = settlement.population.adultEquivalentByClass(cls);
-    if (adultEq > 0) adultEquivalentByClass.set(cls, adultEq);
+    if (adultEq > 0) {
+      adultEquivalentByClass.set(cls, adultEq);
+      adultEquivalentTotal += adultEq;
+    }
     const heads = settlement.population.totalByClass(cls);
     if (heads > 0) headsByClass.set(cls, heads);
   }
+  const candidates = ownerCandidates(inputs);
+  const candidatesByKind = ownerCandidatesByKind(inputs.ownerKindByActor, candidates);
   return {
     adultEquivalentByClass,
+    adultEquivalentTotal,
     headsByClass,
     buildingsByKind: countBuildingsByKind(settlement),
+    buildingsById: indexBuildingsById(settlement),
     buildings: settlement.buildings,
+    wagePerWorkerDay: laborCostPerWorkerDay(inputs.recentLocalPrices),
+    ownerCandidates: candidates,
+    ...(candidatesByKind !== undefined ? { ownerCandidatesByKind: candidatesByKind } : {}),
     stockpilesByOwner: inputs.stockpilesByOwner,
-    consumerBuyersByClass: buildConsumerBuyersByClass(inputs),
-    laborClassContext: buildLaborClassContext(settlement),
+    consumerBuyersByClass: buildConsumerBuyersByClass(inputs, candidates, candidatesByKind),
+    laborClassContext: inputs.laborClassContext ?? buildLaborClassContext(settlement),
     ...(inputs.actorTreasuryByActor !== undefined
       ? { actorTreasuryByActor: inputs.actorTreasuryByActor }
       : {}),
@@ -800,8 +914,14 @@ const subsistenceSources = (
   inputs: BuildScheduleInputs,
   context: SettlementScheduleContext,
 ): readonly DemandSource[] => {
-  const out: DemandSource[] = [];
   const resourceKey = String(resource);
+  if (
+    SUBSISTENCE_NEEDS_FREE[resourceKey] === undefined &&
+    SUBSISTENCE_NEEDS_SLAVE[resourceKey] === undefined
+  ) {
+    return NO_DEMAND_SOURCES;
+  }
+  const out: DemandSource[] = [];
   const wealthMap = inputs.wealthPerCapita ?? DEFAULT_WEALTH_PER_CAPITA_MAP;
   for (const [klass, adultEqCount] of context.adultEquivalentByClass) {
     if (adultEqCount <= 0) continue;
@@ -852,11 +972,11 @@ const comfortSources = (
   context: SettlementScheduleContext,
 ): readonly DemandSource[] => {
   const resourceKey = String(resource);
-  if (!COMFORT_WANTS.has(resourceKey)) return [];
+  if (!COMFORT_WANTS.has(resourceKey)) return NO_DEMAND_SOURCES;
   const allowedSeasons = COMFORT_WANT_SEASONS[resourceKey];
-  if (allowedSeasons !== undefined && !allowedSeasons.has(inputs.season)) return [];
+  if (allowedSeasons !== undefined && !allowedSeasons.has(inputs.season)) return NO_DEMAND_SOURCES;
   const wantPerAdult = COMFORT_WANT_QTY[resourceKey] ?? 0;
-  if (wantPerAdult <= 0) return [];
+  if (wantPerAdult <= 0) return NO_DEMAND_SOURCES;
   const out: DemandSource[] = [];
   const budgetMap = inputs.discretionaryIncomePerDay ?? DEFAULT_DISCRETIONARY_PER_DAY_MAP;
   for (const [klass, adultEqCount] of context.adultEquivalentByClass) {
@@ -901,9 +1021,9 @@ const statusSources = (
   context: SettlementScheduleContext,
 ): readonly DemandSource[] => {
   const resourceKey = String(resource);
-  if (!STATUS_WANTS.has(resourceKey)) return [];
+  if (!STATUS_WANTS.has(resourceKey)) return NO_DEMAND_SOURCES;
   const wantPerAdult = STATUS_WANT_QTY[resourceKey] ?? 0;
-  if (wantPerAdult <= 0) return [];
+  if (wantPerAdult <= 0) return NO_DEMAND_SOURCES;
   const out: DemandSource[] = [];
   const wealthMap = inputs.wealthPerCapita ?? DEFAULT_WEALTH_PER_CAPITA_MAP;
   // Status is patrician-only in v1. Governor's office demand is captured
@@ -967,14 +1087,13 @@ const serviceDemandSources = (
   if (resourceKey === 'service.public_works') {
     return publicWorksServiceDemandSources(resource, inputs, context);
   }
-  if (resourceKey !== 'service.garrison' && resourceKey !== 'service.administration') return [];
-  const adultEq = Array.from(context.adultEquivalentByClass.values()).reduce(
-    (sum, count) => sum + count,
-    0,
-  );
-  if (adultEq <= 0) return [];
-  const buyer = chooseServiceBuyerActor(inputs, SERVICE_CIVIC_BUYER_PRIORITY);
-  if (buyer === undefined) return [];
+  if (resourceKey !== 'service.garrison' && resourceKey !== 'service.administration') {
+    return NO_DEMAND_SOURCES;
+  }
+  const adultEq = context.adultEquivalentTotal;
+  if (adultEq <= 0) return NO_DEMAND_SOURCES;
+  const buyer = chooseServiceBuyerActor(inputs, context, SERVICE_CIVIC_BUYER_PRIORITY);
+  if (buyer === undefined) return NO_DEMAND_SOURCES;
   const tierFloor = SERVICE_TIER_FLOOR[inputs.settlement.tier] ?? 0.05;
   const wantQuantity =
     resourceKey === 'service.garrison'
@@ -982,7 +1101,7 @@ const serviceDemandSources = (
       : tierFloor + adultEq / 3_000 + context.buildings.length * 0.015;
   const treasuryShare = resourceKey === 'service.garrison' ? 0.04 : 0.025;
   const budget = reserveBudgetForActor(context, buyer, treasuryShare);
-  if (wantQuantity <= 0 || budget <= 0) return [];
+  if (wantQuantity <= 0 || budget <= 0) return NO_DEMAND_SOURCES;
   return [
     comfortDemand({
       id: `service:${String(inputs.settlement.id)}:${String(buyer)}:${resourceKey}`,
@@ -1117,11 +1236,11 @@ const constructionReserveSources = (
   context: SettlementScheduleContext,
 ): readonly DemandSource[] => {
   const baseTarget = CONSTRUCTION_RESERVE_TARGET_BY_RESOURCE[String(resource)] ?? 0;
-  if (baseTarget <= 0) return [];
+  if (baseTarget <= 0) return NO_DEMAND_SOURCES;
   const tierScale = CONSTRUCTION_RESERVE_TIER_SCALE[inputs.settlement.tier] ?? 1;
   const out: DemandSource[] = [];
 
-  for (const actor of ownerCandidates(inputs)) {
+  for (const actor of context.ownerCandidates) {
     const kind = inputs.ownerKindByActor?.get(actor);
     if (kind === undefined || !CONSTRUCTION_RESERVE_OWNER_KINDS.has(kind)) continue;
     const kindScale = CONSTRUCTION_RESERVE_KIND_SCALE[kind] ?? 1;
@@ -1151,9 +1270,9 @@ const transportCapitalSources = (
   context: SettlementScheduleContext,
 ): readonly DemandSource[] => {
   const baseTarget = TRANSPORT_CAPITAL_TARGET_BY_RESOURCE[String(resource)] ?? 0;
-  if (baseTarget <= 0) return [];
+  if (baseTarget <= 0) return NO_DEMAND_SOURCES;
   const out: DemandSource[] = [];
-  for (const actor of ownerCandidates(inputs)) {
+  for (const actor of context.ownerCandidates) {
     const kind = inputs.ownerKindByActor?.get(actor);
     if (kind === undefined || !TRANSPORT_CAPITAL_OWNER_KINDS.has(kind)) continue;
     const gap = reserveStockGap(context, actor, resource, baseTarget);
@@ -1215,9 +1334,10 @@ const derivedInputSources = (
     const inputPerOutput = inputPerRun / valued.qty;
     if (inputPerOutput <= 0) continue;
     const expectedRevenuePerInputUnit = valued.price / inputPerOutput;
+    const buildings = context.buildingsById.get(recipe.building);
+    if (buildings === undefined) continue;
     let buildingIndex = 0;
-    for (const building of context.buildings) {
-      if (building.buildingId !== recipe.building) continue;
+    for (const building of buildings) {
       if (!buildingCanRunRecipe(context, building, recipe)) continue;
       if (building.capacity <= 0) continue;
       const ownerKind = inputs.ownerKindByActor?.get(building.ownerActor);
@@ -1227,6 +1347,7 @@ const derivedInputSources = (
         valued.qty,
         inputs.recentLocalPrices,
         context.laborClassContext,
+        context.wagePerWorkerDay,
         ownerKind,
       );
       const productionCapacity = Math.min(
@@ -1301,9 +1422,10 @@ const productiveCapitalSources = (
     const outputRevenuePerRun = outputRevenueForRecipe(recipe, inputs.recentLocalPrices);
     if (outputRevenuePerRun <= 0) continue;
 
+    const buildings = context.buildingsById.get(recipe.building);
+    if (buildings === undefined) continue;
     let buildingIndex = 0;
-    for (const building of context.buildings) {
-      if (building.buildingId !== recipe.building) continue;
+    for (const building of buildings) {
       if (!buildingCanRunRecipe(context, building, recipe)) continue;
       if (building.capacity <= 0) continue;
       const ownerKind = inputs.ownerKindByActor?.get(building.ownerActor);
@@ -1325,6 +1447,7 @@ const productiveCapitalSources = (
         recipe,
         inputs.recentLocalPrices,
         context.laborClassContext,
+        context.wagePerWorkerDay,
         ownerKind,
       );
       const netPerRun = outputRevenuePerRun - inputAndLaborCostPerRun;
@@ -1418,12 +1541,13 @@ const consumerBuyerFieldsFor = (
 
 const buildConsumerBuyersByClass = (
   inputs: BuildScheduleInputs,
+  candidates: readonly ActorId[],
+  candidatesByKind: ReadonlyMap<ActorKind, readonly ActorId[]> | undefined,
 ): ReadonlyMap<CharacterClass, readonly ActorId[]> => {
-  const candidates = ownerCandidates(inputs);
   if (candidates.length === 0) return new Map();
   const out = new Map<CharacterClass, readonly ActorId[]>();
   for (const klass of CHARACTER_CLASSES) {
-    const buyers = chooseConsumerBuyerActors(inputs, klass, candidates);
+    const buyers = chooseConsumerBuyerActors(inputs, klass, candidates, candidatesByKind);
     if (buyers.length > 0) out.set(klass, buyers);
   }
   return out;
@@ -1446,16 +1570,14 @@ const chooseConsumerBuyerActors = (
   inputs: BuildScheduleInputs,
   klass: CharacterClass,
   candidates: readonly ActorId[],
+  candidatesByKind: ReadonlyMap<ActorKind, readonly ActorId[]> | undefined,
 ): readonly ActorId[] => {
   const ownerKindByActor = inputs.ownerKindByActor;
   if (ownerKindByActor !== undefined) {
     const priority = CONSUMER_BUYER_KIND_PRIORITY[klass];
     for (const kind of priority) {
-      const matches: ActorId[] = [];
-      for (const actorId of candidates) {
-        if (ownerKindByActor.get(actorId) === kind) matches.push(actorId);
-      }
-      if (matches.length > 0) return matches;
+      const matches = candidatesByKind?.get(kind);
+      if (matches !== undefined && matches.length > 0) return matches;
     }
     return [];
   }
@@ -1477,17 +1599,36 @@ const ownerCandidates = (inputs: BuildScheduleInputs): readonly ActorId[] => {
   return out;
 };
 
+const ownerCandidatesByKind = (
+  ownerKindByActor: ReadonlyMap<ActorId, ActorKind> | undefined,
+  candidates: readonly ActorId[],
+): ReadonlyMap<ActorKind, readonly ActorId[]> | undefined => {
+  if (ownerKindByActor === undefined) return undefined;
+  const out = new Map<ActorKind, ActorId[]>();
+  for (const actorId of candidates) {
+    const kind = ownerKindByActor.get(actorId);
+    if (kind === undefined) continue;
+    let bucket = out.get(kind);
+    if (bucket === undefined) {
+      bucket = [];
+      out.set(kind, bucket);
+    }
+    bucket.push(actorId);
+  }
+  return out;
+};
+
 const chooseServiceBuyerActor = (
   inputs: BuildScheduleInputs,
+  context: SettlementScheduleContext,
   priority: readonly ActorKind[],
 ): ActorId | undefined => {
-  const candidates = ownerCandidates(inputs);
+  const candidates = context.ownerCandidates;
   const ownerKindByActor = inputs.ownerKindByActor;
   if (ownerKindByActor !== undefined) {
     for (const kind of priority) {
-      for (const actorId of candidates) {
-        if (ownerKindByActor.get(actorId) === kind) return actorId;
-      }
+      const matches = context.ownerCandidatesByKind?.get(kind);
+      if (matches !== undefined && matches.length > 0) return matches[0];
     }
   }
   return candidates[0];
@@ -1601,11 +1742,12 @@ const marginalCostFor = (
   resource: ResourceId,
   prices: ReadonlyMap<ResourceId, number>,
   laborClassContext: LaborClassContext,
+  wagePerWorkerDay: number,
   ownerKind?: ActorKind,
 ): number => {
   const recipes = RECIPES_BY_OUTPUT.get(String(resource));
   if (recipes === undefined || recipes.length === 0) return 0;
-  const wage = laborCostPerWorkerDay(prices);
+  const wage = wagePerWorkerDay;
   let cheapest = Infinity;
   for (const recipe of recipes) {
     const outQty = recipe.outputs.get(resource) ?? 0;
@@ -1662,6 +1804,7 @@ const inputAndLaborCostForRecipe = (
   recipe: RecipeDef,
   prices: ReadonlyMap<ResourceId, number>,
   laborClassContext: LaborClassContext,
+  wagePerWorkerDay: number,
   ownerKind?: ActorKind,
 ): number => {
   let cost = 0;
@@ -1671,7 +1814,7 @@ const inputAndLaborCostForRecipe = (
     if (price <= 0) continue;
     cost += qty * price;
   }
-  const wage = laborCostPerWorkerDay(prices);
+  const wage = wagePerWorkerDay;
   if (wage > 0) {
     cost +=
       wageEarningWorkerDaysForLaborForOwner(laborClassContext, recipe.labor, ownerKind) * wage;
@@ -1700,6 +1843,7 @@ const otherInputCostsPerInputUnit = (
   outputQty: number,
   prices: ReadonlyMap<ResourceId, number>,
   laborClassContext: LaborClassContext,
+  wagePerWorkerDay: number,
   ownerKind?: ActorKind,
 ): number => {
   // Sum the cost of every non-primary input per unit of output, then divide
@@ -1712,7 +1856,7 @@ const otherInputCostsPerInputUnit = (
     if (price <= 0 || qty <= 0) continue;
     perOutputCost += (qty / outputQty) * price;
   }
-  const wage = laborCostPerWorkerDay(prices);
+  const wage = wagePerWorkerDay;
   if (wage > 0) {
     const wageEarningLabor = wageEarningWorkerDaysForLaborForOwner(
       laborClassContext,
@@ -1787,6 +1931,26 @@ const buildMarketMakerResourcesByActor = (
       resourceKeys.add(String(resource));
     }
     if (resourceKeys.size > 0) out.set(actor, resourceKeys);
+  }
+  return out;
+};
+
+const buildSingleResourceMarketMakerResourcesByActor = (
+  resource: ResourceId,
+  inputs: BuildScheduleInputs,
+  candidates: readonly ActorId[],
+): ReadonlyMap<ActorId, ReadonlySet<string>> => {
+  if (getResource(resource).category === 'service') return new Map();
+  const recent = inputs.recentLocalPrices.get(resource);
+  if (recent === undefined || recent <= 0 || !Number.isFinite(recent)) return new Map();
+  const resourceKeys: ReadonlySet<string> = new Set([String(resource)]);
+  const out = new Map<ActorId, ReadonlySet<string>>();
+  for (const actor of candidates) {
+    const kind = inputs.ownerKindByActor?.get(actor);
+    if (!isMarketMakerActor(kind)) continue;
+    const treasury = inputs.actorTreasuryByActor?.get(actor) ?? 0;
+    if (treasury <= 0) continue;
+    out.set(actor, resourceKeys);
   }
   return out;
 };
@@ -1909,6 +2073,9 @@ const supplyForResource = (
   const recentPrice = inputs.recentLocalPrices.get(resource) ?? 0;
   const def = getResource(resource);
   const storageHoldingDays = def.perishableDays ?? 365;
+  const localDailyAbsorption = demand.totalAt(0);
+  const reservationFloor = reservationFloorForResource(resource);
+  const marginalCostByKind = new Map<ActorKind | 'none', number>();
   // Per docs/08 §"Modern microeconomic pricing": competitive suppliers
   // price from reservation value, with marginal production cost as the
   // lower bound. At P < MC every marginal unit loses money. We compute
@@ -1920,12 +2087,18 @@ const supplyForResource = (
     const qty = byResource.get(resource);
     if (qty === undefined || qty <= 0) continue;
     const kind = inputs.ownerKindByActor?.get(ownerActor);
-    const marginalCost = marginalCostFor(
-      resource,
-      inputs.recentLocalPrices,
-      context.laborClassContext,
-      kind,
-    );
+    const marginalCostKey = kind ?? 'none';
+    let marginalCost = marginalCostByKind.get(marginalCostKey);
+    if (marginalCost === undefined) {
+      marginalCost = marginalCostFor(
+        resource,
+        inputs.recentLocalPrices,
+        context.laborClassContext,
+        context.wagePerWorkerDay,
+        kind,
+      );
+      marginalCostByKind.set(marginalCostKey, marginalCost);
+    }
     const urgency = kind !== undefined ? URGENCY_BY_KIND[kind] : DEFAULT_OWNER_URGENCY;
     // For resources with a real producing recipe: MC is the floor.
     // For purely-extracted resources (timber, ore, raw fish) the
@@ -1940,9 +2113,9 @@ const supplyForResource = (
           : 0;
     const expectedFuturePrice = inventoryAdjustedExpectedFuturePrice({
       stockpile: qty,
-      localDailyAbsorption: demand.totalAt(0),
+      localDailyAbsorption,
       productionCost,
-      salvageFloor: reservationFloorForResource(resource),
+      salvageFloor: reservationFloor,
       recentPrice,
     });
     out.push(
@@ -1952,7 +2125,7 @@ const supplyForResource = (
         stockpile: qty,
         reservedForOwnUse: 0,
         productionCost,
-        minimumReservationPrice: reservationFloorForResource(resource),
+        minimumReservationPrice: reservationFloor,
         expectedFuturePrice,
         ownerUrgencyFactor: urgency,
         storageHoldingDays,
@@ -2086,6 +2259,21 @@ const countBuildingsByKind = (settlement: Settlement): Map<string, number> => {
     if (b.capacity <= 0) continue;
     const k = String(b.buildingId);
     out.set(k, (out.get(k) ?? 0) + b.capacity);
+  }
+  return out;
+};
+
+const indexBuildingsById = (
+  settlement: Settlement,
+): ReadonlyMap<BuildingId, ReadonlyArray<Settlement['buildings'][number]>> => {
+  const out = new Map<BuildingId, Settlement['buildings'][number][]>();
+  for (const building of settlement.buildings) {
+    let bucket = out.get(building.buildingId);
+    if (bucket === undefined) {
+      bucket = [];
+      out.set(building.buildingId, bucket);
+    }
+    bucket.push(building);
   }
   return out;
 };

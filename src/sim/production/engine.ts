@@ -77,6 +77,12 @@ export interface RecipeRunResult {
   readonly shortfall?: RecipeRunShortfall;
 }
 
+export interface RecipeRunPlan {
+  readonly ranAtFraction: number;
+  readonly buildingCapacityUsed: number;
+  readonly shortfall?: RecipeRunShortfall;
+}
+
 const EMPTY_RESOURCES: ReadonlyMap<ResourceId, Quantity> = new Map();
 const EMPTY_LABOR: ReadonlyMap<JobId, number> = new Map();
 
@@ -89,7 +95,13 @@ const noRun = (shortfall: RecipeRunShortfall): RecipeRunResult => ({
   shortfall,
 });
 
-export const runRecipe = (req: RecipeRunRequest): RecipeRunResult => {
+const noRunPlan = (shortfall: RecipeRunShortfall): RecipeRunPlan => ({
+  ranAtFraction: 0,
+  buildingCapacityUsed: 0,
+  shortfall,
+});
+
+export const planRecipeRun = (req: RecipeRunRequest): RecipeRunPlan => {
   const { recipe, building, laborAvailable, inputStocks, season } = req;
 
   // Seasonal gate. A recipe with a seasonalMultiplier dictionary that omits
@@ -97,7 +109,7 @@ export const runRecipe = (req: RecipeRunRequest): RecipeRunResult => {
   // with no seasonalMultiplier at all runs in every season at full rate.
   const seasonMul = seasonalMultiplier(recipe, season);
   if (seasonMul <= 0) {
-    return noRun({
+    return noRunPlan({
       reason: 'no_building',
       detail: `recipe ${String(recipe.id)} is out of season (${season})`,
     });
@@ -107,13 +119,13 @@ export const runRecipe = (req: RecipeRunRequest): RecipeRunResult => {
   // with positive remaining capacity. One full recipe-run consumes
   // exactly one capacity unit; partial runs scale linearly.
   if (building.id !== recipe.building) {
-    return noRun({
+    return noRunPlan({
       reason: 'no_building',
       detail: `recipe requires building ${String(recipe.building)}, got ${String(building.id)}`,
     });
   }
   if (!Number.isFinite(building.capacityRemaining) || building.capacityRemaining <= 0) {
-    return noRun({
+    return noRunPlan({
       reason: 'no_building',
       detail: `building ${String(building.id)} has no remaining capacity`,
     });
@@ -128,7 +140,7 @@ export const runRecipe = (req: RecipeRunRequest): RecipeRunResult => {
     if (required <= 0) continue;
     const available = laborAvailable.get(role) ?? 0;
     if (available <= 0) {
-      return noRun({
+      return noRunPlan({
         reason: 'no_labor',
         detail: `missing labor role ${String(role)} for recipe ${String(recipe.id)}`,
       });
@@ -149,7 +161,7 @@ export const runRecipe = (req: RecipeRunRequest): RecipeRunResult => {
     if (required <= 0) continue;
     const available = inputStocks.get(resource) ?? 0;
     if (available <= 0) {
-      return noRun({
+      return noRunPlan({
         reason: 'missing_input',
         detail: `missing input ${String(resource)} for recipe ${String(recipe.id)}`,
       });
@@ -171,7 +183,7 @@ export const runRecipe = (req: RecipeRunRequest): RecipeRunResult => {
       if (needed <= 0) continue;
       const available = inputStocks.get(resource) ?? 0;
       if (available <= 0) {
-        return noRun({
+        return noRunPlan({
           reason: 'missing_input',
           detail: `missing required-present ${String(resource)} for recipe ${String(recipe.id)}`,
         });
@@ -195,22 +207,39 @@ export const runRecipe = (req: RecipeRunRequest): RecipeRunResult => {
   // multiplier > 1 is allowed in principle but not used by docs/03).
   const fraction = Math.min(buildingFraction, laborFraction, inputFraction) * seasonMul;
   if (fraction <= 0) {
-    return noRun({
+    return noRunPlan({
       reason: 'no_building',
       detail: `recipe ${String(recipe.id)} resolved to zero fraction`,
     });
   }
 
-  const inputsConsumed = scaleQuantityMap(recipe.inputs, fraction);
-  const outputsProduced = scaleQuantityMap(recipe.outputs, fraction);
-  const laborUsed = scaleQuantityMap(recipe.labor, fraction);
+  return {
+    ranAtFraction: fraction,
+    buildingCapacityUsed: fraction,
+  };
+};
+
+export const runRecipe = (req: RecipeRunRequest): RecipeRunResult => {
+  const plan = planRecipeRun(req);
+  if (plan.shortfall !== undefined || plan.ranAtFraction <= 0) {
+    return plan.shortfall !== undefined
+      ? noRun(plan.shortfall)
+      : noRun({
+          reason: 'no_building',
+          detail: `recipe ${String(req.recipe.id)} resolved to zero fraction`,
+        });
+  }
+  const fraction = plan.ranAtFraction;
+  const inputsConsumed = scaleQuantityMap(req.recipe.inputs, fraction);
+  const outputsProduced = scaleQuantityMap(req.recipe.outputs, fraction);
+  const laborUsed = scaleQuantityMap(req.recipe.labor, fraction);
 
   return {
     ranAtFraction: fraction,
     inputsConsumed,
     outputsProduced,
     laborUsed,
-    buildingCapacityUsed: fraction,
+    buildingCapacityUsed: plan.buildingCapacityUsed,
   };
 };
 

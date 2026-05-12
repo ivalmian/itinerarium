@@ -207,17 +207,16 @@ export const derivedInputDemand = (opts: DerivedInputOpts): DemandSource => {
 // --- Aggregation ------------------------------------------------------------
 
 export const aggregateDemand = (sources: readonly DemandSource[]): DemandSchedule => {
-  const cached: DemandSource[] = sources.slice();
   return {
-    sources: cached,
+    sources,
     totalAt(price: number): number {
       let sum = 0;
-      for (const s of cached) sum += s.quantityAt(price);
+      for (const s of sources) sum += s.quantityAt(price);
       return sum;
     },
     breakpoints(): readonly DemandBreakpoint[] {
       const bps: DemandBreakpoint[] = [];
-      for (const s of cached) {
+      for (const s of sources) {
         // Step sources contribute one discontinuity at their max-WTP, where
         // demand drops from peak to 0 going up in price. Continuous sources
         // (subsistence, comfort) emit no breakpoint here; clearing samples

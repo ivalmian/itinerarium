@@ -14,7 +14,7 @@
  * lower than 1, drop MIN_STEP_COST accordingly.
  */
 
-import { HEX_DIRECTIONS, hexDistance } from './hex.js';
+import { HEX_DIRECTIONS } from './hex.js';
 import type { Hex } from './hex.js';
 import type { HexGrid } from './grid.js';
 import type { RoadGrade, Season, Terrain } from './terrain.js';
@@ -150,20 +150,67 @@ export const COURIER_PROFILE: MovementProfile = {
 // heuristic admissible; raising it would risk returning sub-optimal paths.
 const MIN_STEP_COST = 1 / 6;
 
+const HEX_DIRECTION_Q: readonly number[] = HEX_DIRECTIONS.map((direction) => direction.q);
+const HEX_DIRECTION_R: readonly number[] = HEX_DIRECTIONS.map((direction) => direction.r);
+const ROAD_COUNT = 3;
+const TERRAIN_ROAD_COST_COUNT = 13 * ROAD_COUNT;
+
 const COORD_KEY_OFFSET = 32768;
-const COORD_KEY_STRIDE = 65536;
 
 const coordKey = (q: number, r: number): number =>
-  (q + COORD_KEY_OFFSET) * COORD_KEY_STRIDE + (r + COORD_KEY_OFFSET);
+  (((q + COORD_KEY_OFFSET) << 16) | (r + COORD_KEY_OFFSET)) >>> 0;
 
-const coordQ = (key: number): number => Math.floor(key / COORD_KEY_STRIDE) - COORD_KEY_OFFSET;
-const coordR = (key: number): number => (key % COORD_KEY_STRIDE) - COORD_KEY_OFFSET;
+const coordQ = (key: number): number => (key >>> 16) - COORD_KEY_OFFSET;
+const coordR = (key: number): number => (key & 0xffff) - COORD_KEY_OFFSET;
 
 const hexDistanceAt = (aq: number, ar: number, bq: number, br: number): number => {
   const dq = aq - bq;
   const dr = ar - br;
   const ds = -dq - dr;
   return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2;
+};
+
+const roadCostIndex = (road: RoadGrade): number => {
+  switch (road) {
+    case 'none':
+      return 0;
+    case 'dirt':
+      return 1;
+    case 'roman':
+      return 2;
+  }
+};
+
+const terrainRoadCostIndex = (terrain: Terrain, road: RoadGrade): number => {
+  const roadIndex = roadCostIndex(road);
+  switch (terrain) {
+    case 'plains':
+      return roadIndex;
+    case 'fertile_valley':
+      return ROAD_COUNT + roadIndex;
+    case 'hills':
+      return ROAD_COUNT * 2 + roadIndex;
+    case 'mountains':
+      return ROAD_COUNT * 3 + roadIndex;
+    case 'forest':
+      return ROAD_COUNT * 4 + roadIndex;
+    case 'dense_forest':
+      return ROAD_COUNT * 5 + roadIndex;
+    case 'marsh':
+      return ROAD_COUNT * 6 + roadIndex;
+    case 'desert':
+      return ROAD_COUNT * 7 + roadIndex;
+    case 'steppe':
+      return ROAD_COUNT * 8 + roadIndex;
+    case 'river':
+      return ROAD_COUNT * 9 + roadIndex;
+    case 'lake':
+      return ROAD_COUNT * 10 + roadIndex;
+    case 'urban':
+      return ROAD_COUNT * 11 + roadIndex;
+    case 'ruin':
+      return ROAD_COUNT * 12 + roadIndex;
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -213,9 +260,6 @@ class MinHeap {
       this.seqs[0] = this.seqs[this.length] as number;
       this.sinkDown(0);
     }
-    this.keys.length = this.length;
-    this.priorities.length = this.length;
-    this.seqs.length = this.length;
     return top;
   }
 
@@ -261,12 +305,14 @@ class PathWorkspace {
   readonly cameFrom = new Map<number, number>();
   readonly closed = new Set<number>();
   readonly open = new MinHeap();
+  readonly stepCostCache = new Array<number>(TERRAIN_ROAD_COST_COUNT);
 
   reset(): void {
     this.gScore.clear();
     this.cameFrom.clear();
     this.closed.clear();
     this.open.clear();
+    this.stepCostCache.fill(Number.NaN);
   }
 }
 
@@ -289,16 +335,28 @@ export const findPath = (
   }
   const startKey = coordKey(start.q, start.r);
   const goalKey = coordKey(goal.q, goal.r);
+  const goalQ = goal.q;
+  const goalR = goal.r;
+  const coordTiles = grid.coordTiles;
   if (start.q === goal.q && start.r === goal.r) {
     return { path: [start], totalCost: 0 };
   }
+  const startDistance = hexDistanceAt(start.q, start.r, goalQ, goalR);
+  if (startDistance === 1) {
+    const tile = coordTiles.get(goalKey);
+    if (tile === undefined) return { path: [], totalCost: Infinity };
+    const stepCost = profile.costFor(tile.terrain, tile.road, season, loadFraction);
+    return Number.isFinite(stepCost)
+      ? { path: [start, goal], totalCost: stepCost }
+      : { path: [], totalCost: Infinity };
+  }
 
   pathWorkspace.reset();
-  const { gScore, cameFrom, closed, open } = pathWorkspace;
+  const { gScore, cameFrom, closed, open, stepCostCache } = pathWorkspace;
   let seq = 0;
 
   gScore.set(startKey, 0);
-  open.push(startKey, hexDistance(start, goal) * MIN_STEP_COST, seq++);
+  open.push(startKey, startDistance * MIN_STEP_COST, seq++);
 
   while (open.size() > 0) {
     const currentKey = open.pop() as number;
@@ -313,21 +371,26 @@ export const findPath = (
     const currentR = coordR(currentKey);
     const currentG = gScore.get(currentKey) ?? Infinity;
 
-    for (const dir of HEX_DIRECTIONS) {
-      const nq = currentQ + dir.q;
-      const nr = currentR + dir.r;
+    for (let directionIndex = 0; directionIndex < 6; directionIndex++) {
+      const nq = currentQ + (HEX_DIRECTION_Q[directionIndex] as number);
+      const nr = currentR + (HEX_DIRECTION_R[directionIndex] as number);
       const nKey = coordKey(nq, nr);
       if (closed.has(nKey)) continue;
-      const tile = grid.getAt(nq, nr);
+      const tile = coordTiles.get(nKey);
       if (tile === undefined) continue;
-      const stepCost = profile.costFor(tile.terrain, tile.road, season, loadFraction);
+      const costIndex = terrainRoadCostIndex(tile.terrain, tile.road);
+      let stepCost = stepCostCache[costIndex] as number;
+      if (Number.isNaN(stepCost)) {
+        stepCost = profile.costFor(tile.terrain, tile.road, season, loadFraction);
+        stepCostCache[costIndex] = stepCost;
+      }
       if (!Number.isFinite(stepCost)) continue;
       const tentative = currentG + stepCost;
       const existing = gScore.get(nKey);
       if (existing !== undefined && tentative >= existing) continue;
       gScore.set(nKey, tentative);
       cameFrom.set(nKey, currentKey);
-      const f = tentative + hexDistanceAt(nq, nr, goal.q, goal.r) * MIN_STEP_COST;
+      const f = tentative + hexDistanceAt(nq, nr, goalQ, goalR) * MIN_STEP_COST;
       open.push(nKey, f, seq++);
     }
   }

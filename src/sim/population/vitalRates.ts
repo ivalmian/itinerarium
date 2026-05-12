@@ -111,12 +111,13 @@ const totalPopulation = (pool: PopulationPool): number => pool.total();
 const allocateNewbornsByClass = (
   pool: PopulationPool,
   totalNewborns: number,
+  fertileFemaleTotal: number,
   rng: Rng,
 ): Map<CharacterClass, number> => {
   const out = new Map<CharacterClass, number>();
   if (totalNewborns <= 0) return out;
 
-  let remainingFertile = pool.totalFertileFemales();
+  let remainingFertile = fertileFemaleTotal;
   if (remainingFertile === 0) return out;
 
   let remainingNewborns = totalNewborns;
@@ -153,13 +154,14 @@ export const tickDaily = (pool: PopulationPool, rates: VitalRates, rng: Rng): vo
 
   // 2) Births. CBR applies to total population; allocated to mothers' class.
   const totalAfterDeaths = totalPopulation(pool);
-  if (totalAfterDeaths === 0 || pool.totalFertileFemales() === 0) return;
+  const fertileFemaleTotal = pool.totalFertileFemales();
+  if (totalAfterDeaths === 0 || fertileFemaleTotal === 0) return;
 
   const dailyBirthP = annualPer1000ToDaily(rates.crudeBirthRatePer1000PerYear);
   const newborns = sampleBinomial(totalAfterDeaths, dailyBirthP, rng);
   if (newborns === 0) return;
 
-  const newbornsByClass = allocateNewbornsByClass(pool, newborns, rng);
+  const newbornsByClass = allocateNewbornsByClass(pool, newborns, fertileFemaleTotal, rng);
   for (const [cls, n] of newbornsByClass) {
     if (n <= 0) continue;
     // Sex assigned per-newborn ~50/50.
