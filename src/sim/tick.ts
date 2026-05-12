@@ -411,9 +411,14 @@ export type TickEvent =
        * Channel of the transfer per docs/15 §C20:
        *   civic_dividend     — city corporation → patrician families
        *   tenant_rent        — free village / hamlet → patrician family
-       *   merchant_residual  — off-map house → patrician family
+       *
+       * `merchant_residual` was removed in §C22 — off-map house treasury
+       * accumulates from import sales but does NOT redistribute back to
+       * patricians via a synthetic transfer. The legitimate inbound coin
+       * flow is the export caravan path (see
+       * `completeOffMapExportIfArrived`).
        */
-      readonly channel: 'civic_dividend' | 'tenant_rent' | 'merchant_residual';
+      readonly channel: 'civic_dividend' | 'tenant_rent';
       readonly payer: ActorId;
       readonly recipient: ActorId;
       readonly coinPaid: number;
@@ -4591,6 +4596,34 @@ const localRationSellerQuotes = (
   return quotes;
 };
 
+/**
+ * Per docs/15 §C22 + C19: collect each candidate destination's residual
+ * bid depth (best-bid quantity) per resource so the caravan planner can
+ * cap planned cargo at what the destination market can actually absorb.
+ * Returns a Map keyed by `hexKey(candidate.hex)` → resource → quantity.
+ * Candidates without quoted bids contribute no entry → the planner treats
+ * those resources as effectively unlimited (it has no evidence either
+ * way), preserving back-compat with fixtures that don't populate books.
+ */
+const buildDestinationBidDepthMap = (
+  world: WorldState,
+  candidates: readonly { readonly id: SettlementId; readonly hex: Hex }[],
+): ReadonlyMap<string, ReadonlyMap<ResourceId, Quantity>> => {
+  const out = new Map<string, Map<ResourceId, Quantity>>();
+  for (const candidate of candidates) {
+    const settlement = world.settlements.get(candidate.id);
+    if (settlement === undefined) continue;
+    const market = settlement.market;
+    if (market.bidDepth.size === 0) continue;
+    const byResource = new Map<ResourceId, Quantity>();
+    for (const [resource, depth] of market.bidDepth) {
+      if (Number.isFinite(depth) && depth > 0) byResource.set(resource, depth);
+    }
+    if (byResource.size > 0) out.set(hexKey(candidate.hex), byResource);
+  }
+  return out;
+};
+
 const localSupplyAvailabilityByResource = (
   world: WorldState,
   settlements: readonly Settlement[],
@@ -5405,6 +5438,11 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
     const originAvailability =
       localBucket === undefined ? undefined : localSupplyAvailabilityByResource(world, localBucket);
     const missingRationKg = caravanMissingRationReserveKg(c);
+    // Per docs/15 §C22 + C19: pre-build a destination → resource → bid
+    // depth map for the candidates so the planner can cap cargo at what
+    // each destination market can actually absorb. Without this the
+    // planner over-loads goods that won't clear on arrival.
+    const destinationBidDepth = buildDestinationBidDepthMap(world, candidates);
 
     // 2. Plan next route.
     const plan = planCaravanRoute({
@@ -5424,6 +5462,7 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
         ...(originAvailability !== undefined
           ? { originAvailableQuantity: originAvailability }
           : {}),
+        destinationBidDepth,
       },
       includeReason: false,
       rng: rng.derive(String(cId)),
@@ -6975,29 +7014,32 @@ const investmentPhase = (world: WorldState, _today: Day, events: TickEvent[]): v
 // --- Phase: fiscal redistribution (docs/15 §C20) --------------------------
 
 /**
- * Per docs/15 §C20: a quarterly fiscal-redistribution pass that keeps cash
- * circulating across owner kinds. Without it, a single watchdog burn-in
- * drains patrician treasuries to ~0 within months while city corporations
- * accumulate the cash — every comfort / status / capital market freezes
- * even though physical stockpiles are huge. See docs/08 §"Cash circulation
- * discipline" for the mechanism.
+ * Per docs/15 §C20 + §C22: a quarterly fiscal-redistribution pass that
+ * keeps cash circulating across owner kinds. Without it, a single watchdog
+ * burn-in drains patrician treasuries to ~0 within months while city
+ * corporations accumulate the cash — every comfort / status / capital
+ * market freezes even though physical stockpiles are huge. See docs/08
+ * §"Cash circulation discipline" for the mechanism.
  *
- * Three flows fire on the same quarterly cadence as investmentPhase:
+ * Two flows fire on the same quarterly cadence as investmentPhase:
  *
- *   1. civic_dividend     — every city_corporation pays a fixed fraction
- *                           of its treasury, split evenly, to patrician
- *                           families whose homeSettlement matches the
- *                           city's settlement. Models cura annonae /
- *                           magistrate stipends / civic contract pay.
- *   2. tenant_rent        — every patrician_family collects rent from
- *                           nearby free_village / hamlet_household actors
- *                           proportional to a fraction of their treasury,
- *                           weighted by hex proximity. Capped so a single
- *                           rent collection never overdrafts the tenant.
- *   3. merchant_residual  — every off_map_house pays a fraction of its
- *                           accumulated treasury to a patrician family in
- *                           the nearest city. Models the regional
- *                           merchant elite collecting their cut.
+ *   1. civic_dividend  — every city_corporation pays a fixed fraction of
+ *                        its treasury, split evenly, to patrician families
+ *                        whose homeSettlement matches the city's
+ *                        settlement. Models cura annonae / magistrate
+ *                        stipends / civic contract pay.
+ *   2. tenant_rent     — free_village / hamlet_household actors pay rent
+ *                        to the patrician families of their nearest patron
+ *                        city, split evenly. Capped so a single rent
+ *                        collection never overdrafts the tenant.
+ *
+ * The legacy `merchant_residual` channel was REMOVED in §C22 because it
+ * was a synthetic transfer with no real economic story. The proper
+ * inbound coin flow from off-map is the export caravan path: cities
+ * ship surplus → cargo crosses the map edge → global-market coin credits
+ * the source actor's treasury via `completeOffMapExportIfArrived`. Off-map
+ * houses still accumulate treasury from import sales, but they don't bid
+ * on-map for anything, so that growth is a benign sink.
  *
  * Each transfer emits a fiscal_redistribution TickEvent so the viewer and
  * burn-in instrumentation can audit the flows.
@@ -7014,16 +7056,20 @@ const investmentPhase = (world: WorldState, _today: Day, events: TickEvent[]): v
 // investmentPhase. Rates below are per-quarter:
 //   civic dividend  8% → ≈32% APR
 //   tenant rent     5% → ≈22% APR (capped at 15% of tenant treasury)
-//   off-map residual 6% → ≈25% APR (split across patron-city's families)
-// These are deliberately on the higher side of "sustainable": city corps
-// and off-map houses generate cash through sales and imports faster
-// than patrician estates do, so the redistribution pump can (and should)
-// bleed them toward patrician working capital.
+//
+// The merchant_residual channel was REMOVED — off-map houses now act as
+// natural coin sinks (their import sale revenue does not flow back via
+// a synthetic redistribution). The legitimate inbound flow is the export
+// caravan path: city-based actors (patrician families, city corps) ship
+// surplus to edge hexes, the cargo "leaves the map," and global-market
+// coin credits the source actor's treasury via
+// `completeOffMapExportIfArrived`. That is the trade-surplus channel that
+// matches docs/08 §"Off-map global market". See docs/15 §C20 / §C22 for
+// the rationale.
 const CITY_CORP_DIVIDEND_FRACTION = 0.08;
 const TENANT_RENT_FRACTION_PER_QUARTER = 0.05;
 const TENANT_RENT_TREASURY_CAP_FRACTION = 0.15;
 const TENANT_RENT_MAX_HEX_DISTANCE = 30;
-const OFF_MAP_HOUSE_RESIDUAL_FRACTION = 0.06;
 const FISCAL_TRANSFER_MIN_COIN = 0.5;
 
 const fiscalRedistributionPhase = (world: WorldState, _today: Day, events: TickEvent[]): void => {
@@ -7128,71 +7174,15 @@ const fiscalRedistributionPhase = (world: WorldState, _today: Day, events: TickE
     }
   }
 
-  // --- Channel 3: merchant_residual ---------------------------------------
-  // Off-map houses accumulate treasury from sold imports. We bleed a fraction
-  // back to nearby patrician families each quarter — economically these
-  // represent factor commissions, agent retainers, and partnerships. The
-  // payment is split EVENLY across all patrician families in the nearest
-  // city; without that split a single nearest family was collecting the full
-  // 15-house residual flow and ending up the only solvent patrician in the
-  // province.
-  const familiesByHomeForResidual = new Map<SettlementId, Actor[]>();
-  for (const entry of patricianAnchors) {
-    const home = entry.actor.homeSettlement;
-    if (home === undefined) continue;
-    let bucket = familiesByHomeForResidual.get(home);
-    if (bucket === undefined) {
-      bucket = [];
-      familiesByHomeForResidual.set(home, bucket);
-    }
-    bucket.push(entry.actor);
-  }
-  if (patricianAnchors.length > 0) {
-    for (const house of world.actors.values()) {
-      if (house.kind !== 'off_map_house') continue;
-      if (house.treasury <= 0) continue;
-      // Off-map houses don't always have a homeSettlement on-map. Try
-      // homeSettlement first; fall back to a deterministic patrician pick.
-      let anchor: Hex | undefined;
-      if (house.homeSettlement !== undefined) {
-        const home = world.settlements.get(house.homeSettlement);
-        if (home !== undefined) anchor = home.anchor;
-      }
-      let anchorActor: Actor | undefined;
-      if (anchor !== undefined) {
-        anchorActor =
-          nearestPatricianWithin(patricianAnchors, anchor, Number.POSITIVE_INFINITY) ?? undefined;
-      } else {
-        anchorActor = [...patricianAnchors].sort((a, b) =>
-          a.actor.id < b.actor.id ? -1 : a.actor.id > b.actor.id ? 1 : 0,
-        )[0]?.actor;
-      }
-      if (anchorActor === undefined) continue;
-      const anchorCity = anchorActor.homeSettlement;
-      if (anchorCity === undefined) continue;
-      const families = familiesByHomeForResidual.get(anchorCity);
-      if (families === undefined || families.length === 0) continue;
-      const totalTransfer = Math.min(
-        house.treasury * OFF_MAP_HOUSE_RESIDUAL_FRACTION,
-        house.treasury,
-      );
-      if (totalTransfer < FISCAL_TRANSFER_MIN_COIN) continue;
-      const perFamily = totalTransfer / families.length;
-      for (const family of families) {
-        const actual = Math.min(perFamily, house.treasury);
-        if (actual < FISCAL_TRANSFER_MIN_COIN) continue;
-        house.treasury -= actual;
-        family.treasury += actual;
-        events.push({
-          type: 'fiscal_redistribution',
-          channel: 'merchant_residual',
-          payer: house.id,
-          recipient: family.id,
-          coinPaid: actual,
-        });
-      }
-    }
-  }
+  // No channel 3. Per docs/15 §C22, the legacy `merchant_residual`
+  // (off-map house → patrician family) was removed because it didn't
+  // correspond to any real economic mechanism. The legitimate channel
+  // for off-map → on-map coin flow is the EXPORT caravan: city-based
+  // actors (patrician families, city corps) ship surplus to an edge hex,
+  // the cargo leaves the map, and global-market coin credits the source
+  // actor's treasury via `completeOffMapExportIfArrived`. Off-map house
+  // treasury still grows from import sales, but they don't bid on-map for
+  // anything, so the growth is a benign sink.
 };
 
 const nearestPatricianWithin = (

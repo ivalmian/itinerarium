@@ -464,14 +464,13 @@ burn-in audit.
    is split EVENLY across all patrician families in the patron
    city — without that split a single nearest family was
    collecting all the regional rent.
-3. **Quarterly merchant-house residual to patricians.** Every 91
-   days, `off_map_house` actors pay back a fraction of their
-   accumulated treasury (`OFF_MAP_HOUSE_RESIDUAL_FRACTION = 0.06`,
-   ≈25% APR) to the patrician families of the nearest on-map city,
-   split evenly among them. Splitting across the city (not just
-   the single nearest family) is critical: 15 houses funneling 6%
-   each into one family per quarter produced a single 100k+ super-
-   patrician while the rest of the city's families stayed broke.
+3. ~~**Quarterly merchant-house residual to patricians.**~~ **REMOVED
+   in §C22.** The original C20 had off-map houses paying back a
+   fraction of their treasury to patrician families, but this was a
+   synthetic transfer with no real economic story. The legitimate
+   off-map → on-map coin channel is the export caravan path (see
+   §C22): cities ship surplus to edge hexes and global-market coin
+   credits the source actor on cargo exit.
 4. **Initial treasury seed by kind, rebalanced.** Patrician families
    now seed with `8000-24000` coin (was 2000-8000) so they survive
    the first quarter before redistribution arrives. Common
@@ -591,6 +590,64 @@ circulation discipline" + §"Bid-ask book" (richer per-class book),
 characters" (the common-household actor concept), `src/sim/politics/
 actor.ts` `ActorKind`, `src/procgen/seed.ts` household seeding,
 `src/sim/tick.ts` wage routing.
+
+## C22 — Off-map coin flow via exports, not synthetic residual (landed)
+
+**Pre-§C22 hack (C20 channel 3):** every quarter, each `off_map_house`
+actor paid back `OFF_MAP_HOUSE_RESIDUAL_FRACTION = 0.06` of its
+treasury to patrician families in the nearest on-map city. This was
+documented as "factor commissions / agent retainers / partnerships,"
+but it was a synthetic transfer with no real economic mechanism —
+off-map houses don't structurally owe anything to on-map patrician
+families.
+
+**Realistic (per docs/08 §"Off-map global market" + docs/06 §"Edge-
+hub caravans"):** the two coin channels between on-map and off-map
+are:
+
+1. **Imports.** An `off_map_house` spawns an import caravan at an
+   edge hex with cargo and operating coin. The caravan sells the
+   cargo on-map; the sale credits the off-map house's treasury. The
+   house's treasury grows.
+2. **Exports.** A city-based actor (`patrician_family`,
+   `city_corporation`, `governor_office`) has surplus cargo
+   registered as `availableForExport`. An export caravan is spawned
+   with the city actor as `ownerActor`. The caravan walks to an
+   edge hex; on arrival, `completeOffMapExportIfArrived` sells the
+   cargo at `DEFAULT_GLOBAL_PRICES` and credits the OWNER's
+   treasury. The on-map actor's treasury grows.
+
+That is sufficient. The trade surplus / deficit is the real
+balance: a province with strong exports earns more from off-map
+than it spends on imports; a province with thin exports drains
+its money supply. Off-map houses still hoard import-sale coin in
+their treasuries, but they don't bid for anything on-map (their
+export caravans are owned by city actors, not by them), so the
+hoard is a benign sink.
+
+**v1.5 mechanics (landed):**
+
+- The `merchant_residual` channel in `fiscalRedistributionPhase`
+  is deleted. The `OFF_MAP_HOUSE_RESIDUAL_FRACTION` constant is
+  removed.
+- The `fiscal_redistribution` `TickEvent` channel union no longer
+  has `'merchant_residual'`.
+- The existing `caravan_exported_off_map` event remains the
+  authoritative inbound coin signal. Per-resource export quantities
+  and global-price-denominated coin are surfaced for the viewer +
+  diagnostics.
+
+**Acceptance:** at year 3 the patrician/city-corp treasuries are
+sustained by civic dividends, tenant rents, and export-caravan
+proceeds — not by a synthetic merchant transfer. Off-map house
+treasury grows monotonically (with no observable behavioral
+consequence). The viewer's economic event log shows export
+caravans completing instead of residual transfers firing.
+
+**Cross-refs:** `docs/06-caravans.md` §"Edge-hub caravans",
+`docs/08-money-and-trade.md` §"Off-map global market",
+`docs/15-v1-5-cleanups.md` §C20, `src/sim/tick.ts`
+`fiscalRedistributionPhase`, `completeOffMapExportIfArrived`.
 
 ## C16 — Cascading consequences of price explosion [TODO]
 

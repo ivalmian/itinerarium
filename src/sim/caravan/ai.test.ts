@@ -244,6 +244,27 @@ describe('planCaravanRoute', () => {
     expect(plan?.cargoToCarry.get(grain)).toBeCloseTo(3, 5);
   });
 
+  it('caps cargo by destination bid depth (docs/15 §C22 volume-aware planning)', () => {
+    // Without the destination bid-depth constraint the caravan would
+    // happily plan a giant load of grain that the destination market can't
+    // absorb. The book ladder at Aquileia only has bids for 4 units; the
+    // planner must respect that and load 4 even though more is available
+    // at origin and there's cash to spare.
+    const c = baseCaravan();
+    observePrice(c, grain, homeHex, 1);
+    observePrice(c, grain, candAquileia.hex, 100);
+    const destBidDepth = new Map<string, Map<typeof grain, number>>([
+      [hexKey(candAquileia.hex), new Map([[grain, 4]])],
+    ]);
+    const plan = planCaravanRoute(
+      baseInputs(c, {
+        cargoConstraints: { destinationBidDepth: destBidDepth },
+      }),
+    );
+    expect(plan).not.toBeNull();
+    expect(plan?.cargoToCarry.get(grain)).toBeCloseTo(4, 5);
+  });
+
   it('leaves capacity for missing ration reserves', () => {
     const c = baseCaravan({ animals: { mule: 5 } }); // 500 kg capacity
     observePrice(c, grain, homeHex, 1);
