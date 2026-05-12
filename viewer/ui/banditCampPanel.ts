@@ -14,6 +14,7 @@ import type { ViewerHistory } from '../state/history.js';
 import { createSparkline, fmtCompact } from './sparkline.js';
 import { createFactionLink } from './factionLink.js';
 import { findFactionByActor } from './factionScreen.js';
+import { appendEventSummary } from './entityLinks.js';
 
 export interface BanditCampPanel {
   update(world: WorldState): void;
@@ -105,7 +106,7 @@ export const createBanditCampPanel = (opts: BanditCampPanelOpts): BanditCampPane
     }
 
     // Historical trajectories (banditCount, treasury, health) + raid history.
-    renderCampHistory(root, history, camp.id);
+    renderCampHistory(root, history, camp.id, world, state);
 
     const copy = document.createElement('button');
     copy.className = 'copy-btn';
@@ -141,6 +142,8 @@ const renderCampHistory = (
   root: HTMLElement,
   history: ViewerHistory,
   id: BanditCampId,
+  world: WorldState,
+  state: ViewerState,
 ): void => {
   const buf = history.banditCamps.get(id);
   if (buf === undefined || buf.length < 2) return;
@@ -198,7 +201,8 @@ const renderCampHistory = (
       const row = document.createElement('div');
       row.style.color = 'var(--muted)';
       row.style.padding = '1px 0';
-      row.textContent = `d${e.day} · ${e.summary}`;
+      row.appendChild(document.createTextNode(`d${e.day} · `));
+      appendEventSummary(row, world, state, e.summary);
       list.appendChild(row);
     }
     root.appendChild(list);

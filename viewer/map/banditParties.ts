@@ -18,6 +18,7 @@ export const createBanditPartiesLayer = (
 ): BanditPartiesLayer => {
   return createUnitLayer(art, {
     defaultUnitKind: 'bandit_raid',
+    enableHighlight: true,
     getEntities: function* (world: WorldState): Iterable<UnitView> {
       if (world.banditParties === undefined) return;
       for (const p of world.banditParties.values()) {

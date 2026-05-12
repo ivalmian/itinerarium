@@ -17,6 +17,7 @@ export const createPatrolsLayer = (
 ): PatrolsLayer => {
   return createUnitLayer(art, {
     defaultUnitKind: 'patrol',
+    enableHighlight: true,
     getEntities: function* (world: WorldState): Iterable<UnitView> {
       if (world.patrols === undefined) return;
       for (const p of world.patrols.values()) {

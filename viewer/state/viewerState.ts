@@ -9,6 +9,7 @@
 
 import type {
   BanditCampId,
+  BanditPartyId,
   CaravanId,
   FactionId,
   SettlementId,
@@ -38,6 +39,9 @@ export type Selection =
   | { readonly kind: 'settlement'; readonly id: SettlementId }
   | { readonly kind: 'caravan'; readonly id: CaravanId }
   | { readonly kind: 'bandit_camp'; readonly id: BanditCampId }
+  | { readonly kind: 'bandit_party'; readonly id: BanditPartyId }
+  | { readonly kind: 'patrol'; readonly id: string }
+  | { readonly kind: 'news_carrier'; readonly id: string }
   | { readonly kind: 'hex'; readonly hex: Hex }
   | { readonly kind: 'faction'; readonly id: FactionId };
 

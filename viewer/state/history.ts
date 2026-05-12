@@ -213,16 +213,32 @@ export const recordTick = (history: ViewerHistory, world: WorldState): void => {
  * Route this tick's events into per-entity event buffers. Many TickEvent
  * variants reference more than one entity (e.g. settlement_raided has both
  * a settlement AND a bandit camp); we record the event under each.
+ *
+ * Summaries written here use bracketed `[<kind>:<id>]` placeholders for
+ * references to other entities. Renderers that have access to `WorldState`
+ * (e.g. `viewer/ui/caravanPopup.ts`) replace these placeholders with
+ * clickable entity links. Renderers without `WorldState` access can fall
+ * back to plain text.
  */
 export const recordEvents = (
   history: ViewerHistory,
   day: Day,
   events: readonly TickEvent[],
+  world: WorldState,
 ): void => {
   for (const e of events) {
-    routeEvent(history, day, e);
+    routeEvent(history, day, e, world);
   }
 };
+
+/**
+ * Placeholder helpers — emit `[<kind>:<id>]` substrings that the popup
+ * renderers substitute for clickable entity links. The renderer (or a
+ * fallback stripper) does the name lookup so we don't capture a stale
+ * snapshot of the entity name in the event buffer.
+ */
+const settlementRef = (id: SettlementId): string => `[settlement:${String(id)}]`;
+const banditCampRef = (id: BanditCampId): string => `[bandit_camp:${String(id)}]`;
 
 const addSettlementEvent = (
   history: ViewerHistory,
@@ -263,7 +279,17 @@ const addCampEvent = (
   pushBoundedEvents(buf, evt);
 };
 
-const routeEvent = (history: ViewerHistory, day: Day, e: TickEvent): void => {
+const routeEvent = (
+  history: ViewerHistory,
+  day: Day,
+  e: TickEvent,
+  world: WorldState,
+): void => {
+  // `world` is used by the placeholder helpers below to ensure the id
+  // we capture into the buffer is canonical (matches whatever the
+  // renderer will look up). Keeping the param even when individual
+  // event arms don't need a name today makes the renderer-future-proof.
+  void world;
   switch (e.type) {
     case 'cohort_deaths':
       if (e.cause === 'famine' || e.cause === 'disease' || e.cause === 'war') {
@@ -285,19 +311,22 @@ const routeEvent = (history: ViewerHistory, day: Day, e: TickEvent): void => {
       addSettlementEvent(history, e.settlement, {
         day,
         kind: e.type,
-        summary: `raided (${e.cargoLost} taken, ${e.defendersKilled} dead)`,
+        summary: `raided by ${banditCampRef(e.by)} (${e.cargoLost} taken, ${e.defendersKilled} dead)`,
       });
       addCampEvent(history, e.by, {
         day,
         kind: e.type,
-        summary: `raided settlement (+${e.cargoLost} loot)`,
+        summary: `raided ${settlementRef(e.settlement)} (+${e.cargoLost} loot)`,
       });
       return;
     case 'caravan_robbed':
       addCaravanEvent(history, e.caravan, {
         day,
         kind: e.type,
-        summary: `robbed (${e.cargoLost} cargo lost)`,
+        summary:
+          e.by !== null
+            ? `robbed by ${banditCampRef(e.by)} (${e.cargoLost} cargo lost)`
+            : `robbed (${e.cargoLost} cargo lost)`,
       });
       if (e.by !== null) {
         addCampEvent(history, e.by, {
@@ -307,13 +336,25 @@ const routeEvent = (history: ViewerHistory, day: Day, e: TickEvent): void => {
         });
       }
       return;
-    case 'caravan_arrived':
+    case 'caravan_arrived': {
+      // Render the destination as a settlement name when we can resolve
+      // it; otherwise fall through to hex coords. We don't have a way to
+      // call into entityLinks here (renderer scope), so we just include
+      // the settlement placeholder when the hex contains a settlement.
+      let where = `(${e.at.q},${e.at.r})`;
+      for (const s of world.settlements.values()) {
+        if (s.anchor.q === e.at.q && s.anchor.r === e.at.r) {
+          where = settlementRef(s.id);
+          break;
+        }
+      }
       addCaravanEvent(history, e.caravan, {
         day,
         kind: e.type,
-        summary: `arrived at (${e.at.q},${e.at.r})`,
+        summary: `arrived at ${where}`,
       });
       return;
+    }
     case 'building_completed':
       addSettlementEvent(history, e.settlement, {
         day,
@@ -339,24 +380,24 @@ const routeEvent = (history: ViewerHistory, day: Day, e: TickEvent): void => {
       addSettlementEvent(history, e.through, {
         day,
         kind: e.type,
-        summary: `fenced loot (+${e.coinPaid} coin)`,
+        summary: `fenced loot for ${banditCampRef(e.camp)} (+${e.coinPaid} coin)`,
       });
       addCampEvent(history, e.camp, {
         day,
         kind: e.type,
-        summary: `fenced loot for ${e.coinPaid}`,
+        summary: `fenced loot through ${settlementRef(e.through)} for ${e.coinPaid}`,
       });
       return;
     case 'bandit_recruited':
       addSettlementEvent(history, e.fromSettlement, {
         day,
         kind: e.type,
-        summary: `${e.count} joined bandits`,
+        summary: `${e.count} joined ${banditCampRef(e.camp)}`,
       });
       addCampEvent(history, e.camp, {
         day,
         kind: e.type,
-        summary: `recruited ${e.count}`,
+        summary: `recruited ${e.count} from ${settlementRef(e.fromSettlement)}`,
       });
       return;
     case 'catchment_resized':
@@ -370,30 +411,27 @@ const routeEvent = (history: ViewerHistory, day: Day, e: TickEvent): void => {
       addSettlementEvent(history, e.fromSettlement, {
         day,
         kind: e.type,
-        summary: `tax → ${shortId(String(e.toSettlement))} (${e.grainModii}m, ${e.coin}c)`,
+        summary: `tax → ${settlementRef(e.toSettlement)} (${e.grainModii}m, ${e.coin}c)`,
       });
       addSettlementEvent(history, e.toSettlement, {
         day,
         kind: e.type,
-        summary: `tax ← ${shortId(String(e.fromSettlement))} (${e.grainModii}m, ${e.coin}c)`,
+        summary: `tax ← ${settlementRef(e.fromSettlement)} (${e.grainModii}m, ${e.coin}c)`,
       });
       return;
     case 'local_trade':
       addSettlementEvent(history, e.fromSettlement, {
         day,
         kind: e.type,
-        summary: `sold ${e.quantity} ${String(e.resource)} → ${shortId(String(e.toSettlement))}`,
+        summary: `sold ${e.quantity} ${String(e.resource)} → ${settlementRef(e.toSettlement)}`,
       });
       addSettlementEvent(history, e.toSettlement, {
         day,
         kind: e.type,
-        summary: `bought ${e.quantity} ${String(e.resource)} ← ${shortId(String(e.fromSettlement))}`,
+        summary: `bought ${e.quantity} ${String(e.resource)} ← ${settlementRef(e.fromSettlement)}`,
       });
       return;
     case 'caravan_traded': {
-      // Per-caravan transaction record: side + qty + resource + coin.
-      // Shown in the caravan popup's Transactions section so the player
-      // can see exactly what each unit bought / sold and for how much.
       const unitPrice = e.quantity > 0 ? e.coin / e.quantity : 0;
       const sign = e.side === 'sold' ? '+' : '−';
       const qtyStr = Number.isInteger(e.quantity)
@@ -402,7 +440,15 @@ const routeEvent = (history: ViewerHistory, day: Day, e: TickEvent): void => {
       addCaravanEvent(history, e.caravan, {
         day,
         kind: e.type,
-        summary: `${e.side} ${qtyStr} ${String(e.resource)} @ ${unitPrice.toFixed(2)} ${sign}${Math.round(e.coin)}c · ${shortId(String(e.settlement))}`,
+        summary: `${e.side} ${qtyStr} ${String(e.resource)} @ ${unitPrice.toFixed(2)} ${sign}${Math.round(e.coin)}c · ${settlementRef(e.settlement)}`,
+      });
+      // Mirror the trade on the settlement so the settlement's own log
+      // shows "Caelius's caravan bought 12 grain @ 1.10 …" with a link
+      // to the caravan.
+      addSettlementEvent(history, e.settlement, {
+        day,
+        kind: e.type,
+        summary: `[caravan:${String(e.caravan)}] ${e.side} ${qtyStr} ${String(e.resource)} @ ${unitPrice.toFixed(2)} ${sign}${Math.round(e.coin)}c`,
       });
       return;
     }
@@ -410,7 +456,7 @@ const routeEvent = (history: ViewerHistory, day: Day, e: TickEvent): void => {
       addCaravanEvent(history, e.caravan, {
         day,
         kind: e.type,
-        summary: `remitted ${Math.round(e.coin)}c to owner · ${shortId(String(e.settlement))}`,
+        summary: `remitted ${Math.round(e.coin)}c to owner · ${settlementRef(e.settlement)}`,
       });
       return;
     case 'caravan_exported_off_map':
@@ -423,10 +469,4 @@ const routeEvent = (history: ViewerHistory, day: Day, e: TickEvent): void => {
     default:
       return;
   }
-};
-
-const shortId = (id: string): string => {
-  const parts = id.split(':');
-  if (parts.length <= 1) return id.slice(-8);
-  return parts[parts.length - 1] ?? id;
 };

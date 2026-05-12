@@ -19,6 +19,7 @@ export const createNewsCarriersLayer = (
 ): NewsCarriersLayer => {
   return createUnitLayer(art, {
     defaultUnitKind: 'news_carrier',
+    enableHighlight: true,
     getEntities: function* (world: WorldState): Iterable<UnitView> {
       if (world.newsCarriers === undefined) return;
       for (const carrier of world.newsCarriers.values()) {

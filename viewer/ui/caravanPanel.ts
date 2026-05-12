@@ -9,6 +9,7 @@ import type { ViewerHistory } from '../state/history.js';
 import { createSparkline, fmtCompact } from './sparkline.js';
 import { createFactionLink } from './factionLink.js';
 import { findFactionByActor } from './factionScreen.js';
+import { appendEventSummary, hexDestinationNode } from './entityLinks.js';
 
 export interface CaravanPanel {
   update(world: WorldState): void;
@@ -51,7 +52,7 @@ export const createCaravanPanel = (opts: CaravanPanelOpts): CaravanPanel => {
 
     const name = document.createElement('h4');
     name.className = 'entity-name';
-    name.textContent = `Caravan ${String(c.id).slice(-12)}`;
+    name.textContent = `${ownerName}'s caravan`;
     root.appendChild(name);
 
     const meta = document.createElement('div');
@@ -86,14 +87,24 @@ export const createCaravanPanel = (opts: CaravanPanelOpts): CaravanPanel => {
     }
     meta.appendChild(ownerRow);
 
-    const rest = document.createElement('div');
-    rest.innerHTML =
-      `position: (${c.position.q}, ${c.position.r}) → ${
-        c.destination ? `(${c.destination.q}, ${c.destination.r})` : '—'
-      }<br>` +
+    // Position → destination line, with destination shown as a clickable
+    // settlement / camp link where possible.
+    const posLine = document.createElement('div');
+    posLine.appendChild(
+      document.createTextNode(`position: (${c.position.q}, ${c.position.r}) → `),
+    );
+    if (c.destination !== null) {
+      posLine.appendChild(hexDestinationNode(world, state, c.destination));
+    } else {
+      posLine.appendChild(document.createTextNode('—'));
+    }
+    meta.appendChild(posLine);
+
+    const stats = document.createElement('div');
+    stats.innerHTML =
       `crew ${totalCrew} · animals ${totalAnimals} · treasury ${Math.round(c.treasury)} coin<br>` +
       `health ${(c.health * 100).toFixed(0)}% · MP today ${Math.round(c.mpRemainingToday)}`;
-    meta.appendChild(rest);
+    meta.appendChild(stats);
     root.appendChild(meta);
 
     const cargoHeader = document.createElement('div');
@@ -128,7 +139,7 @@ export const createCaravanPanel = (opts: CaravanPanelOpts): CaravanPanel => {
 
     // Historical trajectories (cargo, treasury, health, route) over the last
     // ~30 days from the per-entity history buffer.
-    renderCaravanHistory(root, history, c.id);
+    renderCaravanHistory(root, history, c.id, world, state);
 
     const copy = document.createElement('button');
     copy.className = 'copy-btn';
@@ -170,6 +181,8 @@ const renderCaravanHistory = (
   root: HTMLElement,
   history: ViewerHistory,
   id: CaravanId,
+  world: WorldState,
+  state: ViewerState,
 ): void => {
   const buf = history.caravans.get(id);
   if (buf === undefined || buf.length < 2) return;
@@ -262,7 +275,8 @@ const renderCaravanHistory = (
       const row = document.createElement('div');
       row.style.color = 'var(--muted)';
       row.style.padding = '1px 0';
-      row.textContent = `d${e.day} · ${e.summary}`;
+      row.appendChild(document.createTextNode(`d${e.day} · `));
+      appendEventSummary(row, world, state, e.summary);
       list.appendChild(row);
     }
     root.appendChild(list);

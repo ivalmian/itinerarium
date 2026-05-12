@@ -23,6 +23,7 @@ import { createSparkline, fmtCompact } from './sparkline.js';
 import { createFactionLink } from './factionLink.js';
 import { findFactionByActor } from './factionScreen.js';
 import { popupEmpty, popupKv, popupSection } from './popup.js';
+import { appendEventSummary } from './entityLinks.js';
 
 export interface BanditCampPopupContent {
   readonly element: HTMLElement;
@@ -47,7 +48,7 @@ export const renderBanditCampPopup = (opts: BanditCampPopupOpts): BanditCampPopu
   root.appendChild(renderLootSection(camp));
   root.appendChild(renderDemographicsSection(camp));
   root.appendChild(renderHistorySection(camp, history));
-  const events = renderEventsSection(history, camp.id);
+  const events = renderEventsSection(world, history, camp.id, state);
   if (events !== null) root.appendChild(events);
 
   return {
@@ -268,7 +269,12 @@ const renderHistorySection = (camp: BanditCamp, history: ViewerHistory): HTMLEle
   return section;
 };
 
-const renderEventsSection = (history: ViewerHistory, id: BanditCampId): HTMLElement | null => {
+const renderEventsSection = (
+  world: WorldState,
+  history: ViewerHistory,
+  id: BanditCampId,
+  state: ViewerState,
+): HTMLElement | null => {
   const events = history.banditCampEvents.get(id);
   if (events === undefined || events.length === 0) return null;
   const section = popupSection('Recent actions & events');
@@ -281,7 +287,7 @@ const renderEventsSection = (history: ViewerHistory, id: BanditCampId): HTMLElem
     day.className = 'day';
     day.textContent = `d${e.day}`;
     row.appendChild(day);
-    row.appendChild(document.createTextNode(e.summary));
+    appendEventSummary(row, world, state, e.summary);
     list.appendChild(row);
   }
   section.appendChild(list);

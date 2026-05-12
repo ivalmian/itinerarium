@@ -128,7 +128,7 @@ export const createSidebar = (opts: SidebarOpts): Sidebar => {
   host.appendChild(selectedSection.root);
 
   const logSection = section('Event log');
-  const eventLog = createEventLog({ host: logSection.root });
+  const eventLog = createEventLog({ host: logSection.root, state });
   host.appendChild(logSection.root);
 
   // Rolling event window stored as per-day buckets.

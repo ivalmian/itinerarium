@@ -27,6 +27,7 @@ export interface CaravansLayer {
     visualDurationMs?: number,
   ): void;
   advanceVisual(world: WorldState, deltaMs: number, hexSize: number): void;
+  isIdle(): boolean;
   setHighlight(id: CaravanId | null): void;
 }
 
@@ -69,6 +70,7 @@ export const createCaravansLayer = (
       );
     },
     advanceVisual: (world, deltaMs, hexSize) => inner.advanceVisual(world, deltaMs, hexSize),
+    isIdle: () => inner.isIdle(),
     setHighlight: (id) => inner.setHighlight(id === null ? null : String(id)),
   };
 };

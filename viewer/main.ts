@@ -29,11 +29,12 @@ import { createRng } from '../src/sim/rng.js';
 import { createSplash, type SplashConfig } from './ui/splash.js';
 
 /**
- * How many sim ticks to run between event-loop yields. At 80×80 a single
- * tick is sub-millisecond; batching keeps the throughput high while still
- * giving the browser enough idle slots to repaint the progress bar.
+ * How many sim ticks to run between event-loop yields. The progress bar
+ * lives on a non-modal overlay shown after the splash is dismissed, and
+ * we want it to update visibly even on the first tick — so yield often.
+ * Sub-millisecond ticks make this cheap.
  */
-const BURNIN_YIELD_EVERY = 30;
+const BURNIN_YIELD_EVERY = 5;
 
 const showError = (err: unknown): void => {
   const msg = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ''}` : String(err);
@@ -56,6 +57,11 @@ const runBurnin = async (
   onProgress: (current: number, total: number) => void,
 ): Promise<void> => {
   onProgress(0, totalDays);
+  // Yield before the first tick so the caller's overlay actually paints
+  // before we start churning ticks (otherwise the synchronous burn-in
+  // loop blocks the browser's first paint and the user sees nothing
+  // change for the first batch of days).
+  await sleep0();
   if (totalDays <= 0) return;
   for (let i = 0; i < totalDays; i++) {
     const today = world.day;
@@ -163,24 +169,79 @@ const start = async (): Promise<void> => {
     host: document.body,
     defaults,
     onStart: (config) => {
-      // Wire progress reporting to the live splash controls.
+      // Tear down the splash UI immediately so the user sees the screen
+      // change the instant they click Start — burn-in runs against a
+      // small floating progress overlay attached to the body, not the
+      // splash card.
+      splash.destroy();
+      const overlay = createBurninOverlay(document.body);
+      const totalDays = Math.max(0, config.burninYears) * 365;
+      overlay.update(0, totalDays);
       currentOnProgress = (current, total): void => {
-        splash.showProgress(current, total);
+        overlay.update(current, total);
       };
-      // Switch the splash UI into progress mode immediately.
-      splash.showProgress(0, Math.max(0, config.burninYears) * 365);
       void (async (): Promise<void> => {
         try {
           await startSession(config);
-          splash.destroy();
+          overlay.destroy();
         } catch (e) {
-          splash.showError(e instanceof Error ? e.message : String(e));
+          overlay.destroy();
           showError(e);
         }
       })();
     },
   });
   splash.show();
+};
+
+/**
+ * Lightweight progress overlay shown *after* the splash card is gone, so
+ * the user sees an immediate transition on Start. Sits in the corner of
+ * the page so the (still-empty) map background can already paint
+ * underneath. Replaced/destroyed once `bootViewer` resolves.
+ */
+interface BurninOverlay {
+  update(current: number, total: number): void;
+  destroy(): void;
+}
+
+const createBurninOverlay = (host: HTMLElement): BurninOverlay => {
+  const root = document.createElement('div');
+  root.className = 'burnin-overlay';
+  root.style.cssText =
+    'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);' +
+    'background:rgba(20,17,14,0.92);color:#e9e2d2;border:1px solid #3d3528;' +
+    'padding:14px 22px;z-index:300;min-width:300px;font-family:inherit;' +
+    'box-shadow:0 8px 32px rgba(0,0,0,0.6);';
+  const label = document.createElement('div');
+  label.style.cssText =
+    'font-size:12px;color:#9b8f77;margin-bottom:8px;font-variant-numeric:tabular-nums;';
+  label.textContent = 'Building world…';
+  root.appendChild(label);
+  const bar = document.createElement('div');
+  bar.style.cssText =
+    'width:100%;height:8px;background:#2a241c;border:1px solid #3d3528;overflow:hidden;';
+  const inner = document.createElement('div');
+  inner.style.cssText =
+    'height:100%;background:#d2a44b;width:0%;transition:width 80ms linear;';
+  bar.appendChild(inner);
+  root.appendChild(bar);
+  host.appendChild(root);
+  return {
+    update(current, total): void {
+      if (total <= 0) {
+        label.textContent = 'Building world…';
+        inner.style.width = '100%';
+        return;
+      }
+      const pct = Math.min(100, (current / total) * 100);
+      label.textContent = `Burning in ${current}/${total} days…`;
+      inner.style.width = `${pct.toFixed(1)}%`;
+    },
+    destroy(): void {
+      root.remove();
+    },
+  };
 };
 
 if (document.readyState === 'loading') {
