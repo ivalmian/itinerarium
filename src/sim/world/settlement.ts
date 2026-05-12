@@ -190,6 +190,15 @@ export interface Settlement {
   readonly buildings: SettlementBuilding[];
   readonly factions: FactionId[];
   readonly stockpileOwners: ActorId[];
+  /**
+   * Per docs/15 §C29: client villages point to the patrician family that
+   * collects their quarterly tribute. Free villages, hamlets, towns, and
+   * cities leave this undefined. The patron is NOT added to
+   * `stockpileOwners` — they collect coin tribute via `tributePhase`,
+   * they do not co-own the village's harvest. See
+   * docs/11-politics-and-ownership.md §"Patron-client villages".
+   */
+  clientPatron?: ActorId;
   readonly market: MarketSnapshot;
   /**
    * Population at the most recent catchment recompute. Initialized at procgen
@@ -265,6 +274,8 @@ export interface CreateSettlementInput {
   readonly catchmentHexes: readonly Hex[];
   readonly factions?: readonly FactionId[];
   readonly stockpileOwners?: readonly ActorId[];
+  /** Per docs/15 §C29: optional patrician_family this settlement pays tribute to. */
+  readonly clientPatron?: ActorId;
   /**
    * Initial baseline pop for catchment recompute. Defaults to 0 so newly
    * created (test-stub) settlements behave the same as before; procgen
@@ -321,6 +332,7 @@ export const createSettlement = (input: CreateSettlementInput): Settlement => {
     pendingDemolitions: [],
     factions: input.factions ? [...input.factions] : [],
     stockpileOwners: input.stockpileOwners ? [...input.stockpileOwners] : [],
+    ...(input.clientPatron !== undefined ? { clientPatron: input.clientPatron } : {}),
     market: {
       recentImports: new Map(),
       recentExports: new Map(),

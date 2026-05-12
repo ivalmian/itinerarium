@@ -141,6 +141,8 @@ interface SerializedSettlement {
   readonly buildings: readonly SerializedSettlementBuilding[];
   readonly factions: readonly string[];
   readonly stockpileOwners: readonly string[];
+  /** Per docs/15 §C29: optional patron for client villages. */
+  readonly clientPatron?: string;
   readonly market: SerializedMarketSnapshot;
   /** Optional for back-compat with snapshots from before C3/C6 landed. */
   readonly catchmentBaselinePop?: number;
@@ -153,7 +155,11 @@ interface SerializedActor {
   readonly kind: Actor['kind'];
   readonly name: string;
   readonly homeSettlement?: string;
-  readonly stockpile: ReadonlyArray<readonly [string, number]>;
+  /**
+   * Per docs/15 §C30: actor stockpile is keyed by settlement. Serialized
+   * as `[settlementId, [[resourceId, quantity], ...]][]`.
+   */
+  readonly stockpile: ReadonlyArray<readonly [string, ReadonlyArray<readonly [string, number]>]>;
   readonly treasury: number;
 }
 
@@ -374,6 +380,7 @@ const serializeSettlement = (s: Settlement): SerializedSettlement => {
     })),
     factions: s.factions.map(String),
     stockpileOwners: s.stockpileOwners.map(String),
+    ...(s.clientPatron !== undefined ? { clientPatron: String(s.clientPatron) } : {}),
     market: {
       recentImports: stringMapToArray(s.market.recentImports),
       recentExports: stringMapToArray(s.market.recentExports),
@@ -408,6 +415,7 @@ const deserializeSettlement = (s: SerializedSettlement): Settlement => {
     catchmentHexes: s.catchmentHexes.map(deserHex),
     factions: s.factions.map(factionId),
     stockpileOwners: s.stockpileOwners.map(actorId),
+    ...(s.clientPatron !== undefined ? { clientPatron: actorId(s.clientPatron) } : {}),
     ...(s.catchmentBaselinePop !== undefined
       ? { catchmentBaselinePop: s.catchmentBaselinePop }
       : {}),
@@ -493,14 +501,22 @@ const deserializeSettlement = (s: SerializedSettlement): Settlement => {
 
 // --- Actor / Faction / Character / Caravan ---------------------------------
 
-const serializeActor = (a: Actor): SerializedActor => ({
-  id: String(a.id),
-  kind: a.kind,
-  name: a.name,
-  ...(a.homeSettlement !== undefined ? { homeSettlement: String(a.homeSettlement) } : {}),
-  stockpile: stringMapToArray(a.stockpile),
-  treasury: a.treasury,
-});
+const serializeActor = (a: Actor): SerializedActor => {
+  const stockpile: Array<readonly [string, ReadonlyArray<readonly [string, number]>]> = [];
+  for (const [sId, slice] of a.stockpile) {
+    const entries: Array<readonly [string, number]> = [];
+    for (const [r, q] of slice) entries.push([String(r), q] as const);
+    stockpile.push([String(sId), entries] as const);
+  }
+  return {
+    id: String(a.id),
+    kind: a.kind,
+    name: a.name,
+    ...(a.homeSettlement !== undefined ? { homeSettlement: String(a.homeSettlement) } : {}),
+    stockpile,
+    treasury: a.treasury,
+  };
+};
 
 const deserializeActor = (a: SerializedActor): Actor => {
   const actor = createActor({
@@ -510,8 +526,11 @@ const deserializeActor = (a: SerializedActor): Actor => {
     ...(a.homeSettlement !== undefined ? { homeSettlement: settlementId(a.homeSettlement) } : {}),
     treasury: a.treasury,
   });
-  for (const [r, n] of a.stockpile) {
-    actor.stockpile.set(resourceId(r), n);
+  for (const [sIdStr, entries] of a.stockpile) {
+    const sId = settlementId(sIdStr);
+    const slice = new Map<ResourceId, number>();
+    for (const [r, n] of entries) slice.set(resourceId(r), n);
+    if (slice.size > 0) actor.stockpile.set(sId, slice);
   }
   return actor;
 };
@@ -746,6 +765,7 @@ export const deserializeWorld = (snap: WorldSnapshot): WorldState => {
     caravans,
     patrols: new Map(),
     banditCamps: new Map(),
+    banditParties: new Map(),
     newsCarriers: new Map(),
     reputation: deserializeReputation(w.reputation),
     bySite: w.bySite.map(deserializeSite),

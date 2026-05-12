@@ -35,6 +35,9 @@ import { createBuildingsLayer, type BuildingsLayer } from './map/buildings.js';
 import { createSettlementsLayer, type SettlementsLayer } from './map/settlements.js';
 import { createCaravansLayer, type CaravansLayer } from './map/caravans.js';
 import { createBanditCampsLayer, type BanditCampsLayer } from './map/banditCamps.js';
+import { createPatrolsLayer, type PatrolsLayer } from './map/patrols.js';
+import { createNewsCarriersLayer, type NewsCarriersLayer } from './map/newsCarriers.js';
+import { createBanditPartiesLayer, type BanditPartiesLayer } from './map/banditParties.js';
 import { applyOverlay } from './map/overlays.js';
 import { DEFAULT_HEX_SIZE, hexToPixel, pixelToHex } from './map/coords.js';
 import { loadArt, type ArtRegistry } from './art/index.js';
@@ -122,6 +125,9 @@ interface BuildResult {
   settlementsLayer: SettlementsLayer;
   caravansLayer: CaravansLayer;
   banditCampsLayer: BanditCampsLayer;
+  banditPartiesLayer: BanditPartiesLayer;
+  patrolsLayer: PatrolsLayer;
+  newsCarriersLayer: NewsCarriersLayer;
   worldRoot: Container;
 }
 
@@ -234,6 +240,16 @@ const buildLayers = (
   });
   worldRoot.addChild(banditCampsLayer.container);
 
+  // Patrols + news carriers + bandit parties — moving sim entities that
+  // previously had glyphs in the art registry but no map layer. Per
+  // docs/15 §C32 every moving sim entity gets a visible sprite.
+  const patrolsLayer = createPatrolsLayer(art);
+  worldRoot.addChild(patrolsLayer.container);
+  const newsCarriersLayer = createNewsCarriersLayer(art);
+  worldRoot.addChild(newsCarriersLayer.container);
+  const banditPartiesLayer = createBanditPartiesLayer(art);
+  worldRoot.addChild(banditPartiesLayer.container);
+
   // Initial sync.
   catchmentLayer.rebuild(world, hexSize);
   buildingsLayer.rebuild(world, hexSize);
@@ -241,6 +257,9 @@ const buildLayers = (
   caravansLayer.syncTick(world, undefined, hexSize, caravanVisualDurationMs(state));
   caravansLayer.advanceVisual(world, 0, hexSize);
   banditCampsLayer.sync(world, hexSize);
+  patrolsLayer.syncTick(world, hexSize);
+  newsCarriersLayer.syncTick(world, hexSize);
+  banditPartiesLayer.syncTick(world, hexSize);
 
   // Center the world initially.
   const cx = (hexMap.bounds.minX + hexMap.bounds.maxX) / 2;
@@ -256,6 +275,9 @@ const buildLayers = (
     settlementsLayer,
     caravansLayer,
     banditCampsLayer,
+    banditPartiesLayer,
+    patrolsLayer,
+    newsCarriersLayer,
     worldRoot,
   };
 };
@@ -662,6 +684,9 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     sidebar.update(world, result.events);
     layers.settlementsLayer.sync(world, hexSize);
     layers.banditCampsLayer.sync(world, hexSize);
+    layers.patrolsLayer.syncTick(world, hexSize);
+    layers.newsCarriersLayer.syncTick(world, hexSize);
+    layers.banditPartiesLayer.syncTick(world, hexSize);
 
     // Rebuild building markers if a tick produced a building_completed event;
     // rebuild catchment shading on catchment_resized; rebuild road layer
@@ -735,6 +760,9 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     const visualDeltaMs = Math.max(0, now - lastCaravanVisualFrameMs);
     lastCaravanVisualFrameMs = now;
     layers.caravansLayer.advanceVisual(world, visualDeltaMs, hexSize);
+    layers.patrolsLayer.advanceVisual(world, visualDeltaMs, hexSize);
+    layers.newsCarriersLayer.advanceVisual(world, visualDeltaMs, hexSize);
+    layers.banditPartiesLayer.advanceVisual(world, visualDeltaMs, hexSize);
     if (!state.paused && state.speed > 0) {
       // Draw interpolation before advancing the sim. At high speeds, visual
       // interpolation is deliberately slower than sim time; the caravan layer

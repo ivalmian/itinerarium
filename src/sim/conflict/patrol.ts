@@ -54,6 +54,16 @@ export interface Patrol {
   daysOnPatrol: number;
   /** Days since last engagement / inspection event. */
   daysWithoutEngagement: number;
+  /**
+   * Per docs/15 §C32: pursuit state. When set, the patrol deviates from
+   * its cyclic route to chase a visible bandit (camp or party) at
+   * `targetHex`. If `daysActive` exceeds the give-up budget (3 days by
+   * default), the patrol clears pursuit and resumes its route.
+   */
+  pursuit?: {
+    targetHex: Hex;
+    daysActive: number;
+  };
 }
 
 export interface CreatePatrolInput {
@@ -167,9 +177,7 @@ export const createPatrol = (input: CreatePatrolInput): Patrol => {
     route: input.route.map(cloneHex),
     routeIndex: 0,
     unit: cloneUnit(input.unit),
-    ...(input.demographics !== undefined
-      ? { demographics: new Map(input.demographics) }
-      : {}),
+    ...(input.demographics !== undefined ? { demographics: new Map(input.demographics) } : {}),
     daysOnPatrol: 0,
     daysWithoutEngagement: 0,
   };

@@ -497,6 +497,27 @@ Family caravans (run by a patrician family) have additional
 priorities: moving family goods to market, supplying the family
 town house, returning rents in kind from owned villages.
 
+**Villager caravans** (docs/15 §C31) are a separate sub-type
+dispatched by free-village stewards to the nearest city. Same
+planner logic, but smaller: 2-4 mules + 1 drover + 1 guard, no
+light cart, operating treasury 50-250 coin. The dispatch trigger
+covers the everyday Roman village ↔ city flow:
+
+- **surplus run** — village has any exportable inventory (food,
+  fibre, wood, hides, livestock, cloth) above ~14 days of local
+  use;
+- **import trip** — steward has accumulated ≥200 coin to buy
+  city-made goods (pottery / oil / wine / salt / iron tools)
+  the village can't make itself;
+- **hard-times resupply** — village grain is under 7 days of
+  subsistence AND the steward has any cash, so coin drains out
+  to fund a buy-back run.
+
+The caravan's ID carries the `villager-` prefix so the viewer
+renders it with the dedicated handcart glyph. Per-village cap = 1
+active. Separate fleet target (~0.5 × village count) so they don't
+crowd the standing merchant fleet.
+
 Long-haul houses additionally use the global-market reference prices
 to evaluate export routes (see
 [08 — Money & Trade](08-money-and-trade.md)).

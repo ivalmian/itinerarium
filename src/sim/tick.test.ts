@@ -8,7 +8,14 @@ import { createGrid } from './world/grid.js';
 import { hex } from './world/hex.js';
 import type { HexTile } from './world/terrain.js';
 import { createSettlement, type Settlement } from './world/settlement.js';
-import { createActor, type Actor } from './politics/actor.js';
+import {
+  addStockAt,
+  createActor,
+  getStockAt,
+  removeStockAt,
+  type Actor,
+} from './politics/actor.js';
+import type { ResourceId } from './types.js';
 import { createFaction, type Faction } from './politics/faction.js';
 import { createCharacter, type NamedCharacter } from './politics/character.js';
 import { createReputationTable } from './reputation/table.js';
@@ -34,6 +41,26 @@ import {
 import { createRng } from './rng.js';
 import type { WorldState } from '../procgen/seed.js';
 import { tick, type TickEvent, type TickResult } from './tick.js';
+
+// Test helpers: most actors in this file are single-settlement; collapse the
+// per-settlement stockpile shape (docs/15 §C30) into a pair of one-line
+// helpers keyed by `actor.homeSettlement`. Tests that legitimately want
+// multi-settlement inventory call addStockAt/getStockAt directly.
+const stockSettlementFor = (a: Actor): SettlementId => {
+  if (a.homeSettlement === undefined) {
+    throw new Error(
+      `test stockpile helper requires actor.homeSettlement (actor ${String(a.id)}, kind=${a.kind})`,
+    );
+  }
+  return a.homeSettlement;
+};
+const setStock = (a: Actor, r: ResourceId, q: number): void => {
+  const s = stockSettlementFor(a);
+  const existing = getStockAt(a, s, r);
+  if (existing > 0) removeStockAt(a, s, r, existing);
+  if (q > 0) addStockAt(a, s, r, q);
+};
+const getStock = (a: Actor, r: ResourceId): number => getStockAt(a, stockSettlementFor(a), r);
 
 // --- Test fixture builders --------------------------------------------------
 
@@ -142,13 +169,13 @@ const buildOneSettlementWorld = (opts: OneSettlementOpts = {}): WorldState => {
     treasury: 5000,
   });
   if ((opts.grainModii ?? 0) > 0) {
-    cityActor.stockpile.set(resourceId('food.grain'), opts.grainModii!);
+    setStock(cityActor, resourceId('food.grain'), opts.grainModii!);
   }
   if ((opts.flourSacks ?? 0) > 0) {
-    cityActor.stockpile.set(resourceId('food.flour'), opts.flourSacks!);
+    setStock(cityActor, resourceId('food.flour'), opts.flourSacks!);
   }
   if ((opts.woodCords ?? 0) > 0) {
-    cityActor.stockpile.set(resourceId('material.wood'), opts.woodCords!);
+    setStock(cityActor, resourceId('material.wood'), opts.woodCords!);
   }
 
   const headman = createCharacter({
@@ -254,11 +281,11 @@ describe('tick (per-day loop)', () => {
         grainModii: 500,
         addMill: true,
       });
-      const before =
-        w.actors.get(actorId('city-corp-1'))?.stockpile.get(resourceId('food.flour')) ?? 0;
+      const flour = resourceId('food.flour');
+      const corp1 = w.actors.get(actorId('city-corp-1'));
+      const before = corp1 !== undefined ? getStock(corp1, flour) : 0;
       tick({ world: w, rng: createRng('mill-2') });
-      const after =
-        w.actors.get(actorId('city-corp-1'))?.stockpile.get(resourceId('food.flour')) ?? 0;
+      const after = corp1 !== undefined ? getStock(corp1, flour) : 0;
       expect(after).toBeGreaterThan(before);
     });
 
@@ -294,7 +321,7 @@ describe('tick (per-day loop)', () => {
         homeSettlement: sId,
         treasury: 0,
       });
-      owner.stockpile.set(silver, 1);
+      setStock(owner, silver, 1);
       w.settlements.set(sId, settlement);
       w.actors.set(ownerId, owner);
 
@@ -304,8 +331,8 @@ describe('tick (per-day loop)', () => {
         eventsOfType(result.events, 'recipe_ran').some((e) => String(e.recipe) === 'mint_coin'),
       ).toBe(true);
       expect(owner.treasury).toBeCloseTo(100, 6);
-      expect(owner.stockpile.get(coin) ?? 0).toBe(0);
-      expect(owner.stockpile.get(silver)).toBeCloseTo(0.6, 6);
+      expect(getStock(owner, coin) ?? 0).toBe(0);
+      expect(getStock(owner, silver)).toBeCloseTo(0.6, 6);
     });
 
     it('idles production when the owner already holds the output stock target', () => {
@@ -317,14 +344,14 @@ describe('tick (per-day loop)', () => {
       });
       const owner = w.actors.get(actorId('city-corp-1'));
       if (owner === undefined) throw new Error('missing owner');
-      const beforeFlour = owner.stockpile.get(resourceId('food.flour')) ?? 0;
+      const beforeFlour = getStock(owner, resourceId('food.flour')) ?? 0;
 
       const r = tick({ world: w, rng: createRng('mill-output-stock-target') });
 
       expect(
         eventsOfType(r.events, 'recipe_ran').some((e) => String(e.recipe) === 'mill_grain'),
       ).toBe(false);
-      expect(owner.stockpile.get(resourceId('food.flour')) ?? 0).toBeLessThanOrEqual(beforeFlour);
+      expect(getStock(owner, resourceId('food.flour')) ?? 0).toBeLessThanOrEqual(beforeFlour);
     });
 
     it('resets daily building capacity to the installed per-building maximum', () => {
@@ -370,9 +397,10 @@ describe('tick (per-day loop)', () => {
         }),
       );
 
-      const before = owner?.stockpile.get(resourceId('food.bread')) ?? 0;
+      const bread = resourceId('food.bread');
+      const before = owner !== undefined ? getStock(owner, bread) : 0;
       const r = tick({ world: w, rng: createRng('cash-blocks-paid-production') });
-      const after = owner?.stockpile.get(resourceId('food.bread')) ?? 0;
+      const after = owner !== undefined ? getStock(owner, bread) : 0;
 
       expect(after).toBe(before);
       expect(eventsOfType(r.events, 'recipe_blocked').some((e) => e.reason === 'cash')).toBe(true);
@@ -414,8 +442,8 @@ describe('tick (per-day loop)', () => {
         homeSettlement: sId,
         treasury: 0,
       });
-      producer.stockpile.set(grain, 5);
-      producer.stockpile.set(tools, 1);
+      setStock(producer, grain, 5);
+      setStock(producer, tools, 1);
       const household = createActor({
         id: householdId,
         kind: 'plebeian_household',
@@ -470,7 +498,7 @@ describe('tick (per-day loop)', () => {
           capacity: 10,
           daysSinceMaintained: 0,
         });
-        owner.stockpile.set(resourceId('goods.tools'), 100);
+        setStock(owner, resourceId('goods.tools'), 100);
         return w;
       };
 
@@ -512,7 +540,10 @@ describe('tick (per-day loop)', () => {
           (e) => String(e.recipe) === 'mine_iron',
         ),
       ).toBe(true);
-      expect(owner?.stockpile.get(resourceId('mineral.iron_ore')) ?? 0).toBeCloseTo(5, 6);
+      expect(owner !== undefined ? getStock(owner, resourceId('mineral.iron_ore')) : 0).toBeCloseTo(
+        5,
+        6,
+      );
       expect(withDepositWorld.grid.get(hex(1, 0))?.deposit).toBeUndefined();
     });
 
@@ -569,8 +600,8 @@ describe('tick (per-day loop)', () => {
         homeSettlement: sId,
         treasury: 100,
       });
-      producer.stockpile.set(grain, 5);
-      producer.stockpile.set(tools, 1);
+      setStock(producer, grain, 5);
+      setStock(producer, tools, 1);
       const household = createActor({
         id: householdId,
         kind: 'hamlet_household',
@@ -625,8 +656,8 @@ describe('tick (per-day loop)', () => {
         homeSettlement: sId,
         treasury: 0,
       });
-      producer.stockpile.set(grain, 5);
-      producer.stockpile.set(tools, 1);
+      setStock(producer, grain, 5);
+      setStock(producer, tools, 1);
       const household = createActor({
         id: householdId,
         kind: 'hamlet_household',
@@ -681,8 +712,8 @@ describe('tick (per-day loop)', () => {
         homeSettlement: sId,
         treasury: 100,
       });
-      producer.stockpile.set(grain, 5);
-      producer.stockpile.set(tools, 1);
+      setStock(producer, grain, 5);
+      setStock(producer, tools, 1);
 
       w.settlements.set(sId, settlement);
       w.actors.set(producerId, producer);
@@ -702,11 +733,11 @@ describe('tick (per-day loop)', () => {
         populationByClass: { plebeian: 1000 },
         grainModii: 200,
       });
-      const before =
-        w.actors.get(actorId('city-corp-1'))?.stockpile.get(resourceId('food.grain')) ?? 0;
+      const corp1 = w.actors.get(actorId('city-corp-1'));
+      const grain = resourceId('food.grain');
+      const before = corp1 !== undefined ? getStock(corp1, grain) : 0;
       tick({ world: w, rng: createRng('cons-1') });
-      const after =
-        w.actors.get(actorId('city-corp-1'))?.stockpile.get(resourceId('food.grain')) ?? 0;
+      const after = corp1 !== undefined ? getStock(corp1, grain) : 0;
       const drained = before - after;
       expect(drained).toBeGreaterThan(55);
       expect(drained).toBeLessThan(65);
@@ -739,7 +770,7 @@ describe('tick (per-day loop)', () => {
         homeSettlement: sId,
         treasury: 0,
       });
-      seller.stockpile.set(grain, 100);
+      setStock(seller, grain, 100);
       const buyer = createActor({
         id: buyerId,
         kind: 'plebeian_household',
@@ -754,7 +785,7 @@ describe('tick (per-day loop)', () => {
 
       const result = tick({ world: w, rng: createRng('tenant-rations') });
 
-      expect(seller.stockpile.get(grain) ?? 0).toBe(100);
+      expect(getStock(seller, grain) ?? 0).toBe(100);
       expect(seller.treasury).toBe(0);
       expect(buyer.treasury).toBe(0);
       expect(eventsOfType(result.events, 'market_cleared').some((e) => e.resource === grain)).toBe(
@@ -809,7 +840,7 @@ describe('tick (per-day loop)', () => {
         homeSettlement: sId,
         treasury: 0,
       });
-      seller.stockpile.set(flour, 100);
+      setStock(seller, flour, 100);
       const household = createActor({
         id: householdId,
         kind: 'hamlet_household',
@@ -828,10 +859,10 @@ describe('tick (per-day loop)', () => {
 
       expect(flourClear).toBeDefined();
       expect(settlement.market.lastClearingPrice.get(flour)).toBeGreaterThan(0);
-      expect(seller.stockpile.get(flour)).toBeLessThan(100);
+      expect(getStock(seller, flour)).toBeLessThan(100);
       expect(seller.treasury).toBeGreaterThan(0);
       expect(household.treasury).toBeLessThan(beforeHouseholdTreasury);
-      expect(household.stockpile.get(flour) ?? 0).toBe(0);
+      expect(getStock(household, flour) ?? 0).toBe(0);
     });
 
     it('buys perishable local foods as priced fallback rations', () => {
@@ -862,7 +893,7 @@ describe('tick (per-day loop)', () => {
           homeSettlement: sId,
           treasury: 0,
         });
-        seller.stockpile.set(ration, 100);
+        setStock(seller, ration, 100);
         const household = createActor({
           id: householdId,
           kind: 'hamlet_household',
@@ -881,10 +912,10 @@ describe('tick (per-day loop)', () => {
 
         expect(cleared).toBeDefined();
         expect(settlement.market.lastClearingPrice.get(ration)).toBeGreaterThan(0);
-        expect(seller.stockpile.get(ration) ?? 0).toBeLessThan(100);
+        expect(getStock(seller, ration) ?? 0).toBeLessThan(100);
         expect(seller.treasury).toBeGreaterThan(0);
         expect(household.treasury).toBeLessThan(beforeHouseholdTreasury);
-        expect(household.stockpile.get(ration) ?? 0).toBe(0);
+        expect(getStock(household, ration) ?? 0).toBe(0);
       }
     });
 
@@ -904,11 +935,11 @@ describe('tick (per-day loop)', () => {
       });
       w.actors.set(household.id, household);
       settlement.stockpileOwners.push(household.id);
-      city.stockpile.set(resourceId('food.bread'), 100);
+      setStock(city, resourceId('food.bread'), 100);
 
-      const before = city.stockpile.get(resourceId('food.bread')) ?? 0;
+      const before = getStock(city, resourceId('food.bread')) ?? 0;
       const result = tick({ world: w, rng: createRng('civic-ration-self-provision') });
-      const after = city.stockpile.get(resourceId('food.bread')) ?? 0;
+      const after = getStock(city, resourceId('food.bread')) ?? 0;
 
       expect(after).toBeLessThan(before);
       expect(household.treasury).toBe(0);
@@ -1186,7 +1217,7 @@ describe('tick (per-day loop)', () => {
       const city = w.actors.get(actorId('city-corp-1'));
       if (settlement === undefined || city === undefined) throw new Error('missing fixture');
       const tools = resourceId('goods.tools');
-      city.stockpile.set(tools, 100);
+      setStock(city, tools, 100);
       settlement.market.lastClearingPrice.set(tools, 2500);
 
       tick({ world: w, rng: createRng('mkt-seller-ask-no-bid') });
@@ -1203,7 +1234,7 @@ describe('tick (per-day loop)', () => {
       const city = w.actors.get(actorId('city-corp-1'));
       if (settlement === undefined || city === undefined) throw new Error('missing fixture');
       const cart = resourceId('goods.cart');
-      city.stockpile.set(cart, 10);
+      setStock(city, cart, 10);
       settlement.market.lastClearingPrice.set(cart, 200_000);
 
       tick({ world: w, rng: createRng('mkt-cart-seller-ask-ceiling') });
@@ -1266,7 +1297,7 @@ describe('tick (per-day loop)', () => {
         homeSettlement: sId,
         treasury: 0,
       });
-      owner.stockpile.set(cheese, 100);
+      setStock(owner, cheese, 100);
       const caravan = createCaravan({
         id: cId,
         ownerActor: ownerId,
@@ -1324,7 +1355,7 @@ describe('tick (per-day loop)', () => {
         homeSettlement: sId,
         treasury: 0,
       });
-      seller.stockpile.set(flour, 50);
+      setStock(seller, flour, 50);
       const baker = createActor({
         id: bakerId,
         kind: 'city_corporation',
@@ -1342,8 +1373,8 @@ describe('tick (per-day loop)', () => {
       const flourClear = eventsOfType(r.events, 'market_cleared').find((e) => e.resource === flour);
 
       expect(flourClear).toBeDefined();
-      expect(baker.stockpile.get(flour)).toBeGreaterThan(0);
-      expect(seller.stockpile.get(flour)).toBeLessThan(50);
+      expect(getStock(baker, flour)).toBeGreaterThan(0);
+      expect(getStock(seller, flour)).toBeLessThan(50);
       expect(baker.treasury).toBeLessThan(beforeBakerTreasury);
       expect(seller.treasury).toBeGreaterThan(0);
     });
@@ -1375,7 +1406,7 @@ describe('tick (per-day loop)', () => {
         homeSettlement: sId,
         treasury: 0,
       });
-      seller.stockpile.set(wine, 50);
+      setStock(seller, wine, 50);
       const household = createActor({
         id: householdId,
         kind: 'hamlet_household',
@@ -1393,10 +1424,10 @@ describe('tick (per-day loop)', () => {
       const wineClear = eventsOfType(r.events, 'market_cleared').find((e) => e.resource === wine);
 
       expect(wineClear).toBeDefined();
-      expect(seller.stockpile.get(wine)).toBeLessThan(50);
+      expect(getStock(seller, wine)).toBeLessThan(50);
       expect(seller.treasury).toBeGreaterThan(0);
       expect(household.treasury).toBeLessThan(beforeHouseholdTreasury);
-      expect(household.stockpile.get(wine) ?? 0).toBe(0);
+      expect(getStock(household, wine) ?? 0).toBe(0);
     });
 
     it('clears institutional procurement demand and consumes upkeep goods', () => {
@@ -1433,7 +1464,7 @@ describe('tick (per-day loop)', () => {
         homeSettlement: sId,
         treasury: 0,
       });
-      seller.stockpile.set(weapons, 2);
+      setStock(seller, weapons, 2);
       const buyer = createActor({
         id: barracksOwnerId,
         kind: 'governor_office',
@@ -1451,13 +1482,13 @@ describe('tick (per-day loop)', () => {
       const cleared = eventsOfType(r.events, 'market_cleared').find((e) => e.resource === weapons);
 
       expect(cleared).toBeDefined();
-      expect(seller.stockpile.get(weapons)).toBeLessThan(2);
+      expect(getStock(seller, weapons)).toBeLessThan(2);
       expect(seller.treasury).toBeGreaterThan(0);
       expect(buyer.treasury).toBeLessThan(beforeBuyerTreasury);
       // Per docs/15 §C26 the governor also market-makes — they may end
       // with a small residual MM stockpile alongside the consumed
       // institutional procurement. Allow up to 1 unit of residual.
-      expect(buyer.stockpile.get(weapons) ?? 0).toBeLessThan(1);
+      expect(getStock(buyer, weapons) ?? 0).toBeLessThan(1);
     });
 
     it('clears local service capacity for coin without creating stockpile cargo', () => {
@@ -1516,8 +1547,8 @@ describe('tick (per-day loop)', () => {
       expect(cleared?.volume).toBeGreaterThan(0);
       expect(templeOwner.treasury).toBeGreaterThan(0);
       expect(household.treasury).toBeLessThan(beforeHouseholdTreasury);
-      expect(templeOwner.stockpile.get(priesthood) ?? 0).toBe(0);
-      expect(household.stockpile.get(priesthood) ?? 0).toBe(0);
+      expect(getStock(templeOwner, priesthood) ?? 0).toBe(0);
+      expect(getStock(household, priesthood) ?? 0).toBe(0);
     });
 
     it('clears public works service for pending construction without cargo', () => {
@@ -1587,8 +1618,8 @@ describe('tick (per-day loop)', () => {
       expect(cleared?.volume).toBeGreaterThan(0);
       expect(forumOwner.treasury).toBeGreaterThan(0);
       expect(patron.treasury).toBeLessThan(beforePatronTreasury);
-      expect(forumOwner.stockpile.get(publicWorks) ?? 0).toBe(0);
-      expect(patron.stockpile.get(publicWorks) ?? 0).toBe(0);
+      expect(getStock(forumOwner, publicWorks) ?? 0).toBe(0);
+      expect(getStock(patron, publicWorks) ?? 0).toBe(0);
     });
 
     it('lets producers buy required herd capital that is present but not consumed', () => {
@@ -1627,7 +1658,7 @@ describe('tick (per-day loop)', () => {
         homeSettlement: sId,
         treasury: 0,
       });
-      seller.stockpile.set(cattle, 1);
+      setStock(seller, cattle, 1);
       const dairyOwner = createActor({
         id: dairyOwnerId,
         kind: 'city_corporation',
@@ -1646,8 +1677,8 @@ describe('tick (per-day loop)', () => {
 
       expect(cleared).toBeDefined();
       expect(cleared?.volume).toBeGreaterThan(0);
-      expect(dairyOwner.stockpile.get(cattle) ?? 0).toBeGreaterThan(0);
-      expect(seller.stockpile.get(cattle) ?? 0).toBeLessThan(1);
+      expect(getStock(dairyOwner, cattle) ?? 0).toBeGreaterThan(0);
+      expect(getStock(seller, cattle) ?? 0).toBeLessThan(1);
       expect(seller.treasury).toBeGreaterThan(0);
       expect(dairyOwner.treasury).toBeLessThan(beforeBuyerTreasury);
     });
@@ -1663,13 +1694,13 @@ describe('tick (per-day loop)', () => {
       if (owner === undefined) throw new Error('missing owner');
       const grapes = resourceId('food.grapes');
       const cheese = resourceId('food.cheese');
-      owner.stockpile.set(grapes, 100);
-      owner.stockpile.set(cheese, 100);
+      setStock(owner, grapes, 100);
+      setStock(owner, cheese, 100);
 
       const r = tick({ world: w, rng: createRng('natural-short-spoilage') });
 
-      expect(owner.stockpile.get(grapes) ?? 0).toBeLessThan(100);
-      expect(owner.stockpile.get(cheese) ?? 0).toBe(100);
+      expect(getStock(owner, grapes) ?? 0).toBeLessThan(100);
+      expect(getStock(owner, cheese) ?? 0).toBe(100);
       expect(eventsOfType(r.events, 'storage_spoilage').some((e) => e.resource === grapes)).toBe(
         true,
       );
@@ -1772,7 +1803,7 @@ describe('tick (per-day loop)', () => {
         daysSinceMaintained: 0,
       });
       settlement.market.lastClearingPrice.set(tools, 100);
-      buyer.stockpile.set(tools, 1);
+      setStock(buyer, tools, 1);
 
       const cId = caravanId('import-arrived');
       const c = createCaravan({
@@ -1797,7 +1828,7 @@ describe('tick (per-day loop)', () => {
       expect(c.cargo.get(tools) ?? 0).toBeCloseTo(2 - sale!.quantity, 6);
       expect(c.treasury).toBeCloseTo(sale!.coin, 6);
       expect(buyer.treasury).toBeCloseTo(beforeTreasury - sale!.coin, 6);
-      expect(buyer.stockpile.get(tools) ?? 0).toBeGreaterThan(1);
+      expect(getStock(buyer, tools) ?? 0).toBeGreaterThan(1);
     });
 
     it('sells arrived caravan cargo into residual book bids before stale last prices', () => {
@@ -1863,8 +1894,8 @@ describe('tick (per-day loop)', () => {
       expect(sale).toBeDefined();
       expect(sale?.quantity ?? 0).toBeGreaterThan(0);
       expect(sale!.coin / sale!.quantity).toBeCloseTo(7, 6);
-      expect(bookBuyer.stockpile.get(tools) ?? 0).toBeCloseTo(sale!.quantity, 6);
-      expect(staleBuyer.stockpile.get(tools) ?? 0).toBe(0);
+      expect(getStock(bookBuyer, tools) ?? 0).toBeCloseTo(sale!.quantity, 6);
+      expect(getStock(staleBuyer, tools) ?? 0).toBe(0);
       expect(c.cargo.get(tools) ?? 0).toBeCloseTo(2 - sale!.quantity, 6);
     });
 
@@ -1919,7 +1950,7 @@ describe('tick (per-day loop)', () => {
 
       expect(sale).toBeDefined();
       expect(sale?.quantity ?? 0).toBeGreaterThan(0);
-      expect(household.stockpile.get(wine) ?? 0).toBe(0);
+      expect(getStock(household, wine) ?? 0).toBe(0);
       expect(settlement.market.recentImports.get(wine) ?? 0).toBeCloseTo(sale!.quantity, 6);
       expect(settlement.market.recentConsumption.get(wine) ?? 0).toBeCloseTo(sale!.quantity, 6);
     });
@@ -1960,7 +1991,7 @@ describe('tick (per-day loop)', () => {
       tick({ world: w, rng: createRng('import-return-route') });
 
       expect(c.cargo.get(spices) ?? 0).toBe(0);
-      expect(buyer.stockpile.get(spices)).toBeCloseTo(20, 6);
+      expect(getStock(buyer, spices)).toBeCloseTo(20, 6);
       expect(c.treasury).toBe(0);
       expect(c.destination).toEqual(edge);
 
@@ -1993,7 +2024,7 @@ describe('tick (per-day loop)', () => {
         homeSettlement: sId,
         treasury: 0,
       });
-      seller.stockpile.set(bread, 100);
+      setStock(seller, bread, 100);
       w.settlements.set(sId, settlement);
       w.actors.set(sellerId, seller);
 
@@ -2019,7 +2050,7 @@ describe('tick (per-day loop)', () => {
       expect(c.cargo.get(bread)).toBeGreaterThan(0);
       expect(c.treasury).toBeLessThan(20);
       expect(seller.treasury).toBeGreaterThan(0);
-      expect(seller.stockpile.get(bread)).toBeLessThan(100);
+      expect(getStock(seller, bread)).toBeLessThan(100);
     });
 
     it('paces replacement merchant caravans from owner treasury when the trade fleet is thin', () => {
@@ -2033,9 +2064,9 @@ describe('tick (per-day loop)', () => {
         homeSettlement: settlement.id,
         treasury: 1_000,
       });
-      family.stockpile.set(resourceId('livestock.equines'), 5);
-      family.stockpile.set(resourceId('goods.cart'), 1);
-      family.stockpile.set(resourceId('food.grain'), 100);
+      setStock(family, resourceId('livestock.equines'), 5);
+      setStock(family, resourceId('goods.cart'), 1);
+      setStock(family, resourceId('food.grain'), 100);
       w.actors.set(familyId, family);
 
       const r = tick({ world: w, rng: createRng('merchant-replacement') });
@@ -2052,9 +2083,9 @@ describe('tick (per-day loop)', () => {
       expect(caravan?.treasury).toBeGreaterThan(0);
       expect(caravan?.vehicles.light_cart).toBe(1);
       expect(caravan?.cargo.get(resourceId('food.grain'))).toBeGreaterThan(0);
-      expect(family.stockpile.get(resourceId('livestock.equines'))).toBeLessThan(5);
-      expect(family.stockpile.get(resourceId('goods.cart'))).toBeUndefined();
-      expect(family.stockpile.get(resourceId('food.grain'))).toBeLessThan(100);
+      expect(getStock(family, resourceId('livestock.equines'))).toBeLessThan(5);
+      expect(getStock(family, resourceId('goods.cart'))).toBe(0);
+      expect(getStock(family, resourceId('food.grain'))).toBeLessThan(100);
     });
 
     it('does not launch replacement merchants without local starter rations', () => {
@@ -2068,16 +2099,16 @@ describe('tick (per-day loop)', () => {
         homeSettlement: settlement.id,
         treasury: 1_000,
       });
-      family.stockpile.set(resourceId('livestock.equines'), 5);
-      family.stockpile.set(resourceId('goods.cart'), 1);
+      setStock(family, resourceId('livestock.equines'), 5);
+      setStock(family, resourceId('goods.cart'), 1);
       w.actors.set(familyId, family);
 
       const r = tick({ world: w, rng: createRng('merchant-replacement-no-rations') });
 
       expect(eventsOfType(r.events, 'merchant_caravan_dispatched')).toEqual([]);
       expect(family.treasury).toBe(1_000);
-      expect(family.stockpile.get(resourceId('livestock.equines'))).toBe(5);
-      expect(family.stockpile.get(resourceId('goods.cart'))).toBe(1);
+      expect(getStock(family, resourceId('livestock.equines'))).toBe(5);
+      expect(getStock(family, resourceId('goods.cart'))).toBe(1);
     });
 
     it('sizes replacement merchants down to available pack animals', () => {
@@ -2091,8 +2122,8 @@ describe('tick (per-day loop)', () => {
         homeSettlement: settlement.id,
         treasury: 1_000,
       });
-      family.stockpile.set(resourceId('livestock.equines'), 1);
-      family.stockpile.set(resourceId('food.grain'), 100);
+      setStock(family, resourceId('livestock.equines'), 1);
+      setStock(family, resourceId('food.grain'), 100);
       w.actors.set(familyId, family);
 
       const r = tick({ world: w, rng: createRng('merchant-replacement-lean') });
@@ -2102,7 +2133,7 @@ describe('tick (per-day loop)', () => {
       expect(dispatched).toHaveLength(1);
       expect(caravan?.animals.mule).toBe(6);
       expect(caravan?.animals.donkey ?? 0).toBe(0);
-      expect(family.stockpile.get(resourceId('livestock.equines'))).toBeUndefined();
+      expect(getStock(family, resourceId('livestock.equines'))).toBe(0);
     });
 
     it('lets replacement owners buy local pack animals before assembly', () => {
@@ -2110,7 +2141,7 @@ describe('tick (per-day loop)', () => {
       const familyId = actorId('market-replacement-family');
       const settlement = w.settlements.get(settlementId('settle-1'))!;
       const seller = w.actors.get(actorId('city-corp-1'))!;
-      seller.stockpile.set(resourceId('livestock.equines'), 1);
+      setStock(seller, resourceId('livestock.equines'), 1);
       settlement.market.lastClearingPrice.set(resourceId('livestock.equines'), 100);
       const sellerTreasuryBefore = seller.treasury;
       const family = createActor({
@@ -2120,7 +2151,7 @@ describe('tick (per-day loop)', () => {
         homeSettlement: settlement.id,
         treasury: 10_000,
       });
-      family.stockpile.set(resourceId('food.grain'), 100);
+      setStock(family, resourceId('food.grain'), 100);
       w.actors.set(familyId, family);
 
       const r = tick({ world: w, rng: createRng('merchant-replacement-market-animals') });
@@ -2128,12 +2159,12 @@ describe('tick (per-day loop)', () => {
 
       expect(dispatched).toHaveLength(1);
       expect(dispatched[0]?.ownerActor).toBe(familyId);
-      expect(seller.stockpile.get(resourceId('livestock.equines'))).toBeUndefined();
+      expect(getStock(seller, resourceId('livestock.equines'))).toBe(0);
       expect(seller.treasury).toBeGreaterThan(sellerTreasuryBefore);
       // Per docs/15 §C26 the patrician family also market-makes — they
       // may keep a tiny residual MM stockpile of equines beyond what
       // the caravan assembly consumed. Allow sub-unit residual.
-      expect(family.stockpile.get(resourceId('livestock.equines')) ?? 0).toBeLessThan(1);
+      expect(getStock(family, resourceId('livestock.equines'))).toBeLessThan(1);
     });
 
     it('does not assemble replacement merchants when temporary convoys fill the world cap', () => {
@@ -2147,8 +2178,8 @@ describe('tick (per-day loop)', () => {
         homeSettlement: settlement.id,
         treasury: 10_000,
       });
-      family.stockpile.set(resourceId('livestock.equines'), 50);
-      family.stockpile.set(resourceId('goods.cart'), 10);
+      setStock(family, resourceId('livestock.equines'), 50);
+      setStock(family, resourceId('goods.cart'), 10);
       w.actors.set(familyId, family);
 
       for (let i = 0; i < 96; i++) {
@@ -2243,7 +2274,7 @@ describe('tick (per-day loop)', () => {
         homeSettlement: aId,
         treasury: 1000,
       });
-      seller.stockpile.set(grain, 100);
+      setStock(seller, grain, 100);
       const destinationOwner = createActor({
         id: bActorId,
         kind: 'city_corporation',
@@ -2279,7 +2310,7 @@ describe('tick (per-day loop)', () => {
       expect(c.destination).toEqual(hex(10, 0));
       expect(c.cargo.get(grain)).toBeGreaterThan(0);
       expect(c.treasury).toBeLessThan(50);
-      expect(seller.stockpile.get(grain)).toBeLessThan(100);
+      expect(getStock(seller, grain)).toBeLessThan(100);
     });
 
     it('uses known bandit risk when scouting without a profitable route', () => {
@@ -2693,13 +2724,13 @@ describe('tick (per-day loop)', () => {
         homeSettlement: sId,
         treasury: 100_000,
       });
-      owner.stockpile.set(resourceId('material.lumber'), 100);
-      owner.stockpile.set(resourceId('material.cut_stone'), 100);
-      owner.stockpile.set(resourceId('material.brick_tile'), 100);
-      owner.stockpile.set(resourceId('goods.tools'), 100);
-      owner.stockpile.set(resourceId('material.charcoal'), 100);
-      owner.stockpile.set(resourceId('food.grain'), 100);
-      owner.stockpile.set(resourceId('food.legumes'), 100);
+      setStock(owner, resourceId('material.lumber'), 100);
+      setStock(owner, resourceId('material.cut_stone'), 100);
+      setStock(owner, resourceId('material.brick_tile'), 100);
+      setStock(owner, resourceId('goods.tools'), 100);
+      setStock(owner, resourceId('material.charcoal'), 100);
+      setStock(owner, resourceId('food.grain'), 100);
+      setStock(owner, resourceId('food.legumes'), 100);
 
       w.settlements.set(sId, settlement);
       w.actors.set(ownerId, owner);
@@ -2935,7 +2966,7 @@ describe('tick (per-day loop)', () => {
       tick({ world: w, rng: createRng('tax-deliver') });
 
       expect(w.caravans.has(cId)).toBe(false);
-      expect(governor.stockpile.get(resourceId('food.grain'))).toBeGreaterThan(11.9);
+      expect(getStock(governor, resourceId('food.grain'))).toBeGreaterThan(11.9);
     });
 
     it('delivers coin tax cargo into governor treasury instead of stockpile', () => {
@@ -2980,7 +3011,7 @@ describe('tick (per-day loop)', () => {
 
       expect(w.caravans.has(cId)).toBe(false);
       expect(governor.treasury).toBeCloseTo(100_125, 6);
-      expect(governor.stockpile.get(coin) ?? 0).toBe(0);
+      expect(getStock(governor, coin) ?? 0).toBe(0);
       expect(capital.market.recentInflows.get(coin)).toBeCloseTo(125, 6);
     });
 
@@ -3041,7 +3072,7 @@ describe('tick (per-day loop)', () => {
       expect(shipments).toHaveLength(1);
       expect(shipments[0]?.coin).toBe(100);
       expect(owner.treasury).toBe(9_900);
-      expect(owner.stockpile.get(coin) ?? 0).toBe(0);
+      expect(getStock(owner, coin) ?? 0).toBe(0);
       expect(taxCaravan?.cargo.get(coin)).toBe(100);
     });
 
@@ -3096,7 +3127,7 @@ describe('tick (per-day loop)', () => {
           homeSettlement: sId,
           treasury: 1_000,
         });
-        owner.stockpile.set(resourceId('food.grain'), 1_000);
+        setStock(owner, resourceId('food.grain'), 1_000);
         w.settlements.set(sId, s);
         w.actors.set(ownerId, owner);
       }
@@ -3199,7 +3230,7 @@ describe('tick (per-day loop)', () => {
           homeSettlement: sId,
           treasury: 1_000,
         });
-        owner.stockpile.set(resourceId('food.grain'), 1_000);
+        setStock(owner, resourceId('food.grain'), 1_000);
         w.settlements.set(sId, s);
         w.actors.set(ownerId, owner);
       }

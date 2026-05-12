@@ -35,8 +35,32 @@ import { allBuildings, getBuilding } from './buildings/catalog.js';
 import { tickCaravanMovement } from './caravan/movement.js';
 import { MAX_ACTIVE_WORLD_CARAVANS } from './caravan/limits.js';
 import { expectedRiskOnApproximatePath, planCaravanRoute } from './caravan/ai.js';
-import { createCamp, decideCampAction, recruit, type BanditCamp } from './bandit/camp.js';
-import { createActor } from './politics/actor.js';
+import {
+  campAsCombatUnit,
+  createCamp,
+  decideCampAction,
+  recruit,
+  type BanditCamp,
+} from './bandit/camp.js';
+import {
+  createBanditParty,
+  missionTargetHex,
+  partyAsCombatUnit,
+  partyAtHome,
+  partyAtMissionTarget,
+  partyEffectiveStrength,
+  stepAwayFromHex,
+  stepTowardHex,
+  type BanditParty,
+  type BanditPartyMission,
+} from './bandit/party.js';
+import {
+  actorStockEntriesAt,
+  addStockAt,
+  createActor,
+  getStockAt,
+  removeStockAt,
+} from './politics/actor.js';
 import { createCharacter, generateFullName } from './politics/character.js';
 import { createFaction } from './politics/faction.js';
 import {
@@ -142,6 +166,7 @@ import {
   resourceId,
   type ActorId,
   type BanditCampId,
+  type BanditPartyId,
   type BuildingId,
   type CaravanId,
   type Day,
@@ -354,11 +379,61 @@ export type TickEvent =
       readonly ownerActor: ActorId;
     }
   | {
+      /**
+       * Per docs/15 §C31: a `free_village` actor dispatched a villager
+       * caravan to carry village food surplus to the nearest city.
+       */
+      readonly type: 'villager_caravan_dispatched';
+      readonly caravan: CaravanId;
+      readonly settlement: SettlementId;
+      readonly ownerActor: ActorId;
+    }
+  | {
       readonly type: 'tax_shipment_dispatched';
       readonly fromSettlement: SettlementId;
       readonly toSettlement: SettlementId;
       readonly grainModii: number;
       readonly coin: number;
+    }
+  | {
+      /**
+       * Per docs/15 §C29: quarterly coin tribute from a client village to its
+       * patrician_family patron. Fires from `tributePhase` every 90 days.
+       */
+      readonly type: 'tribute_paid';
+      readonly fromSettlement: SettlementId;
+      readonly fromActor: ActorId;
+      readonly toActor: ActorId;
+      readonly coin: number;
+    }
+  | {
+      /**
+       * Per docs/15 §C32: a bandit camp split off a party to walk to a
+       * target. Mission type carries the camp action that drove it.
+       */
+      readonly type: 'bandit_party_dispatched';
+      readonly party: BanditPartyId;
+      readonly fromCamp: BanditCampId;
+      readonly missionType:
+        | 'raid_settlement'
+        | 'raid_caravan'
+        | 'fence_loot'
+        | 'recruit_drive'
+        | 'migrate'
+        | 'bribe_settlement';
+      readonly at: Hex;
+    }
+  | {
+      /**
+       * Per docs/15 §C32: a bandit party finished its mission (success or
+       * failure) and returned to camp. For one-way migrate missions the
+       * party founded a new camp; for round-trip missions it merged back
+       * into the home camp.
+       */
+      readonly type: 'bandit_party_returned';
+      readonly party: BanditPartyId;
+      readonly outcome: 'merged_home' | 'founded_camp' | 'lost';
+      readonly at: Hex;
     }
   | {
       readonly type: 'road_upgraded';
@@ -570,6 +645,10 @@ export const tick = (inputs: TickInputs): TickResult => {
   // and starts accruing/decaying wear like any other dirt road.
   if ((today + 1) % 91 === 0) {
     roadMaintenancePhase(world, events);
+    // Same quarterly cadence: client villages pay coin tribute to their
+    // patron. Replaces the older model where the patron co-owned village
+    // stockpile (docs/15 §C29).
+    tributePhase(world, events);
   }
 
   // --- Empty settlements disappear (docs/05 §"Growth and decay") ----------
@@ -621,7 +700,9 @@ const productionPhase = (
     const laborClassContext = laborContextForSettlement(settlement);
     const laborPools = laborPoolsForSettlement(settlement, laborClassContext);
     const laborAvailabilityByOwnerKind = new Map<Actor['kind'], ReadonlyMap<JobId, number>>();
-    const laborAvailabilityForOwnerKind = (ownerKind: Actor['kind']): ReadonlyMap<JobId, number> => {
+    const laborAvailabilityForOwnerKind = (
+      ownerKind: Actor['kind'],
+    ): ReadonlyMap<JobId, number> => {
       let view = laborAvailabilityByOwnerKind.get(ownerKind);
       if (view === undefined) {
         view = laborAvailabilityViewForOwner(laborPools, ownerKind);
@@ -658,6 +739,7 @@ const productionPhase = (
           }
           const inventoryCapacity = productionOutputInventoryCapacityForRecipe(
             ownerActor,
+            settlement.id,
             recipe,
             buildings,
           );
@@ -695,7 +777,7 @@ const productionPhase = (
             },
             ownerActor: b.ownerActor,
             laborAvailable: laborForOwner,
-            inputStocks: ownerActor.stockpile,
+            inputStocks: ownerActor.stockpile.get(settlement.id) ?? EMPTY_RESOURCE_MAP,
             season,
           });
           if (result.shortfall !== undefined && result.ranAtFraction === 0) {
@@ -711,11 +793,12 @@ const productionPhase = (
           }
           if (result.ranAtFraction > 0) {
             const fraction = result.ranAtFraction;
-            // Apply the deltas to the owner's stockpile.
+            // Apply the deltas to the owner's stockpile AT THIS SETTLEMENT
+            // (docs/15 §C30 — inventory is keyed by physical location).
             for (const [resId, qtyPerRun] of recipe.inputs) {
               const qty = qtyPerRun * fraction;
               if (qty <= 0) continue;
-              decreaseStockpile(ownerActor, resId, qty);
+              decreaseStockpile(ownerActor, settlement.id, resId, qty);
               // Recipe-input drain is local consumption: the resource was
               // used UP in this settlement to make something else.
               if (!isServiceResource(resId)) {
@@ -726,7 +809,7 @@ const productionPhase = (
               const qty = qtyPerRun * fraction;
               if (qty <= 0) continue;
               if (isServiceResource(resId)) continue;
-              receiveResourceOrCoin(ownerActor, resId, qty);
+              receiveResourceOrCoin(ownerActor, settlement.id, resId, qty);
               recordProduction(settlement, resId, qty);
             }
             depleteMineDeposit(world, b, recipe, fraction);
@@ -906,7 +989,7 @@ const wageAffordableCapacityForRecipe = (
   );
   if (paidWorkerDaysPerRun <= 0) return Infinity;
   if (!hasAnyWageRecipient(world, settlement, payer)) return Infinity;
-  const liquidBudget = payer.treasury + inKindWageBudget(payer, prices);
+  const liquidBudget = payer.treasury + inKindWageBudget(payer, settlement.id, prices);
   return Math.max(0, liquidBudget / (paidWorkerDaysPerRun * wagePerDay));
 };
 
@@ -961,7 +1044,7 @@ const payProductionWagesForWorkerDaysByClass = (
       recipient.treasury += paidCoin;
       remaining -= paidCoin;
     }
-    if (remaining > 1e-9) payInKindWages(payer, recipient, remaining, prices);
+    if (remaining > 1e-9) payInKindWages(payer, recipient, settlement.id, remaining, prices);
   }
 };
 
@@ -971,12 +1054,16 @@ const WAGE_IN_KIND_RESOURCES: readonly ResourceId[] = [
   resourceId('food.bread'),
 ];
 
-const inKindWageBudget = (payer: Actor, prices: ReadonlyMap<ResourceId, number>): number => {
+const inKindWageBudget = (
+  payer: Actor,
+  settlement: SettlementId,
+  prices: ReadonlyMap<ResourceId, number>,
+): number => {
   let value = 0;
   for (const resource of WAGE_IN_KIND_RESOURCES) {
     const price = prices.get(resource) ?? 0;
     if (price <= 0) continue;
-    value += (payer.stockpile.get(resource) ?? 0) * price;
+    value += getStockAt(payer, settlement, resource) * price;
   }
   return value;
 };
@@ -984,6 +1071,7 @@ const inKindWageBudget = (payer: Actor, prices: ReadonlyMap<ResourceId, number>)
 const payInKindWages = (
   payer: Actor,
   recipient: Actor,
+  settlement: SettlementId,
   targetValue: number,
   prices: ReadonlyMap<ResourceId, number>,
 ): void => {
@@ -992,12 +1080,12 @@ const payInKindWages = (
     if (remainingValue <= 1e-9) break;
     const price = prices.get(resource) ?? 0;
     if (price <= 0) continue;
-    const stock = payer.stockpile.get(resource) ?? 0;
+    const stock = getStockAt(payer, settlement, resource);
     if (stock <= 0) continue;
     const units = Math.min(stock, remainingValue / price);
     if (units <= 1e-9) continue;
-    decreaseStockpile(payer, resource, units);
-    increaseStockpile(recipient, resource, units);
+    decreaseStockpile(payer, settlement, resource, units);
+    increaseStockpile(recipient, settlement, resource, units);
     remainingValue -= units * price;
   }
 };
@@ -1336,6 +1424,13 @@ const productionOrderForSettlement = (
   return ranked.map((entry) => entry.recipe);
 };
 
+/**
+ * Sentinel empty map for the production engine's `inputStocks` parameter
+ * when an actor has no slice of inventory at the recipe's settlement.
+ * Read-only; engine only consults via `.get()`.
+ */
+const EMPTY_RESOURCE_MAP: ReadonlyMap<ResourceId, Quantity> = new Map();
+
 const DEFAULT_PRODUCTION_OUTPUT_STOCK_TARGET_DAYS = 30;
 const PRODUCTION_OUTPUT_STOCK_TARGET_DAYS_BY_RESOURCE: ReadonlyMap<string, number> = new Map([
   ['food.grain', 180],
@@ -1362,6 +1457,7 @@ const productionOutputStockTargetDays = (resource: ResourceId): number => {
 
 const productionOutputInventoryCapacityForRecipe = (
   ownerActor: Actor,
+  settlement: SettlementId,
   recipe: RecipeDef,
   buildingsForRecipe: readonly SettlementBuilding[],
 ): number => {
@@ -1378,7 +1474,9 @@ const productionOutputInventoryCapacityForRecipe = (
     const targetStock =
       ownerInstalledCapacity * qtyPerRun * productionOutputStockTargetDays(resource);
     const currentStock =
-      resource === COIN_RESOURCE ? ownerActor.treasury : (ownerActor.stockpile.get(resource) ?? 0);
+      resource === COIN_RESOURCE
+        ? ownerActor.treasury
+        : getStockAt(ownerActor, settlement, resource);
     const gap = targetStock - currentStock;
     if (gap <= 0) return 0;
     capacity = Math.min(capacity, gap / qtyPerRun);
@@ -1387,30 +1485,36 @@ const productionOutputInventoryCapacityForRecipe = (
   return Number.isFinite(capacity) ? Math.max(0, capacity) : Infinity;
 };
 
-const decreaseStockpile = (actor: Actor, resource: ResourceId, qty: Quantity): void => {
-  if (qty <= 0) return;
-  const current = actor.stockpile.get(resource) ?? 0;
-  const remaining = current - qty;
-  if (remaining <= 1e-9) {
-    actor.stockpile.delete(resource);
-  } else {
-    actor.stockpile.set(resource, remaining);
-  }
+const decreaseStockpile = (
+  actor: Actor,
+  settlement: SettlementId,
+  resource: ResourceId,
+  qty: Quantity,
+): void => {
+  removeStockAt(actor, settlement, resource, qty);
 };
 
-const increaseStockpile = (actor: Actor, resource: ResourceId, qty: Quantity): void => {
-  if (qty <= 0) return;
-  const current = actor.stockpile.get(resource) ?? 0;
-  actor.stockpile.set(resource, current + qty);
+const increaseStockpile = (
+  actor: Actor,
+  settlement: SettlementId,
+  resource: ResourceId,
+  qty: Quantity,
+): void => {
+  addStockAt(actor, settlement, resource, qty);
 };
 
-const receiveResourceOrCoin = (actor: Actor, resource: ResourceId, qty: Quantity): void => {
+const receiveResourceOrCoin = (
+  actor: Actor,
+  settlement: SettlementId,
+  resource: ResourceId,
+  qty: Quantity,
+): void => {
   if (qty <= 0) return;
   if (resource === COIN_RESOURCE) {
     actor.treasury += qty;
     return;
   }
-  increaseStockpile(actor, resource, qty);
+  increaseStockpile(actor, settlement, resource, qty);
 };
 
 const isServiceResource = (resource: ResourceId): boolean =>
@@ -1599,7 +1703,7 @@ const buyFallbackRationsFromOwner = (
   let remaining = wantModii;
   for (const id of FOOD_PRIORITY) {
     if (remaining <= 0) break;
-    const have = seller.stockpile.get(id) ?? 0;
+    const have = getStockAt(seller, settlement.id, id);
     if (have <= 0) continue;
     // Convert each food line to grain-equivalent modii using its kg weight.
     const grainEqPerUnit = grainEquivalentModiiPerUnit(id);
@@ -1635,7 +1739,7 @@ const buyFallbackRationsFromOwner = (
 
     takeUnits = unitsConsumed;
     takeAsModii = modiiConsumed;
-    decreaseStockpile(seller, id, takeUnits);
+    decreaseStockpile(seller, settlement.id, id, takeUnits);
     const prev = fallbackMarkets.get(id);
     if (prev === undefined) {
       fallbackMarkets.set(id, { quantity: takeUnits, price });
@@ -1980,14 +2084,15 @@ const demolitionPhase = (world: WorldState, _today: Day, events: TickEvent[]): v
           // Already gone (raced); ignore.
         }
       }
-      // Refund 50% of materials.
+      // Refund 50% of materials, landing back in the owner's slice at
+      // THIS settlement (where the building stood) per docs/15 §C30.
       const def = getBuilding(pd.buildingId);
       const owner = world.actors.get(pd.ownerActor);
       if (owner !== undefined) {
         for (const [r, qty] of def.constructionCost) {
           const refund = qty * 0.5;
           if (refund <= 0) continue;
-          owner.stockpile.set(r, (owner.stockpile.get(r) ?? 0) + refund);
+          addStockAt(owner, settlement.id, r, refund);
         }
       }
       events.push({
@@ -2227,13 +2332,11 @@ const civilUnrestPhase = (world: WorldState, _today: Day, events: TickEvent[]): 
           const a = world.actors.get(oId);
           if (a === undefined) continue;
           if (a.kind !== 'patrician_family' && a.kind !== 'city_corporation') continue;
-          const have = a.stockpile.get(grainResource) ?? 0;
+          const have = getStockAt(a, settlement.id, grainResource);
           if (have <= 0) continue;
           const looted = have * LOOTING_FRACTION;
           if (looted < 1) continue;
-          const remaining = have - looted;
-          if (remaining > 1e-9) a.stockpile.set(grainResource, remaining);
-          else a.stockpile.delete(grainResource);
+          removeStockAt(a, settlement.id, grainResource, looted);
           events.push({
             type: 'mob_looting',
             settlement: settlement.id,
@@ -2298,6 +2401,73 @@ const roadMaintenancePhase = (world: WorldState, events: TickEvent[]): void => {
   }
 };
 
+// --- Tribute (docs/15 §C29) -----------------------------------------------
+
+/**
+ * Per docs/15 §C29: quarterly coin tribute from each client village's
+ * `free_village` steward to its patrician_family patron. Replaces the
+ * earlier model where the patron magically co-owned the village stockpile.
+ *
+ * Mechanics:
+ *  - Runs every 90 days (season boundary), driven by the day counter in
+ *    `tick()`.
+ *  - For each settlement with `clientPatron` defined: find the village
+ *    steward (the `free_village` actor that is a stockpileOwner of the
+ *    village), compute tribute = `TRIBUTE_FRACTION × steward.treasury`,
+ *    cap so the steward keeps at least `TRIBUTE_OPERATING_FLOOR` coin
+ *    for next season's wages + fuel + tools, transfer the rest to
+ *    the patron's treasury.
+ *  - If the patron is gone (succession or disband), tribute is skipped
+ *    for that village this season — no orphan coin sink.
+ *
+ *   `TRIBUTE_FRACTION = 0.25` is below historical share-rent (~⅓–½)
+ *   because the village_household also pays plebeian wages; a higher
+ *   draw rate drains it to zero between seasons in burn-in.
+ *
+ * Emits a `tribute_paid` event per transfer for telemetry.
+ */
+const TRIBUTE_FRACTION = 0.25;
+const TRIBUTE_OPERATING_FLOOR = 50;
+
+const tributePhase = (world: WorldState, events: TickEvent[]): void => {
+  for (const settlement of world.settlements.values()) {
+    const patronId = settlement.clientPatron;
+    if (patronId === undefined) continue;
+    const patron = world.actors.get(patronId);
+    if (patron === undefined) continue;
+
+    // The village steward is the `free_village` actor that homes here. Per
+    // seedClientVillage it's pushed to stockpileOwners first, so it's
+    // typically stockpileOwners[0], but tolerate ordering changes by
+    // scanning explicitly.
+    let steward: Actor | undefined;
+    for (const ownerId of settlement.stockpileOwners) {
+      const a = world.actors.get(ownerId);
+      if (a === undefined) continue;
+      if (a.kind === 'free_village' && a.homeSettlement === settlement.id) {
+        steward = a;
+        break;
+      }
+    }
+    if (steward === undefined) continue;
+
+    const spendable = Math.max(0, steward.treasury - TRIBUTE_OPERATING_FLOOR);
+    if (spendable <= 0) continue;
+    const tribute = spendable * TRIBUTE_FRACTION;
+    if (tribute <= 1e-6) continue;
+
+    steward.treasury -= tribute;
+    patron.treasury += tribute;
+    events.push({
+      type: 'tribute_paid',
+      fromSettlement: settlement.id,
+      fromActor: steward.id,
+      toActor: patron.id,
+      coin: tribute,
+    });
+  }
+};
+
 // --- Storage spoilage (docs/15 §C10) -------------------------------------
 
 const SPOILAGE_RATE_PER_DAY = 0.002; // 0.2% per day above cap
@@ -2351,7 +2521,7 @@ const storageSpoilagePhase = (world: WorldState, events: TickEvent[]): void => {
     for (const oId of settlement.stockpileOwners) {
       const a = world.actors.get(oId);
       if (a === undefined) continue;
-      for (const [r, qty] of a.stockpile) {
+      for (const [r, qty] of actorStockEntriesAt(a, settlement.id)) {
         if (qty <= 0) continue;
         totalByResource.set(r, (totalByResource.get(r) ?? 0) + qty);
         let arr = ownersWithStock.get(r);
@@ -2376,7 +2546,7 @@ const storageSpoilagePhase = (world: WorldState, events: TickEvent[]): void => {
       if (total <= limit) continue;
       const excess = total - limit;
       const spoil = excess * SPOILAGE_RATE_PER_DAY;
-      drainSpoilageProportional(ownersWithStock.get(r) ?? [], r, spoil);
+      drainSpoilageProportional(ownersWithStock.get(r) ?? [], settlement.id, r, spoil);
       events.push({
         type: 'storage_spoilage',
         settlement: settlement.id,
@@ -2403,7 +2573,7 @@ const storageSpoilagePhase = (world: WorldState, events: TickEvent[]): void => {
         if (!isPerishable(r)) continue;
         const spoil = total * spoilFraction;
         if (spoil <= 0) continue;
-        drainSpoilageProportional(ownersWithStock.get(r) ?? [], r, spoil);
+        drainSpoilageProportional(ownersWithStock.get(r) ?? [], settlement.id, r, spoil);
         events.push({
           type: 'storage_spoilage',
           settlement: settlement.id,
@@ -2424,7 +2594,7 @@ const naturalShortPerishableSpoilagePhase = (world: WorldState, events: TickEven
     for (const oId of settlement.stockpileOwners) {
       const actor = world.actors.get(oId);
       if (actor === undefined) continue;
-      for (const [resource, qty] of actor.stockpile) {
+      for (const [resource, qty] of actorStockEntriesAt(actor, settlement.id)) {
         if (qty <= 0) continue;
         const fraction = naturalSpoilageFractionForResource(resource);
         if (fraction <= 0) continue;
@@ -2442,7 +2612,12 @@ const naturalShortPerishableSpoilagePhase = (world: WorldState, events: TickEven
       const fraction = naturalSpoilageFractionForResource(resource);
       const spoil = total * fraction;
       if (spoil <= 1e-9) continue;
-      drainSpoilageProportional(ownersWithStock.get(resource) ?? [], resource, spoil);
+      drainSpoilageProportional(
+        ownersWithStock.get(resource) ?? [],
+        settlement.id,
+        resource,
+        spoil,
+      );
       events.push({
         type: 'storage_spoilage',
         settlement: settlement.id,
@@ -2461,21 +2636,20 @@ const naturalSpoilageFractionForResource = (resource: ResourceId): number => {
 
 const drainSpoilageProportional = (
   owners: readonly Actor[],
+  settlement: SettlementId,
   resource: ResourceId,
   totalSpoil: number,
 ): void => {
   if (owners.length === 0 || totalSpoil <= 1e-9) return;
   // Weighted by current stock. Spoil more from the bigger holders.
   let totalStock = 0;
-  for (const a of owners) totalStock += a.stockpile.get(resource) ?? 0;
+  for (const a of owners) totalStock += getStockAt(a, settlement, resource);
   if (totalStock <= 0) return;
   for (const a of owners) {
-    const have = a.stockpile.get(resource) ?? 0;
+    const have = getStockAt(a, settlement, resource);
     if (have <= 0) continue;
     const share = (have / totalStock) * totalSpoil;
-    const remaining = have - share;
-    if (remaining > 1e-9) a.stockpile.set(resource, remaining);
-    else a.stockpile.delete(resource);
+    if (share > 0) removeStockAt(a, settlement, resource, share);
   }
 };
 
@@ -2533,10 +2707,10 @@ const drainTaxAssessment = (world: WorldState, assessment: TaxAssessment): numbe
     owner.treasury -= drain;
     return drain;
   }
-  const have = owner.stockpile.get(assessment.resource) ?? 0;
+  const have = getStockAt(owner, assessment.fromSettlement, assessment.resource);
   const drain = Math.min(have, assessment.quantityOwed);
   if (drain <= 0) return 0;
-  decreaseStockpile(owner, assessment.resource, drain);
+  decreaseStockpile(owner, assessment.fromSettlement, assessment.resource, drain);
   return drain;
 };
 
@@ -2784,7 +2958,7 @@ const edgeHubPhase = (
       hex: s.anchor,
       ownerActor: owner.id,
       localPrices: s.market.lastClearingPrice,
-      availableForExport: owner.stockpile,
+      availableForExport: owner.stockpile.get(s.id) ?? EMPTY_RESOURCE_MAP,
     });
   }
   if (cityImportTargets.length === 0 && cityExportSources.length === 0) return;
@@ -2820,18 +2994,19 @@ const edgeHubPhase = (
   // Add new caravans into world.caravans. The export-side cargo was
   // implicitly drawn from the owner's stockpile by tickEdgeHubs (per
   // docs/06 §"Exports" — the owner intends to fund the trip), so we
-  // drain it here.
+  // drain it here. Per docs/15 §C30 the drain is keyed to the owner's
+  // home settlement (the export source city).
   for (const c of result.newCaravans) {
     ensureCaravanOwnerActor(world, c);
     world.caravans.set(c.id, c);
-    // For exports, drain the cargo from the owner's stockpile.
+    // For exports, drain the cargo from the owner's slice at their
+    // home city (the city that supplied the export goods).
     const owner = world.actors.get(c.ownerActor);
     if (owner === undefined) continue;
+    const sourceSettlement = owner.homeSettlement;
+    if (sourceSettlement === undefined) continue;
     for (const [res, qty] of c.cargo) {
-      const have = owner.stockpile.get(res) ?? 0;
-      const remaining = have - qty;
-      if (remaining > 1e-9) owner.stockpile.set(res, remaining);
-      else owner.stockpile.delete(res);
+      removeStockAt(owner, sourceSettlement, res, qty);
     }
   }
 
@@ -3334,14 +3509,15 @@ const tradePhase = (
   for (const settlement of world.settlements.values()) {
     if (settlement.population.total() === 0) continue;
 
-    // Stockpiles by owner — buildSettlementSchedules expects this shape.
+    // Stockpiles by owner — buildSettlementSchedules expects each owner's
+    // slice AT THIS SETTLEMENT (docs/15 §C30 — inventory is physical).
     const stockpilesByOwner = new Map<ActorId, ReadonlyMap<ResourceId, Quantity>>();
     const actorTreasuryByActor = new Map<ActorId, number>();
     const owners: Actor[] = [];
     for (const oId of settlement.stockpileOwners) {
       const a = world.actors.get(oId);
       if (a === undefined) continue;
-      stockpilesByOwner.set(a.id, a.stockpile);
+      stockpilesByOwner.set(a.id, a.stockpile.get(settlement.id) ?? EMPTY_RESOURCE_MAP);
       actorTreasuryByActor.set(a.id, a.treasury);
       owners.push(a);
     }
@@ -3353,7 +3529,7 @@ const tradePhase = (
     // are the signal that attracts caravans into shortages.
     const presentResources = new Set<ResourceId>();
     for (const o of owners) {
-      for (const [res, qty] of o.stockpile) {
+      for (const [res, qty] of actorStockEntriesAt(o, settlement.id)) {
         if (qty > 0) presentResources.add(res);
       }
     }
@@ -3471,13 +3647,15 @@ const tradePhase = (
         const concreteBuyer = buyer;
         const buyerPaysSeller = concreteBuyer.id !== seller.id;
         const maxByBuyerTreasury =
-          buyerPaysSeller && trade.price > 0 ? concreteBuyer.treasury / trade.price : trade.quantity;
+          buyerPaysSeller && trade.price > 0
+            ? concreteBuyer.treasury / trade.price
+            : trade.quantity;
         const qty = Math.min(trade.quantity, maxByBuyerTreasury);
         if (qty <= 1e-9) continue;
 
         const coin = buyerPaysSeller ? Math.min(qty * trade.price, concreteBuyer.treasury) : 0;
         const serviceTrade = isServiceResource(resId);
-        if (!serviceTrade) decreaseStockpile(seller, resId, qty);
+        if (!serviceTrade) decreaseStockpile(seller, settlement.id, resId, qty);
         if (buyerPaysSeller) {
           if (coin > 0) {
             concreteBuyer.treasury -= coin;
@@ -3485,7 +3663,7 @@ const tradePhase = (
           }
         }
         if (demandSource?.buyerDisposition === 'stockpile' && !serviceTrade) {
-          increaseStockpile(concreteBuyer, resId, qty);
+          increaseStockpile(concreteBuyer, settlement.id, resId, qty);
         }
         if (demandSource?.buyerDisposition !== 'stockpile') {
           // Buyer is consuming immediately (not adding to stockpile),
@@ -3775,8 +3953,7 @@ const localTradePhase = (
     const bResources = pricedLocalTradeResourcesForSettlement(b, pricedResourceCache);
     const smaller =
       aResources.resources.length <= bResources.resources.length ? aResources : bResources;
-    const other =
-      smaller === aResources ? bResources.resourcesById : aResources.resourcesById;
+    const other = smaller === aResources ? bResources.resourcesById : aResources.resourcesById;
     for (const resId of smaller.resources) {
       if (!other.has(resId)) continue;
       if (dist > localTradeMaxHexDistanceForResource(resId)) continue;
@@ -3963,7 +4140,7 @@ const tryLocalTrade = (
   const buyerActor = buyerIntent.actor;
   if (buyerActor.id === sellerActor.id) return;
 
-  const sellerStock = sellerActor.stockpile.get(resId) ?? 0;
+  const sellerStock = getStockAt(sellerActor, seller.id, resId);
   if (sellerStock <= 0) return;
   const maxByLoad = localTradeLoadKgForResource(resId) / weightKgPerUnit;
   const maxByTreasury = buyerActor.treasury / midPrice;
@@ -3980,10 +4157,12 @@ const tryLocalTrade = (
   if (qty <= 1e-9) return;
 
   const coinPaid = qty * midPrice;
-  // Apply the transfer.
-  decreaseStockpile(sellerActor, resId, qty);
+  // Apply the transfer. Per docs/15 §C30 the seller's slice is at THEIR
+  // settlement and the buyer's slice is at THEIR settlement — local
+  // trade physically moves the goods between settlements.
+  decreaseStockpile(sellerActor, seller.id, resId, qty);
   if (buyerIntent.disposition === 'stockpile') {
-    increaseStockpile(buyerActor, resId, qty);
+    increaseStockpile(buyerActor, buyer.id, resId, qty);
   }
   sellerActor.treasury = sellerActor.treasury + coinPaid;
   buyerActor.treasury = buyerActor.treasury - coinPaid;
@@ -4054,7 +4233,9 @@ const localTradeScheduleBaseForSettlement = (
     const actor = world.actors.get(ownerId);
     if (actor === undefined) continue;
     owners.push(actor);
-    stockpilesByOwner.set(actor.id, actor.stockpile);
+    // Per docs/15 §C30: schedule sees only the owner's slice AT this
+    // settlement, not their full cross-settlement pool.
+    stockpilesByOwner.set(actor.id, actor.stockpile.get(settlement.id) ?? EMPTY_RESOURCE_MAP);
   }
   const base = {
     owners,
@@ -4215,7 +4396,7 @@ const pickSellerActor = (
   for (const id of settlement.stockpileOwners) {
     const actor = world.actors.get(id);
     if (actor === undefined) continue;
-    const stock = actor.stockpile.get(resId) ?? 0;
+    const stock = getStockAt(actor, settlement.id, resId);
     if (stock > 0) return actor;
   }
   return null;
@@ -4445,14 +4626,29 @@ const politicsPhase = (world: WorldState, rng: Rng, today: Day, events: TickEven
   // count. This keeps trade alive over long burn-ins without injecting
   // discontinuous random fleets.
   merchantCaravanAssemblyPhase(world, rng.derive('merchant-caravan-assembly'), today, events);
+  // Per docs/15 §C31: villages with food surplus dispatch a small handcart
+  // caravan to the nearest city. Separate fleet target from merchants so
+  // long-haul trade and short-haul village→city food runs don't compete
+  // for the same caravan slots.
+  villagerCaravanAssemblyPhase(world, rng.derive('villager-caravan-assembly'), today, events);
   // Bandit emergence + decisions + raid resolution. Without this loop,
   // the seeded bandit camps are inert decorations — see docs/12
   // §"Bandit emergence in the tick loop".
   banditPhase(world, rng.derive('bandit'), today, events);
+  // Per docs/15 §C32: bandit parties (the movable units that handle all
+  // camp-originated actions) walk one hex, resolve mission on arrival,
+  // and walk back. Runs after camp decisions so the same tick's
+  // dispatch can begin moving immediately.
+  banditPartyPhase(world, rng.derive('bandit-party'), today, events);
   // Patrols walk routes and engage bandit camps they encounter. The
   // garrison + city-watch units seeded by procgen do this — without it,
   // bandits face no enforcement and grow unchecked.
   patrolPhase(world, rng.derive('patrol'), today, events);
+  // Per docs/15 §C32: after both movement phases, any patrol that
+  // overlaps a bandit party fights on-hex. The cyclic-route patrol
+  // logic in patrolPhase handles patrol-vs-camp; this catches the
+  // patrol-vs-party case the route logic doesn't see.
+  patrolPartyEngagementPhase(world, rng.derive('patrol-party'), today, events);
   // Process arrived news carriers → apply reputation deltas to local
   // characters. Per docs/13: news doesn't teleport, every reputation
   // update is anchored to a specific carrier walking a specific route.
@@ -4809,7 +5005,7 @@ const localSellerQuotes = (
       for (const ask of ladder.asks) {
         const actor = world.actors.get(ask.actorId);
         if (actor === undefined) continue;
-        const stock = Math.min(actor.stockpile.get(resource) ?? 0, ask.quantity);
+        const stock = Math.min(getStockAt(actor, settlement.id, resource), ask.quantity);
         if (stock <= 0) continue;
         quotes.push({ settlement, actor, price: ask.price, stock });
       }
@@ -4830,7 +5026,7 @@ const localSellerQuotes = (
     for (const ownerId of settlement.stockpileOwners) {
       const actor = world.actors.get(ownerId);
       if (actor === undefined) continue;
-      const stock = actor.stockpile.get(resource) ?? 0;
+      const stock = getStockAt(actor, settlement.id, resource);
       if (stock <= 0) continue;
       quotes.push({ settlement, actor, price, stock });
     }
@@ -4863,7 +5059,7 @@ const localRationSellerQuotes = (
       seen.add(key);
       const actor = world.actors.get(ownerId);
       if (actor === undefined) continue;
-      const stock = actor.stockpile.get(resource) ?? 0;
+      const stock = getStockAt(actor, settlement.id, resource);
       if (stock <= 0) continue;
       quotes.push({ settlement, actor, price, stock });
     }
@@ -4917,7 +5113,7 @@ const localSupplyAvailabilityByResource = (
       for (const ownerId of settlement.stockpileOwners) {
         const actor = world.actors.get(ownerId);
         if (actor === undefined) continue;
-        total += Math.max(0, actor.stockpile.get(resource) ?? 0);
+        total += Math.max(0, getStockAt(actor, settlement.id, resource));
       }
       if (total > 0) out.set(resource, (out.get(resource) ?? 0) + total);
     }
@@ -5007,7 +5203,7 @@ const sellCaravanCargoAtLocalMarkets = (
     caravan.treasury += coin;
     buyer.actor.treasury -= coin;
     if (buyer.disposition === 'consume') recordConsumption(buyer.settlement, resource, qty);
-    else increaseStockpile(buyer.actor, resource, qty);
+    else increaseStockpile(buyer.actor, buyer.settlement.id, resource, qty);
     // Caravan sold cargo to the settlement: import for the settlement.
     recordImport(buyer.settlement, resource, qty);
     events.push({
@@ -5045,7 +5241,7 @@ const buyPlannedCargoAtLocalMarkets = (
       const qty = Math.min(remainingTarget, seller.stock, maxByCapacity, maxByTreasury);
       if (qty <= 1e-9) continue;
       const coin = sameOwner ? 0 : qty * seller.price;
-      decreaseStockpile(seller.actor, resource, qty);
+      decreaseStockpile(seller.actor, seller.settlement.id, resource, qty);
       increaseCaravanCargo(caravan, resource, qty);
       if (!sameOwner) {
         caravan.treasury -= coin;
@@ -5120,7 +5316,7 @@ const buyCaravanRationsAtLocalMarkets = (
     const qty = Math.min(maxByNeed, maxByCapacity, maxByTreasury, quote.seller.stock);
     if (qty <= 1e-9) continue;
     const coin = sameOwner ? 0 : qty * quote.seller.price;
-    decreaseStockpile(quote.seller.actor, quote.resource, qty);
+    decreaseStockpile(quote.seller.actor, quote.seller.settlement.id, quote.resource, qty);
     increaseCaravanCargo(caravan, quote.resource, qty);
     if (!sameOwner) {
       caravan.treasury -= coin;
@@ -5204,7 +5400,11 @@ const remitStandingCaravanProfitAtHome = (
   settlements: readonly Settlement[],
   events: TickEvent[],
 ): number => {
-  if (!isStandingMerchantCaravan(caravan)) return 0;
+  // Both standing merchant caravans (patrician/caravan_owner/off_map) and
+  // villager caravans (free_village steward, docs/15 §C31) remit profit at
+  // home. Edge-hub + tax caravans are excluded because their balance is
+  // closed at the hub/capital, not at an owner's home.
+  if (!isStandingMerchantCaravan(caravan) && !isVillagerCaravan(caravan)) return 0;
   const owner = world.actors.get(caravan.ownerActor);
   if (owner === undefined || owner.homeSettlement === undefined) return 0;
   const home = settlements.find((settlement) => settlement.id === owner.homeSettlement);
@@ -5300,13 +5500,13 @@ const completeTaxShipmentIfArrived = (
   if (!hexEquals(caravan.position, caravan.destination)) return false;
 
   const owner = world.actors.get(caravan.ownerActor);
-  if (owner !== undefined) {
+  const destination = settlements[0];
+  if (owner !== undefined && destination !== undefined) {
     for (const [resource, qty] of caravan.cargo) {
-      receiveResourceOrCoin(owner, resource, qty);
-      const settlement = settlements[0];
+      receiveResourceOrCoin(owner, destination.id, resource, qty);
       // Tax shipment unloaded its cargo at the capital: an import for
       // the capital from the perspective of the receiving settlement.
-      if (settlement !== undefined) recordImport(settlement, resource, qty);
+      recordImport(destination, resource, qty);
     }
   }
   world.caravans.delete(caravanId);
@@ -5347,7 +5547,7 @@ const consignOffMapImportCargo = (
     const remaining = currentQty - qty;
     if (remaining > 1e-9) caravan.cargo.set(resource, remaining);
     else caravan.cargo.delete(resource);
-    increaseStockpile(factor.actor, resource, qty);
+    increaseStockpile(factor.actor, factor.settlement.id, resource, qty);
     // Off-map factor consignment lands at this settlement: import.
     recordImport(factor.settlement, resource, qty);
     consigned += qty;
@@ -5372,12 +5572,35 @@ const MERCHANT_CARAVAN_MIN_STARTER_RATION_DAYS = 7;
 const MERCHANT_CARAVAN_MIN_PACK_ANIMALS = 6;
 const MERCHANT_CARAVAN_PREFERRED_EQUINE_UNITS = 2;
 
+/**
+ * Per docs/15 §C31: villager caravans are short-haul village → city food
+ * runs spawned by the village's `free_village` steward. Their ID carries
+ * the `villager-` prefix so the viewer renders them with the dedicated
+ * peasant-with-handcart glyph and so caravan-bookkeeping doesn't confuse
+ * them with patron-owned long-haul merchant trains.
+ */
+const VILLAGER_CARAVAN_PREFIX = 'villager-';
+const VILLAGER_CARAVAN_ASSEMBLY_INTERVAL_DAYS = 14;
+const VILLAGER_CARAVAN_MAX_DISPATCHED_PER_INTERVAL = 4;
+const VILLAGER_CARAVAN_TARGET_PER_VILLAGE = 0.5;
+const VILLAGER_CARAVAN_TARGET_MAX = 120;
+const VILLAGER_CARAVAN_OWNER_CAP = 1;
+const VILLAGER_CARAVAN_MIN_OPERATING_TREASURY = 30;
+const VILLAGER_CARAVAN_MIN_STARTER_RATION_DAYS = 4;
+const VILLAGER_CARAVAN_MIN_PACK_ANIMALS = 2;
+const VILLAGER_CARAVAN_PREFERRED_EQUINE_UNITS = 0.6; // ≈3-4 mules
+const VILLAGER_CARAVAN_SURPLUS_DAYS_THRESHOLD = 14;
+
+const isVillagerCaravan = (caravan: Caravan): boolean =>
+  String(caravan.id).startsWith(VILLAGER_CARAVAN_PREFIX);
+
 const isStandingMerchantCaravan = (caravan: Caravan): boolean => {
   const id = String(caravan.id);
   return (
     !id.startsWith(EDGE_HUB_IMPORT_CARAVAN_PREFIX) &&
     !id.startsWith(EDGE_HUB_EXPORT_CARAVAN_PREFIX) &&
-    !id.startsWith('tax-')
+    !id.startsWith('tax-') &&
+    !id.startsWith(VILLAGER_CARAVAN_PREFIX)
   );
 };
 
@@ -5429,7 +5652,7 @@ const buyOwnerAssemblyStockAtLocalMarket = (
   resource: ResourceId,
   targetQty: number,
 ): number => {
-  let remaining = Math.max(0, targetQty - (buyer.stockpile.get(resource) ?? 0));
+  let remaining = Math.max(0, targetQty - getStockAt(buyer, settlement.id, resource));
   if (remaining <= 1e-9) return 0;
   let bought = 0;
   for (const seller of localSellerQuotes(world, [settlement], resource)) {
@@ -5441,8 +5664,8 @@ const buyOwnerAssemblyStockAtLocalMarket = (
     const qty = Math.min(remaining, seller.stock, maxByTreasury);
     if (qty <= 1e-9) continue;
     const coin = qty * seller.price;
-    decreaseStockpile(seller.actor, resource, qty);
-    increaseStockpile(buyer, resource, qty);
+    decreaseStockpile(seller.actor, seller.settlement.id, resource, qty);
+    increaseStockpile(buyer, settlement.id, resource, qty);
     buyer.treasury -= coin;
     seller.actor.treasury += coin;
     remaining -= qty;
@@ -5468,7 +5691,7 @@ const createReplacementMerchantCaravan = (
     MERCHANT_CARAVAN_PREFERRED_EQUINE_UNITS,
   );
   const availablePackAnimals = Math.floor(
-    (owner.stockpile.get(MERCHANT_CARAVAN_EQUINES_RESOURCE) ?? 0) * EQUINE_ANIMALS_PER_HERD_UNIT,
+    getStockAt(owner, origin.id, MERCHANT_CARAVAN_EQUINES_RESOURCE) * EQUINE_ANIMALS_PER_HERD_UNIT,
   );
   if (availablePackAnimals < MERCHANT_CARAVAN_MIN_PACK_ANIMALS) return null;
   let muleCount = rng.int(8, 14);
@@ -5481,7 +5704,7 @@ const createReplacementMerchantCaravan = (
   const equineUnitsNeeded = (muleCount + donkeyCount) / EQUINE_ANIMALS_PER_HERD_UNIT;
   const lightCartCount = Math.min(
     MERCHANT_CARAVAN_MAX_LIGHT_CARTS,
-    Math.floor(owner.stockpile.get(MERCHANT_CARAVAN_CART_RESOURCE) ?? 0),
+    Math.floor(getStockAt(owner, origin.id, MERCHANT_CARAVAN_CART_RESOURCE)),
   );
   const operatingTreasury = Math.min(owner.treasury, rng.int(250, 750));
   if (operatingTreasury < MERCHANT_CARAVAN_MIN_OPERATING_TREASURY) return null;
@@ -5509,9 +5732,9 @@ const createReplacementMerchantCaravan = (
   ) {
     return null;
   }
-  decreaseStockpile(owner, MERCHANT_CARAVAN_EQUINES_RESOURCE, equineUnitsNeeded);
+  decreaseStockpile(owner, origin.id, MERCHANT_CARAVAN_EQUINES_RESOURCE, equineUnitsNeeded);
   if (lightCartCount > 0) {
-    decreaseStockpile(owner, MERCHANT_CARAVAN_CART_RESOURCE, lightCartCount);
+    decreaseStockpile(owner, origin.id, MERCHANT_CARAVAN_CART_RESOURCE, lightCartCount);
   }
   owner.treasury -= operatingTreasury;
   buyCaravanRationsAtLocalMarkets(world, caravan, [origin], events);
@@ -5560,6 +5783,260 @@ const merchantCaravanAssemblyPhase = (
     dispatched += 1;
     events.push({
       type: 'merchant_caravan_dispatched',
+      caravan: caravan.id,
+      settlement: slot.settlement.id,
+      ownerActor: slot.actor.id,
+    });
+  }
+};
+
+// --- Villager caravans (docs/15 §C31) ------------------------------------
+
+/**
+ * Count active villager caravans per owner. Villager caravans use the
+ * `villager-` ID prefix so we can distinguish them from standing merchant
+ * caravans (which fill a separate fleet target).
+ */
+const villagerCaravanCountByOwner = (world: WorldState): Map<ActorId, number> => {
+  const out = new Map<ActorId, number>();
+  for (const caravan of world.caravans.values()) {
+    if (!isVillagerCaravan(caravan)) continue;
+    out.set(caravan.ownerActor, (out.get(caravan.ownerActor) ?? 0) + 1);
+  }
+  return out;
+};
+
+const villagerCaravanTarget = (world: WorldState): number => {
+  // Roughly half the villages can have a villager caravan out at any time.
+  let villageCount = 0;
+  for (const s of world.settlements.values()) {
+    if (s.tier === 'village') villageCount += 1;
+  }
+  const raw = Math.floor(villageCount * VILLAGER_CARAVAN_TARGET_PER_VILLAGE);
+  return Math.max(0, Math.min(VILLAGER_CARAVAN_TARGET_MAX, raw));
+};
+
+/**
+ * Per docs/15 §C31: things a Roman village routinely had surplus of and
+ * carted to a nearby city for sale — basic rural production. Food items,
+ * fibre/fleece, lumber, hides, livestock, and the simplest goods the village
+ * can make from those (cloth, clothing). NOT included: imports like wine,
+ * oil, pottery, tools, salt — those flow IN to a typical village, not out.
+ */
+const VILLAGER_EXPORTABLE_RESOURCES: ReadonlyArray<ResourceId> = [
+  // Food
+  resourceId('food.grain'),
+  resourceId('food.legumes'),
+  resourceId('food.salted_fish'),
+  resourceId('food.salted_meat'),
+  resourceId('food.cheese'),
+  // Fibres + raw materials
+  resourceId('material.flax'),
+  resourceId('material.linen_fiber'),
+  resourceId('material.wool'),
+  resourceId('material.wood'),
+  resourceId('material.lumber'),
+  resourceId('material.hides'),
+  resourceId('material.leather'),
+  // Livestock + goods made in-village
+  resourceId('livestock.sheep'),
+  resourceId('livestock.cattle'),
+  resourceId('livestock.pigs'),
+  resourceId('goods.cloth'),
+  resourceId('goods.clothing'),
+];
+
+/**
+ * Per docs/15 §C31: enough treasury that a village steward could
+ * realistically fund an import-only round-trip — fully-paid cart + 4-day
+ * starter rations + city-side purchase of pots/oil/tools/salt to bring
+ * home. Below this threshold the steward can't really afford an
+ * import-driven trip; we still let the caravan launch on a surplus
+ * trigger so it can earn coin on the way.
+ */
+const VILLAGER_CARAVAN_IMPORT_TRIP_MIN_TREASURY = 200;
+
+/**
+ * Per docs/15 §C31: is it worth sending a villager caravan out THIS
+ * cycle? Three Roman village-to-city motivations:
+ *  1. Surplus run — the village has any meaningful exportable inventory
+ *     (food, fibre, wood, livestock, cloth) above a small per-capita
+ *     threshold. The caravan carries it to the city, returns with coin
+ *     and/or city goods.
+ *  2. Import trip — the village has accumulated treasury and wants to
+ *     buy what it can't make itself (oil, wine, salt, pottery, tools).
+ *  3. Hard-times resupply — the village's own subsistence stocks are
+ *     critically low AND it has any cash, so the steward drains some
+ *     treasury and sends the caravan to buy back food/staples from the
+ *     city.
+ *
+ * Each case is a "yes, dispatch a caravan" — the planner picks the
+ * cargo + direction once the caravan exists.
+ */
+const villageWantsCaravan = (settlement: Settlement, steward: Actor): boolean => {
+  const pop = settlement.population.total();
+  if (pop <= 0) return false;
+  // Case 1: any exportable above a small per-capita day threshold.
+  for (const r of VILLAGER_EXPORTABLE_RESOURCES) {
+    const stock = getStockAt(steward, settlement.id, r);
+    if (stock <= 0) continue;
+    // Loose threshold: stock equivalent to ≥ N days of the village's own
+    // subsistence-style consumption of that resource. Per-resource rate
+    // varies, but 0.02/adult/day is a safe lower bound across the list
+    // (grain alone is 0.06; bulky materials less). The planner makes the
+    // tight cargo decision; this is just a "do you have meaningful
+    // inventory?" filter.
+    const daysOfLocalUse = stock / Math.max(1, pop * 0.02);
+    if (daysOfLocalUse >= VILLAGER_CARAVAN_SURPLUS_DAYS_THRESHOLD) return true;
+  }
+  // Case 2: import trip — steward has accumulated coin and wants
+  // city-made goods. Even with empty granary, this funds a "go buy us
+  // something useful" run.
+  if (steward.treasury >= VILLAGER_CARAVAN_IMPORT_TRIP_MIN_TREASURY) return true;
+  // Case 3: hard-times resupply — village grain stock under 7 days of
+  // subsistence AND steward has any cash to spend. Caravan goes to city
+  // and buys staples back.
+  const grainStock = getStockAt(steward, settlement.id, resourceId('food.grain'));
+  const grainDays = grainStock / Math.max(1, pop * 0.06);
+  if (grainDays < 7 && steward.treasury >= VILLAGER_CARAVAN_MIN_OPERATING_TREASURY) return true;
+  return false;
+};
+
+const eligibleVillagerCaravanOwners = (
+  world: WorldState,
+  activeByOwner: ReadonlyMap<ActorId, number>,
+): { readonly actor: Actor; readonly settlement: Settlement }[] => {
+  const out: { actor: Actor; settlement: Settlement }[] = [];
+  for (const actor of world.actors.values()) {
+    if (actor.kind !== 'free_village') continue;
+    if ((activeByOwner.get(actor.id) ?? 0) >= VILLAGER_CARAVAN_OWNER_CAP) continue;
+    if (actor.treasury < VILLAGER_CARAVAN_MIN_OPERATING_TREASURY) continue;
+    if (actor.homeSettlement === undefined) continue;
+    const settlement = world.settlements.get(actor.homeSettlement);
+    if (settlement === undefined) continue;
+    if (settlement.tier !== 'village') continue;
+    if (!villageWantsCaravan(settlement, actor)) continue;
+    out.push({ actor, settlement });
+  }
+  // Stable order: deterministic by id; shuffled later when picking the
+  // dispatch slice.
+  out.sort((a, b) => String(a.actor.id).localeCompare(String(b.actor.id)));
+  return out;
+};
+
+const createVillagerCaravan = (
+  world: WorldState,
+  today: Day,
+  owner: Actor,
+  origin: Settlement,
+  rng: Rng,
+  index: number,
+  events: TickEvent[],
+): Caravan | null => {
+  // Allow the village to buy a small herd locally before assembling, just
+  // like the merchant flow — but with a much smaller target.
+  buyOwnerAssemblyStockAtLocalMarket(
+    world,
+    owner,
+    origin,
+    MERCHANT_CARAVAN_EQUINES_RESOURCE,
+    VILLAGER_CARAVAN_PREFERRED_EQUINE_UNITS,
+  );
+  const availablePackAnimals = Math.floor(
+    getStockAt(owner, origin.id, MERCHANT_CARAVAN_EQUINES_RESOURCE) * EQUINE_ANIMALS_PER_HERD_UNIT,
+  );
+  if (availablePackAnimals < VILLAGER_CARAVAN_MIN_PACK_ANIMALS) return null;
+  let muleCount = rng.int(2, 4);
+  let donkeyCount = rng.int(0, 1);
+  while (muleCount + donkeyCount > availablePackAnimals) {
+    if (donkeyCount > 0) donkeyCount -= 1;
+    else muleCount -= 1;
+  }
+  if (muleCount < VILLAGER_CARAVAN_MIN_PACK_ANIMALS) return null;
+  const equineUnitsNeeded = (muleCount + donkeyCount) / EQUINE_ANIMALS_PER_HERD_UNIT;
+  // Per docs/15 §C31: scale operating treasury with the village's coin
+  // reserves so import trips + hard-times resupply can actually fund
+  // meaningful purchases at the city. Lower bound keeps the trip funded;
+  // upper bound is randomized but capped at what the village can afford
+  // while still keeping a small reserve at home.
+  const stewardReserveFloor = VILLAGER_CARAVAN_MIN_OPERATING_TREASURY;
+  const spendable = Math.max(0, owner.treasury - stewardReserveFloor);
+  const operatingTreasury = Math.min(spendable, rng.int(50, 250));
+  if (operatingTreasury < VILLAGER_CARAVAN_MIN_OPERATING_TREASURY) return null;
+  const tag = Math.floor(rng.next() * 1_000_000_000);
+  const caravan = createCaravan({
+    id: makeCaravanIdLocal(
+      `${VILLAGER_CARAVAN_PREFIX}${today}-${index}-${String(owner.id)}-${tag}`,
+    ),
+    ownerActor: owner.id,
+    position: { q: origin.anchor.q, r: origin.anchor.r },
+    destination: { q: origin.anchor.q, r: origin.anchor.r },
+    // Minimal crew: a driver and a single guard. No merchant — the village
+    // headman / steward is back at the granary.
+    crew: [
+      { kind: 'drover', count: 1, weapons: 0.1, armor: 0.05 },
+      { kind: 'caravan_guard', count: 1, weapons: 0.4, armor: 0.2 },
+    ],
+    animals: { mule: muleCount, donkey: donkeyCount },
+    vehicles: { pack_saddle: 1 },
+    treasury: operatingTreasury,
+  });
+  if (!world.grid.has(caravan.position)) return null;
+  const minStarterRationKg =
+    dailyCarriedFoodReserveKg(caravan) * VILLAGER_CARAVAN_MIN_STARTER_RATION_DAYS;
+  if (
+    estimateLocalRationPurchaseKg(world, caravan, [origin], operatingTreasury) < minStarterRationKg
+  ) {
+    return null;
+  }
+  decreaseStockpile(owner, origin.id, MERCHANT_CARAVAN_EQUINES_RESOURCE, equineUnitsNeeded);
+  owner.treasury -= operatingTreasury;
+  buyCaravanRationsAtLocalMarkets(world, caravan, [origin], events);
+  return caravan;
+};
+
+const villagerCaravanAssemblyPhase = (
+  world: WorldState,
+  rng: Rng,
+  today: Day,
+  events: TickEvent[],
+): void => {
+  if (today % VILLAGER_CARAVAN_ASSEMBLY_INTERVAL_DAYS !== 0) return;
+  const worldRoom = remainingWorldCaravanSlots(world);
+  if (worldRoom <= 0) return;
+  const activeByOwner = villagerCaravanCountByOwner(world);
+  const active = Array.from(activeByOwner.values()).reduce((sum, n) => sum + n, 0);
+  const target = villagerCaravanTarget(world);
+  if (active >= target) return;
+
+  const eligible = rng.shuffle(eligibleVillagerCaravanOwners(world, activeByOwner));
+  if (eligible.length === 0) return;
+  const toDispatch = Math.min(
+    VILLAGER_CARAVAN_MAX_DISPATCHED_PER_INTERVAL,
+    target - active,
+    worldRoom,
+  );
+  let dispatched = 0;
+  for (let i = 0; i < eligible.length && dispatched < toDispatch; i++) {
+    const slot = eligible[i];
+    if (slot === undefined) continue;
+    const currentForOwner = activeByOwner.get(slot.actor.id) ?? 0;
+    if (currentForOwner >= VILLAGER_CARAVAN_OWNER_CAP) continue;
+    const caravan = createVillagerCaravan(
+      world,
+      today,
+      slot.actor,
+      slot.settlement,
+      rng.derive(`villager-dispatch-${i}`),
+      dispatched,
+      events,
+    );
+    if (caravan === null) continue;
+    world.caravans.set(caravan.id, caravan);
+    activeByOwner.set(slot.actor.id, currentForOwner + 1);
+    dispatched += 1;
+    events.push({
+      type: 'villager_caravan_dispatched',
       caravan: caravan.id,
       settlement: slot.settlement.id,
       ownerActor: slot.actor.id,
@@ -5946,7 +6423,9 @@ const caravanReplanPhase = (world: WorldState, rng: Rng, today: Day, events: Tic
         // spending the caravan into starvation.
         maxSpendCoin: Math.max(0, c.treasury - missingRationKg),
         reserveTripOperatingCost: true,
-        ...(originAvailability !== undefined ? { originAvailableQuantity: originAvailability } : {}),
+        ...(originAvailability !== undefined
+          ? { originAvailableQuantity: originAvailability }
+          : {}),
         destinationBidDepth,
       },
       minNetProfitCoin: CARAVAN_MIN_NET_PROFIT_COIN,
@@ -6060,8 +6539,17 @@ const refundCaravanToOwner = (world: WorldState, c: Caravan): void => {
   if (owner === undefined) return;
   owner.treasury += Math.max(0, c.treasury);
   c.treasury = 0;
+  // Cargo + livestock + carts refund to the owner's slice at their home
+  // settlement (per docs/15 §C30 — inventory must land at a specific
+  // settlement). Off-map owners with no homeSettlement just lose the
+  // physical assets; their treasury is already refunded above.
+  const refundSettlement = owner.homeSettlement;
+  if (refundSettlement === undefined) {
+    c.cargo.clear();
+    return;
+  }
   for (const [resource, qty] of c.cargo) {
-    if (qty > 0) increaseStockpile(owner, resource, qty);
+    if (qty > 0) increaseStockpile(owner, refundSettlement, resource, qty);
   }
   c.cargo.clear();
   const equineResource = resourceId('livestock.equines');
@@ -6075,14 +6563,14 @@ const refundCaravanToOwner = (world: WorldState, c: Caravan): void => {
     // ~6 pack animals per herd unit (matches procgen's
     // transport-capital convention).
     const herdUnits = equineUnits / 6;
-    if (herdUnits > 0) increaseStockpile(owner, equineResource, herdUnits);
+    if (herdUnits > 0) increaseStockpile(owner, refundSettlement, equineResource, herdUnits);
   }
   let cartUnits = 0;
   for (const k of Object.keys(c.vehicles) as (keyof typeof c.vehicles)[]) {
     const n = c.vehicles[k] ?? 0;
     if (n > 0) cartUnits += n;
   }
-  if (cartUnits > 0) increaseStockpile(owner, cartResource, cartUnits);
+  if (cartUnits > 0) increaseStockpile(owner, refundSettlement, cartResource, cartUnits);
 };
 
 // --- Bandit phase -----------------------------------------------------------
@@ -6236,6 +6724,123 @@ const countGuards = (c: Caravan): number => {
   return guards;
 };
 
+/**
+ * Per docs/15 §C32 — does this camp currently have a party out on a
+ * mission? One party at a time per camp (the user's design).
+ */
+const campHasOutgoingParty = (world: WorldState, campId: BanditCampId): boolean => {
+  if (world.banditParties === undefined) return false;
+  for (const party of world.banditParties.values()) {
+    if (party.homeCamp === campId) return true;
+  }
+  return false;
+};
+
+const makeBanditPartyId = (campId: BanditCampId, today: Day): BanditPartyId => {
+  // Per-camp-per-day id — deterministic across runs since each camp can
+  // only have one outgoing party at a time.
+  return `bp-${String(campId)}-${today}` as BanditPartyId;
+};
+
+/**
+ * Per docs/15 §C32: split off a subset of the camp's bandits into a
+ * party. The party fraction is mission-dependent:
+ *   raid_settlement: ~half the camp (capped at 12)
+ *   raid_caravan:    ~half the camp (capped at 12)
+ *   fence_loot:      a small escort (~25%, capped at 4)
+ *   recruit_drive:   a couple of messengers (~20%, capped at 3)
+ *   migrate:         the entire camp roster (one-way trip)
+ *   bribe_settlement: a tiny coin-bag party (~20%, capped at 3)
+ * The camp keeps the rest (at least 1 bandit unless migrating). If the
+ * camp can't spare any bandits the party is not spawned.
+ */
+const splitOffPartyRoster = (
+  camp: BanditCamp,
+  mission: BanditPartyMission,
+): { partyCount: number; campCount: number } => {
+  const total = Math.max(0, Math.floor(camp.banditCount));
+  if (total <= 0) return { partyCount: 0, campCount: 0 };
+  let fraction = 0.5;
+  let cap = 12;
+  let migrate = false;
+  switch (mission.type) {
+    case 'raid_settlement':
+    case 'raid_caravan':
+      fraction = 0.5;
+      cap = 12;
+      break;
+    case 'fence_loot':
+      fraction = 0.25;
+      cap = 4;
+      break;
+    case 'recruit_drive':
+      fraction = 0.2;
+      cap = 3;
+      break;
+    case 'bribe_settlement':
+      fraction = 0.2;
+      cap = 3;
+      break;
+    case 'migrate':
+      migrate = true;
+      break;
+  }
+  if (migrate) return { partyCount: total, campCount: 0 };
+  const ideal = Math.min(cap, Math.max(1, Math.floor(total * fraction)));
+  // Keep at least 1 bandit behind for non-migrate missions.
+  const partyCount = Math.min(ideal, total - 1);
+  return { partyCount: Math.max(0, partyCount), campCount: total - Math.max(0, partyCount) };
+};
+
+const spawnBanditParty = (
+  world: WorldState,
+  campId: BanditCampId,
+  camp: BanditCamp,
+  mission: BanditPartyMission,
+  today: Day,
+  events: TickEvent[],
+  initialCargo?: ReadonlyMap<ResourceId, Quantity>,
+  initialTreasury?: number,
+): BanditParty | null => {
+  if (world.banditParties === undefined) return null;
+  if (campHasOutgoingParty(world, campId)) return null;
+  const split = splitOffPartyRoster(camp, mission);
+  if (split.partyCount <= 0) return null;
+
+  const partyId = makeBanditPartyId(campId, today);
+  const party = createBanditParty({
+    id: partyId,
+    homeCamp: mission.type === 'migrate' ? null : campId,
+    homeHex: camp.hex,
+    ownerActor: camp.ownerActor,
+    position: camp.hex,
+    mission,
+    banditCount: split.partyCount,
+    weaponsPerBandit: camp.weaponsPerBandit,
+    armorPerBandit: camp.armorPerBandit,
+    averageHealth: camp.averageHealth,
+    ...(initialCargo !== undefined ? { cargo: initialCargo } : {}),
+    ...(initialTreasury !== undefined ? { treasury: initialTreasury } : {}),
+  });
+  world.banditParties.set(partyId, party);
+
+  // For non-migrate missions, the camp keeps its remaining bandits +
+  // shrinks its banditCount to reflect those who left.
+  if (mission.type !== 'migrate' && world.banditCamps !== undefined) {
+    const updated: BanditCamp = { ...camp, banditCount: split.campCount };
+    world.banditCamps.set(campId, updated);
+  }
+
+  events.push({
+    type: 'bandit_party_dispatched',
+    party: partyId,
+    fromCamp: campId,
+    missionType: mission.type,
+    at: { q: camp.hex.q, r: camp.hex.r },
+  });
+  return party;
+};
+
 const applyCampAction = (
   world: WorldState,
   campId: BanditCampId,
@@ -6246,134 +6851,139 @@ const applyCampAction = (
   events: TickEvent[],
 ): void => {
   if (world.banditCamps === undefined) return;
+  // Per docs/15 §C32: every camp-originated action that touches another
+  // hex goes through a bandit party. The camp still stays put.
+  if (campHasOutgoingParty(world, campId)) {
+    // The camp's hand is busy already — act `lay_low` this tick.
+    void today;
+    void rng;
+    return;
+  }
   switch (action.type) {
     case 'lay_low':
       return;
-    case 'recruit_drive':
+    case 'recruit_drive': {
       recruitDriveMultiplier.set(campId, 2);
+      // Also spawn a small visible party that walks toward the nearest
+      // friendly-ish village to "spread the word." We use the closest
+      // settlement (tier ≤ village) as the recruiting target hex.
+      const nearVillage = findNearestSettlementByTier(world, camp.hex, ['village', 'hamlet']);
+      if (nearVillage !== null) {
+        spawnBanditParty(
+          world,
+          campId,
+          camp,
+          {
+            type: 'recruit_drive',
+            fromSettlement: nearVillage.id,
+            fromHex: nearVillage.anchor,
+          },
+          today,
+          events,
+        );
+      }
       return;
+    }
     case 'move_camp': {
-      // Walk one hex toward the target.
-      const from = camp.hex;
-      const dq = Math.sign(action.toHex.q - from.q);
-      const dr = Math.sign(action.toHex.r - from.r);
-      const stepHex = { q: from.q + dq, r: from.r + dr };
-      // Only step if the destination tile exists and is wilderness.
-      const tile = world.grid.get(stepHex);
+      // Spawn a one-way migration party with the camp's full roster; on
+      // arrival it founds a new camp at the target hex and the old camp
+      // is deleted.
+      const targetHex = { q: action.toHex.q, r: action.toHex.r };
+      const tile = world.grid.get(targetHex);
       if (tile === undefined) return;
-      const moved: BanditCamp = { ...camp, hex: stepHex };
-      world.banditCamps.set(campId, moved);
+      const party = spawnBanditParty(
+        world,
+        campId,
+        camp,
+        { type: 'migrate', targetHex },
+        today,
+        events,
+      );
+      if (party !== null) {
+        // Camp is leaving — clear it from the registry. The new camp
+        // will be founded by the party on arrival at targetHex.
+        world.banditCamps.delete(campId);
+      }
       return;
     }
     case 'raid_caravan': {
-      const target = findCaravanAtHex(world, action.targetHex);
-      if (target === null) return;
-      const tile = world.grid.get(target.position);
-      if (tile === undefined) return;
-      const result = resolveAmbush({
-        attacker: camp,
-        target,
-        ambushHexTerrain: tile.terrain,
-        rng: rng.derive('ambush'),
-      });
-
-      // Apply caravan casualties: remove crew, animals (animals deferred —
-      // caravan model doesn't separate them yet; v1 just records the loss).
-      let deathsRemaining = result.caravanCasualties.crewDeaths;
-      for (const m of target.crew) {
-        if (deathsRemaining <= 0) break;
-        const take = Math.min(m.count, deathsRemaining);
-        m.count -= take;
-        deathsRemaining -= take;
-      }
-      // Remove zero-count crew entries to keep validation invariants.
-      target.crew = target.crew.filter((m) => m.count > 0);
-      const caravanCrewWiped = totalCrewCount(target) <= 0;
-
-      // Transfer cargo from caravan to camp loot.
-      for (const [resId, qty] of result.cargoTaken) {
-        const have = target.cargo.get(resId) ?? 0;
-        const newQty = have - qty;
-        if (newQty <= 1e-9) target.cargo.delete(resId);
-        else target.cargo.set(resId, newQty);
-        const lootHave = camp.loot.get(resId) ?? 0;
-        camp.loot.set(resId, lootHave + qty);
-      }
-      target.treasury = Math.max(0, target.treasury - result.coinTaken);
-      camp.treasury += result.coinTaken;
-
-      // Apply bandit casualties → new camp record.
-      const banditDeaths = result.banditCasualties.deaths;
-      const remaining = Math.max(0, camp.banditCount - banditDeaths);
-      const updated: BanditCamp = { ...camp, banditCount: remaining };
-      if (remaining <= 0) world.banditCamps.delete(campId);
-      else world.banditCamps.set(campId, updated);
-
-      if (result.outcome === 'attacker_won' || result.outcome === 'caravan_fled') {
-        lastSuccessfulRaidDay.set(campId, today);
-      }
-
-      let cargoLost = 0;
-      for (const qty of result.cargoTaken.values()) cargoLost += qty;
-      if (cargoLost > 0 || result.coinTaken > 0 || result.caravanCasualties.crewDeaths > 0) {
-        events.push({
-          type: 'caravan_robbed',
-          caravan: target.id,
-          by: campId,
-          cargoLost,
-        });
-      }
-
-      // Emit news carriers for fled_escaped survivors on the caravan side.
-      // They walk to the nearest settlement at refugee speed (~20 hex/day)
-      // and on arrival apply reputation deltas via processNewsArrival.
-      // docs/13 §"Battle survivor system": survivors are the ONLY route by
-      // which battle outcomes propagate to the world's reputation slates.
-      spawnNewsFromAmbush(world, today, target, campId, camp, result, cargoLost, events);
-      if (caravanCrewWiped) {
-        world.caravans.delete(target.id);
-        events.push({
-          type: 'caravan_disbanded',
-          caravan: target.id,
-          at: { q: target.position.q, r: target.position.r },
-          reason: 'zero_crew',
-        });
-      }
+      // Per docs/15 §C32: spawn a party that walks toward the caravan's
+      // last-seen hex. The caravan may have moved by the time the party
+      // arrives; the party's executing tick scans for any caravan still
+      // at the target hex.
+      spawnBanditParty(
+        world,
+        campId,
+        camp,
+        {
+          type: 'raid_caravan',
+          targetHex: { q: action.targetHex.q, r: action.targetHex.r },
+        },
+        today,
+        events,
+      );
       return;
     }
     case 'raid_settlement': {
       const target = world.settlements.get(action.targetSettlement);
       if (target === undefined) return;
-      executeSettlementRaid(world, today, campId, camp, target, rng.derive('raid'), events);
+      spawnBanditParty(
+        world,
+        campId,
+        camp,
+        {
+          type: 'raid_settlement',
+          target: target.id,
+          targetHex: target.anchor,
+        },
+        today,
+        events,
+      );
       return;
     }
     case 'fence_loot': {
       const through = world.settlements.get(action.throughSettlement);
       if (through === undefined) return;
-      executeFenceTransaction(world, today, campId, camp, through, events);
+      // Transfer ALL loot to the party — that's what the caravan is
+      // carrying. Coin returns on arrival.
+      const cargo = new Map(camp.loot);
+      camp.loot.clear();
+      spawnBanditParty(
+        world,
+        campId,
+        camp,
+        {
+          type: 'fence_loot',
+          through: through.id,
+          throughHex: through.anchor,
+        },
+        today,
+        events,
+        cargo,
+      );
       return;
     }
     case 'bribe_settlement': {
       const target = world.settlements.get(action.settlement);
       if (target === undefined) return;
-      // Find a stockpile-owning actor to receive the bribe.
-      let receiver: Actor | undefined;
-      for (const oId of target.stockpileOwners) {
-        const a = world.actors.get(oId);
-        if (a !== undefined && (a.kind === 'city_corporation' || a.kind === 'governor_office')) {
-          receiver = a;
-          break;
-        }
-      }
       const amount = Math.min(camp.treasury, action.amount);
       if (amount <= 0) return;
       camp.treasury -= amount;
-      if (receiver !== undefined) receiver.treasury += amount;
-      // Reputation: receiver becomes friendlier to bandit camp owner.
-      if (receiver !== undefined) {
-        world.reputation.apply(camp.ownerActor, receiver.id, 0.05);
-        world.reputation.apply(receiver.id, camp.ownerActor, 0.1);
-      }
+      spawnBanditParty(
+        world,
+        campId,
+        camp,
+        {
+          type: 'bribe_settlement',
+          settlement: target.id,
+          settlementHex: target.anchor,
+          amount,
+        },
+        today,
+        events,
+        undefined,
+        amount,
+      );
       return;
     }
   }
@@ -6404,7 +7014,7 @@ const aggregateSettlementStockpile = (
   for (const oId of settlement.stockpileOwners) {
     const a = world.actors.get(oId);
     if (a === undefined) continue;
-    for (const [res, qty] of a.stockpile) {
+    for (const [res, qty] of actorStockEntriesAt(a, settlement.id)) {
       out.set(res, (out.get(res) ?? 0) + qty);
     }
   }
@@ -6416,19 +7026,19 @@ const drainSettlementStockpile = (
   settlement: Settlement,
   loot: ReadonlyMap<ResourceId, Quantity>,
 ): void => {
-  // Drain each resource proportionally across stockpile owners.
+  // Drain each resource proportionally across stockpile owners' slices at
+  // THIS settlement (per docs/15 §C30 — loot comes from goods physically
+  // here, not from the owner's holdings elsewhere).
   for (const [res, qty] of loot) {
     let remaining = qty;
     for (const oId of settlement.stockpileOwners) {
       if (remaining <= 1e-9) break;
       const a = world.actors.get(oId);
       if (a === undefined) continue;
-      const have = a.stockpile.get(res) ?? 0;
+      const have = getStockAt(a, settlement.id, res);
       if (have <= 0) continue;
       const take = Math.min(have, remaining);
-      const newQty = have - take;
-      if (newQty > 1e-9) a.stockpile.set(res, newQty);
-      else a.stockpile.delete(res);
+      removeStockAt(a, settlement.id, res, take);
       remaining -= take;
     }
   }
@@ -6662,7 +7272,7 @@ const executeFenceTransaction = (
     const newCampQty = have - moveQty;
     if (newCampQty > 1e-9) camp.loot.set(t.res, newCampQty);
     else camp.loot.delete(t.res);
-    fence.stockpile.set(t.res, (fence.stockpile.get(t.res) ?? 0) + moveQty);
+    addStockAt(fence, through.id, t.res, moveQty);
   }
   fence.treasury -= coinPaid;
   camp.treasury += coinPaid;
@@ -6682,6 +7292,518 @@ const findCaravanAtHex = (world: WorldState, hex: Hex): Caravan | null => {
     if (hexEquals(c.position, hex)) return c;
   }
   return null;
+};
+
+// --- Bandit party movement + mission resolution (docs/15 §C32) ----------
+
+const findNearestSettlementByTier = (
+  world: WorldState,
+  from: Hex,
+  tiers: readonly Settlement['tier'][],
+): Settlement | null => {
+  let best: Settlement | null = null;
+  let bestD = Infinity;
+  for (const s of world.settlements.values()) {
+    if (!tiers.includes(s.tier)) continue;
+    const d = hexDistance(from, s.anchor);
+    if (d < bestD) {
+      bestD = d;
+      best = s;
+    }
+  }
+  return best;
+};
+
+/**
+ * Build a synthetic BanditCamp record from a party so that existing
+ * combat / fence resolution code (which is written against BanditCamp
+ * structurally) can be called with a party as the attacker. The
+ * returned record points at FRESH mutable Maps so we can extract the
+ * side-effects (loot taken, treasury earned) back into the party.
+ */
+const partyAsSyntheticCamp = (party: BanditParty): BanditCamp => ({
+  id: party.homeCamp ?? (`synthetic-${String(party.id)}` as BanditCampId),
+  name: `Party ${String(party.id)}`,
+  hex: party.position,
+  ownerActor: party.ownerActor,
+  banditCount: party.banditCount,
+  hangersOnCount: 0,
+  loot: new Map(party.cargo),
+  treasury: party.treasury,
+  weaponsPerBandit: party.weaponsPerBandit,
+  armorPerBandit: party.armorPerBandit,
+  averageHealth: party.averageHealth,
+});
+
+/** When a returning party arrives home, fold its stats back into the camp. */
+const mergePartyIntoCamp = (camp: BanditCamp, party: BanditParty): BanditCamp => {
+  const mergedLoot = new Map(camp.loot);
+  for (const [r, q] of party.cargo) {
+    mergedLoot.set(r, (mergedLoot.get(r) ?? 0) + q);
+  }
+  return {
+    ...camp,
+    banditCount: camp.banditCount + party.banditCount,
+    loot: mergedLoot,
+    treasury: camp.treasury + party.treasury,
+  };
+};
+
+/** Found a new camp from a party that has no home (migrate / orphaned). */
+const foundCampFromParty = (
+  world: WorldState,
+  party: BanditParty,
+  today: Day,
+): BanditCampId | null => {
+  if (world.banditCamps === undefined) return null;
+  const aId = `actor-emergent-party-${String(party.id)}-${today}` as ActorId;
+  if (!world.actors.has(aId)) {
+    world.actors.set(
+      aId,
+      createActor({
+        id: aId,
+        kind: 'bandit_camp',
+        name: `Band of ${String(party.id)}`,
+        treasury: 0,
+      }),
+    );
+  }
+  const cId = `camp-from-party-${String(party.id)}-${today}` as BanditCampId;
+  const camp = createCamp({
+    id: cId,
+    name: `Band at (${party.position.q},${party.position.r})`,
+    hex: party.position,
+    ownerActor: aId,
+    banditCount: party.banditCount,
+    hangersOnCount: 0,
+    weaponsPerBandit: party.weaponsPerBandit,
+    armorPerBandit: party.armorPerBandit,
+    averageHealth: party.averageHealth,
+    loot: party.cargo,
+    treasury: party.treasury,
+  });
+  world.banditCamps.set(cId, camp);
+  return cId;
+};
+
+/**
+ * Per docs/15 §C32: resolve whatever the party came here to do. Returns
+ * `true` if the party should now switch to `returning` (round-trip
+ * missions) or `done` (one-way migrate).
+ */
+const resolvePartyMissionAtTarget = (
+  world: WorldState,
+  partyId: BanditPartyId,
+  party: BanditParty,
+  today: Day,
+  rng: Rng,
+  events: TickEvent[],
+): void => {
+  void partyId;
+  const homeCampId = party.homeCamp;
+  const homeCamp = homeCampId !== null ? world.banditCamps?.get(homeCampId) : undefined;
+  switch (party.mission.type) {
+    case 'raid_settlement': {
+      const target = world.settlements.get(party.mission.target);
+      if (
+        target === undefined ||
+        homeCamp === undefined ||
+        homeCampId === null ||
+        world.banditCamps === undefined
+      ) {
+        party.phase = 'returning';
+        return;
+      }
+      // Use a synthetic camp for the combat call; extract the side-effects.
+      const synth = partyAsSyntheticCamp(party);
+      // executeSettlementRaid mutates `synth.loot`, `synth.treasury` and
+      // writes back to world.banditCamps[homeCampId] for casualties. We
+      // temporarily install the synth under the home camp's id so the
+      // function's writes land somewhere we can read.
+      const realCampSnapshot = homeCamp;
+      world.banditCamps.set(homeCampId, synth);
+      executeSettlementRaid(world, today, homeCampId, synth, target, rng.derive('raid'), events);
+      const afterRaid = world.banditCamps.get(homeCampId);
+      // Restore the real camp (preserving its bandit count from before)
+      // and read the synth's loot back into the party.
+      world.banditCamps.set(homeCampId, realCampSnapshot);
+      if (afterRaid !== undefined) {
+        party.banditCount = afterRaid.banditCount;
+        party.cargo = new Map(afterRaid.loot);
+        party.treasury = afterRaid.treasury;
+      } else {
+        // Synthetic camp was deleted (zero count) — the party was wiped.
+        party.banditCount = 0;
+        party.cargo = new Map();
+        party.treasury = 0;
+      }
+      party.phase = 'returning';
+      return;
+    }
+    case 'raid_caravan': {
+      const targetCaravan = findCaravanAtHex(world, party.position);
+      if (targetCaravan === null || homeCamp === undefined || world.banditCamps === undefined) {
+        party.phase = 'returning';
+        return;
+      }
+      const tile = world.grid.get(targetCaravan.position);
+      if (tile === undefined) {
+        party.phase = 'returning';
+        return;
+      }
+      const synth = partyAsSyntheticCamp(party);
+      const result = resolveAmbush({
+        attacker: synth,
+        target: targetCaravan,
+        ambushHexTerrain: tile.terrain,
+        rng: rng.derive('ambush'),
+      });
+      // Apply caravan casualties.
+      let deathsRemaining = result.caravanCasualties.crewDeaths;
+      for (const m of targetCaravan.crew) {
+        if (deathsRemaining <= 0) break;
+        const take = Math.min(m.count, deathsRemaining);
+        m.count -= take;
+        deathsRemaining -= take;
+      }
+      targetCaravan.crew = targetCaravan.crew.filter((m) => m.count > 0);
+      const caravanCrewWiped = totalCrewCount(targetCaravan) <= 0;
+      // Transfer cargo from caravan to PARTY (not camp loot — party
+      // carries it home).
+      for (const [resId, qty] of result.cargoTaken) {
+        const have = targetCaravan.cargo.get(resId) ?? 0;
+        const newQty = have - qty;
+        if (newQty <= 1e-9) targetCaravan.cargo.delete(resId);
+        else targetCaravan.cargo.set(resId, newQty);
+        party.cargo.set(resId, (party.cargo.get(resId) ?? 0) + qty);
+      }
+      targetCaravan.treasury = Math.max(0, targetCaravan.treasury - result.coinTaken);
+      party.treasury += result.coinTaken;
+      // Apply party casualties.
+      party.banditCount = Math.max(0, party.banditCount - result.banditCasualties.deaths);
+      if (result.outcome === 'attacker_won' || result.outcome === 'caravan_fled') {
+        if (homeCampId !== null) lastSuccessfulRaidDay.set(homeCampId, today);
+      }
+      let cargoLost = 0;
+      for (const qty of result.cargoTaken.values()) cargoLost += qty;
+      if (cargoLost > 0 || result.coinTaken > 0 || result.caravanCasualties.crewDeaths > 0) {
+        events.push({
+          type: 'caravan_robbed',
+          caravan: targetCaravan.id,
+          by: homeCampId ?? (`party:${String(party.id)}` as BanditCampId),
+          cargoLost,
+        });
+      }
+      spawnNewsFromAmbush(
+        world,
+        today,
+        targetCaravan,
+        homeCampId ?? (`party:${String(party.id)}` as BanditCampId),
+        synth,
+        result,
+        cargoLost,
+        events,
+      );
+      if (caravanCrewWiped) {
+        world.caravans.delete(targetCaravan.id);
+        events.push({
+          type: 'caravan_disbanded',
+          caravan: targetCaravan.id,
+          at: { q: targetCaravan.position.q, r: targetCaravan.position.r },
+          reason: 'zero_crew',
+        });
+      }
+      party.phase = 'returning';
+      return;
+    }
+    case 'fence_loot': {
+      const through = world.settlements.get(party.mission.through);
+      if (through === undefined || homeCamp === undefined || world.banditCamps === undefined) {
+        party.phase = 'returning';
+        return;
+      }
+      // Reuse the existing fence transaction by handing it a synthetic
+      // camp (party stats + party cargo).
+      const synth = partyAsSyntheticCamp(party);
+      const realCampSnapshot = homeCamp;
+      if (homeCampId !== null) world.banditCamps.set(homeCampId, synth);
+      executeFenceTransaction(
+        world,
+        today,
+        homeCampId ?? (`party:${String(party.id)}` as BanditCampId),
+        synth,
+        through,
+        events,
+      );
+      if (homeCampId !== null) world.banditCamps.set(homeCampId, realCampSnapshot);
+      party.cargo = new Map(synth.loot);
+      party.treasury = synth.treasury;
+      party.phase = 'returning';
+      return;
+    }
+    case 'recruit_drive': {
+      // Recruitment side-effect already handled by recruitDriveMultiplier
+      // at dispatch time. The visible party walking to the village is a
+      // physical anchor for the recruitment narrative — no further
+      // action required at target.
+      party.phase = 'returning';
+      return;
+    }
+    case 'bribe_settlement': {
+      const target = world.settlements.get(party.mission.settlement);
+      if (target === undefined) {
+        party.phase = 'returning';
+        return;
+      }
+      let receiver: Actor | undefined;
+      for (const oId of target.stockpileOwners) {
+        const a = world.actors.get(oId);
+        if (a !== undefined && (a.kind === 'city_corporation' || a.kind === 'governor_office')) {
+          receiver = a;
+          break;
+        }
+      }
+      const amount = Math.min(party.treasury, party.mission.amount);
+      if (amount > 0) {
+        party.treasury -= amount;
+        if (receiver !== undefined) receiver.treasury += amount;
+        if (receiver !== undefined) {
+          world.reputation.apply(party.ownerActor, receiver.id, 0.05);
+          world.reputation.apply(receiver.id, party.ownerActor, 0.1);
+        }
+      }
+      party.phase = 'returning';
+      return;
+    }
+    case 'migrate': {
+      // Found a new camp here. Party despawns; the new camp inherits
+      // the party's roster.
+      foundCampFromParty(world, party, today);
+      party.phase = 'done';
+      events.push({
+        type: 'bandit_party_returned',
+        party: party.id,
+        outcome: 'founded_camp',
+        at: { q: party.position.q, r: party.position.r },
+      });
+      return;
+    }
+  }
+};
+
+/**
+ * Per docs/15 §C32 + docs/06: bandits and patrols are foot-mobile but
+ * travel ~25 hex/day off-road — comparable to a mule caravan and faster
+ * than a refugee on foot (~20 hex/day). With this speed a 1-week round
+ * trip covers ~75-100 hex one-way, so a typical raid party fires
+ * against targets up to that distance from the home camp.
+ *
+ * The 2-hex "sight" radius the patrol uses to detect bandits is a
+ * separate concept; it's vision, not movement speed.
+ */
+const BANDIT_PARTY_MOVEMENT_HEXES_PER_DAY = 25;
+const PATROL_MOVEMENT_HEXES_PER_DAY = 25;
+/** Range at which patrols hear about / detect bandit camps. */
+const PATROL_DETECTION_HEXES = 15;
+
+/** Advance `from` up to `maxHexes` straight-line steps toward `to`. */
+const advanceTowardHex = (from: Hex, to: Hex, maxHexes: number, world: WorldState): Hex => {
+  let cur: Hex = { q: from.q, r: from.r };
+  for (let i = 0; i < maxHexes; i++) {
+    if (hexEquals(cur, to)) return cur;
+    const next = stepTowardHex(cur, to);
+    if (!world.grid.has(next)) return cur;
+    cur = next;
+  }
+  return cur;
+};
+
+/** Advance `from` up to `maxHexes` straight-line steps away from `away`. */
+const advanceAwayFromHex = (from: Hex, away: Hex, maxHexes: number, world: WorldState): Hex => {
+  let cur: Hex = { q: from.q, r: from.r };
+  for (let i = 0; i < maxHexes; i++) {
+    const next = stepAwayFromHex(cur, away);
+    if (!world.grid.has(next)) return cur;
+    cur = next;
+  }
+  return cur;
+};
+
+/**
+ * Per docs/15 §C32: shared sight + pursuit/flee parameters. Vision range
+ * is *uniform* per the user's spec — 2 hex for both patrol → bandit
+ * detection and party → patrol detection. Pursuit gives the patrol a
+ * small speed bonus so a target one hex away can actually be caught.
+ */
+const PATROL_SIGHT_HEXES = 2;
+const PARTY_SIGHT_HEXES = 2;
+const PATROL_PURSUIT_HEXES_PER_DAY = 30;
+const PATROL_PURSUIT_MAX_DAYS = 3;
+
+/**
+ * Effective combat strength used for "do I think I can win" / "will I
+ * be caught" heuristics. Mirrors the formula in
+ * `partyEffectiveStrength` but works for both camps and patrols.
+ */
+const banditCampStrength = (camp: BanditCamp): number => {
+  const kit = 1 + camp.weaponsPerBandit + camp.armorPerBandit;
+  return camp.banditCount * kit * Math.max(0.1, camp.averageHealth) * 0.25;
+};
+
+const patrolStrength = (patrol: Patrol): number => {
+  const u = patrol.unit;
+  const kit = 1 + (u.weapons ?? 0) + (u.armor ?? 0);
+  return u.count * kit * Math.max(0.1, u.health ?? 1) * Math.max(0.25, u.training ?? 0.25);
+};
+
+const partyStrength = partyEffectiveStrength;
+
+/**
+ * For a bandit party, find the nearest patrol within sight that is
+ * likely to win an engagement. Returns the patrol or undefined.
+ */
+const visibleThreatForParty = (world: WorldState, party: BanditParty): Patrol | undefined => {
+  if (world.patrols === undefined) return undefined;
+  let best: Patrol | undefined;
+  let bestD = Infinity;
+  const myStrength = partyStrength(party);
+  for (const p of world.patrols.values()) {
+    if (p.unit.count <= 0) continue;
+    const d = hexDistance(p.position, party.position);
+    if (d > PARTY_SIGHT_HEXES) continue;
+    if (patrolStrength(p) <= myStrength) continue; // not a threat
+    if (d < bestD) {
+      bestD = d;
+      best = p;
+    }
+  }
+  return best;
+};
+
+/**
+ * For a patrol, find the nearest visible bandit target (camp or party)
+ * the patrol believes it can defeat. Returns the target hex.
+ */
+const visibleQuarryForPatrol = (
+  world: WorldState,
+  patrol: Patrol,
+): { hex: Hex; kind: 'camp' | 'party' } | undefined => {
+  const myStrength = patrolStrength(patrol);
+  let best: { hex: Hex; kind: 'camp' | 'party'; d: number } | undefined;
+  if (world.banditCamps !== undefined) {
+    for (const c of world.banditCamps.values()) {
+      if (c.banditCount <= 0) continue;
+      const d = hexDistance(c.hex, patrol.position);
+      if (d > PATROL_SIGHT_HEXES) continue;
+      if (banditCampStrength(c) >= myStrength) continue; // unlikely to win
+      if (best === undefined || d < best.d) best = { hex: c.hex, kind: 'camp', d };
+    }
+  }
+  if (world.banditParties !== undefined) {
+    for (const party of world.banditParties.values()) {
+      if (party.banditCount <= 0) continue;
+      const d = hexDistance(party.position, patrol.position);
+      if (d > PATROL_SIGHT_HEXES) continue;
+      if (partyStrength(party) >= myStrength) continue;
+      if (best === undefined || d < best.d) best = { hex: party.position, kind: 'party', d };
+    }
+  }
+  if (best === undefined) return undefined;
+  return { hex: best.hex, kind: best.kind };
+};
+
+const banditPartyPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[]): void => {
+  if (world.banditParties === undefined) return;
+  for (const [partyId, party] of Array.from(world.banditParties.entries())) {
+    party.daysOnTrip += 1;
+    // If the party has been wiped (count <= 0), despawn.
+    if (party.banditCount <= 0) {
+      world.banditParties.delete(partyId);
+      events.push({
+        type: 'bandit_party_returned',
+        party: partyId,
+        outcome: 'lost',
+        at: { q: party.position.q, r: party.position.r },
+      });
+      continue;
+    }
+    if (party.phase === 'done') {
+      world.banditParties.delete(partyId);
+      continue;
+    }
+    // Per docs/15 §C32: each tick scan for likely-to-win patrols within
+    // sight. If one's there, flee; if the threat clears, resume.
+    const threat = visibleThreatForParty(world, party);
+    if (threat !== undefined) {
+      party.phase = 'fleeing';
+      party.fleeingFromHex = { q: threat.position.q, r: threat.position.r };
+    } else if (party.phase === 'fleeing') {
+      // Threat is gone — resume mission. If we've been driven far away,
+      // the planner falls back to returning home empty rather than
+      // wandering further.
+      party.phase = partyAtMissionTarget(party) ? 'returning' : 'outbound';
+      delete party.fleeingFromHex;
+    }
+    // Per-phase movement decision — advance up to 25 hex toward the
+    // current waypoint (target / home) or away from a threat.
+    if (party.phase === 'fleeing' && party.fleeingFromHex !== undefined) {
+      party.position = advanceAwayFromHex(
+        party.position,
+        party.fleeingFromHex,
+        BANDIT_PARTY_MOVEMENT_HEXES_PER_DAY,
+        world,
+      );
+    } else if (party.phase === 'outbound') {
+      party.position = advanceTowardHex(
+        party.position,
+        missionTargetHex(party.mission),
+        BANDIT_PARTY_MOVEMENT_HEXES_PER_DAY,
+        world,
+      );
+    } else if (party.phase === 'returning') {
+      party.position = advanceTowardHex(
+        party.position,
+        party.homeHex,
+        BANDIT_PARTY_MOVEMENT_HEXES_PER_DAY,
+        world,
+      );
+    }
+
+    // Arrival logic.
+    if (party.phase === 'outbound' && partyAtMissionTarget(party)) {
+      resolvePartyMissionAtTarget(
+        world,
+        partyId,
+        party,
+        today,
+        rng.derive(`party-${partyId}`),
+        events,
+      );
+    }
+    if (party.phase === 'returning' && partyAtHome(party)) {
+      // Merge back into home camp; or, if camp is gone, found a new one.
+      const homeCampId = party.homeCamp;
+      const home = homeCampId !== null ? world.banditCamps?.get(homeCampId) : undefined;
+      if (home !== undefined && homeCampId !== null && world.banditCamps !== undefined) {
+        world.banditCamps.set(homeCampId, mergePartyIntoCamp(home, party));
+        events.push({
+          type: 'bandit_party_returned',
+          party: partyId,
+          outcome: 'merged_home',
+          at: { q: party.position.q, r: party.position.r },
+        });
+      } else {
+        foundCampFromParty(world, party, today);
+        events.push({
+          type: 'bandit_party_returned',
+          party: partyId,
+          outcome: 'founded_camp',
+          at: { q: party.position.q, r: party.position.r },
+        });
+      }
+      world.banditParties.delete(partyId);
+    }
+  }
 };
 
 const recruitFromIdle = (world: WorldState, rng: Rng, _today: Day, events: TickEvent[]): void => {
@@ -7134,6 +8256,113 @@ const buildActorToFactionIndex = (world: WorldState): Map<string, FactionId> => 
   return out;
 };
 
+// --- Patrol-vs-party engagement (docs/15 §C32) ---------------------------
+
+/**
+ * After both movement phases, any patrol whose position overlaps (within
+ * the 2-hex sight radius) a bandit party fights on-hex. The cyclic-route
+ * patrol logic in `patrolPhase` handles patrol-vs-camp engagements;
+ * this catches the patrol-vs-party case the route logic doesn't see.
+ *
+ * Combat uses `resolveBattle` with `partyAsCombatUnit` adapter. The
+ * patrol attacker bonus reflects "patrol charges to engage." On a
+ * patrol win, the party's bandits are reduced (potentially to zero,
+ * which the next `banditPartyPhase` cleans up). On a bandit win, the
+ * patrol unit shrinks (potentially to zero, which clears the patrol
+ * from `world.patrols`). No bribery (per the user's spec).
+ */
+const PATROL_PARTY_ENGAGEMENT_HEXES = PATROL_SIGHT_HEXES;
+
+const patrolPartyEngagementPhase = (
+  world: WorldState,
+  rng: Rng,
+  today: Day,
+  events: TickEvent[],
+): void => {
+  if (world.patrols === undefined || world.patrols.size === 0) return;
+  // For each patrol, find the nearest bandit (camp or party) within
+  // engagement range and resolve a single battle.
+  for (const [patrolId, patrol] of [...world.patrols]) {
+    if (patrol.unit.count <= 0) {
+      world.patrols.delete(patrolId);
+      continue;
+    }
+    type Target = { kind: 'party'; party: BanditParty } | { kind: 'camp'; camp: BanditCamp };
+    let best: { target: Target; d: number } | undefined;
+    if (world.banditParties !== undefined) {
+      for (const party of world.banditParties.values()) {
+        if (party.banditCount <= 0) continue;
+        const d = hexDistance(party.position, patrol.position);
+        if (d > PATROL_PARTY_ENGAGEMENT_HEXES) continue;
+        if (best === undefined || d < best.d) best = { target: { kind: 'party', party }, d };
+      }
+    }
+    if (world.banditCamps !== undefined) {
+      for (const camp of world.banditCamps.values()) {
+        if (camp.banditCount <= 0) continue;
+        const d = hexDistance(camp.hex, patrol.position);
+        if (d > PATROL_PARTY_ENGAGEMENT_HEXES) continue;
+        if (best === undefined || d < best.d) best = { target: { kind: 'camp', camp }, d };
+      }
+    }
+    if (best === undefined) continue;
+
+    const subRng = rng.derive(`engage-${patrolId}`);
+    const defender =
+      best.target.kind === 'party'
+        ? partyAsCombatUnit(best.target.party, 'defending')
+        : campAsCombatUnit(best.target.camp, 'defending');
+    const battle = resolveBattle(patrol.unit, defender, {
+      ambush: false,
+      rng: subRng,
+    });
+    let outcome: 'patrol_won' | 'bandits_won' | 'mutual_rout';
+    if (battle.winnerId === patrol.unit.id) outcome = 'patrol_won';
+    else if (battle.winnerId === defender.id) outcome = 'bandits_won';
+    else outcome = 'mutual_rout';
+
+    const patrolCas = battle.casualties.find((c) => c.unitId === patrol.unit.id);
+    const defCas = battle.casualties.find((c) => c.unitId === defender.id);
+    const patrolDeaths = patrolCas?.deaths ?? 0;
+    const defDeaths = defCas?.deaths ?? 0;
+
+    const survivingPatrol = Math.max(0, patrol.unit.count - patrolDeaths);
+    patrol.unit = { ...patrol.unit, count: survivingPatrol };
+    if (survivingPatrol <= 0) {
+      world.patrols.delete(patrolId);
+    } else {
+      delete patrol.pursuit;
+      world.patrols.set(patrolId, patrol);
+    }
+
+    if (best.target.kind === 'party') {
+      best.target.party.banditCount = Math.max(0, best.target.party.banditCount - defDeaths);
+    } else if (world.banditCamps !== undefined) {
+      const survivingCamp = Math.max(0, best.target.camp.banditCount - defDeaths);
+      if (survivingCamp <= 0) {
+        world.banditCamps.delete(best.target.camp.id);
+      } else {
+        world.banditCamps.set(best.target.camp.id, {
+          ...best.target.camp,
+          banditCount: survivingCamp,
+        });
+      }
+    }
+
+    events.push({
+      type: 'patrol_engaged',
+      patrolId,
+      camp:
+        best.target.kind === 'camp'
+          ? best.target.camp.id
+          : (best.target.party.homeCamp ??
+            (`party:${String(best.target.party.id)}` as BanditCampId)),
+      outcome,
+    });
+    void today;
+  }
+};
+
 // --- Patrol phase ----------------------------------------------------------
 
 /**
@@ -7168,6 +8397,45 @@ const patrolPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[
     }
     const subRng = rng.derive(`patrol-${patrolId}`);
 
+    // Per docs/15 §C32: pursuit pre-pass. If a likely-to-win quarry
+    // (camp or bandit party) is within the 2-hex sight radius, set the
+    // pursuit target — patrol deviates from its cyclic route to chase
+    // for up to PATROL_PURSUIT_MAX_DAYS. While pursuing we bypass
+    // `tickPatrol` and walk straight toward the target at the slightly
+    // faster pursuit speed.
+    const quarry = visibleQuarryForPatrol(world, patrol);
+    if (quarry !== undefined) {
+      patrol.pursuit = { targetHex: { q: quarry.hex.q, r: quarry.hex.r }, daysActive: 0 };
+    }
+    if (patrol.pursuit !== undefined) {
+      patrol.pursuit.daysActive += 1;
+      // If we've burned the budget, give up. (Setting `pursuit` to
+      // undefined via delete keeps the TickEvent[] free of churn.)
+      if (patrol.pursuit.daysActive > PATROL_PURSUIT_MAX_DAYS) {
+        delete patrol.pursuit;
+      }
+    }
+    if (patrol.pursuit !== undefined) {
+      // Direct pursuit movement (bypasses tickPatrol's cyclic route).
+      const before = patrol.position;
+      patrol.position = advanceTowardHex(
+        patrol.position,
+        patrol.pursuit.targetHex,
+        PATROL_PURSUIT_HEXES_PER_DAY,
+        world,
+      );
+      // Combat triggers on hex-overlap with the quarry. Handled below
+      // by the post-phase scan; here we just walk + persist.
+      world.patrols.set(patrolId, patrol);
+      void before;
+      // Trail wear: count the distance walked.
+      const walked = hexDistance(before, patrol.position);
+      if (walked > 0) {
+        addRoadWear(world, patrol.position, patrol.unit.count * WEAR_PER_PATROL_SOLDIER * walked);
+      }
+      continue; // skip the cyclic route for this tick
+    }
+
     // Detection: a patrol "knows" any camp within DETECTION hexes of EITHER
     // its current position OR the next hex on its route. Real Roman patrols
     // had local informants tipping them off, so the strict same-hex check
@@ -7177,7 +8445,6 @@ const patrolPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[
     const nextIndex = (patrol.routeIndex + 1) % patrol.route.length;
     const nextHex = patrol.route[nextIndex];
     if (nextHex === undefined) continue;
-    const PATROL_DETECTION_HEXES = 15;
     const known: { camp: BanditCamp; hex: Hex }[] = [];
     for (const camp of world.banditCamps.values()) {
       const dCurrent = hexDistance(camp.hex, patrol.position);
@@ -7204,24 +8471,78 @@ const patrolPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[
       }
     }
 
-    const result = tickPatrol({
+    // Per docs/15 §C32 + docs/06 movement: patrols cover ~25 hex/day on
+    // foot. We advance through `tickPatrol` up to N times per day,
+    // stopping early on the first iteration that produces a pending
+    // battle (combat takes the rest of the day). The result is the
+    // patrol's position+state at the END of the day.
+    const STEPS_PER_DAY = PATROL_MOVEMENT_HEXES_PER_DAY;
+    let result = tickPatrol({
       patrol,
-      rng: subRng.derive('tick'),
+      rng: subRng.derive('tick-0'),
       knownBanditCampsOnRoute: known,
       knownCaravansOnRoute: knownCaravans,
       reputation: world.reputation,
       today,
     });
+    let trailDistance = hexEquals(patrol.position, result.patrol.position) ? 0 : 1;
+    for (let step = 1; step < STEPS_PER_DAY && result.pendingBattles.length === 0; step++) {
+      // Refresh the "known camps" + "known caravans" lists from the new
+      // route hex. The patrol may have walked into a different
+      // detection neighborhood.
+      const nextIdx = (result.patrol.routeIndex + 1) % result.patrol.route.length;
+      const nextRouteHex = result.patrol.route[nextIdx];
+      if (nextRouteHex === undefined) break;
+      const stepKnown: { camp: BanditCamp; hex: Hex }[] = [];
+      for (const c of world.banditCamps.values()) {
+        const d = Math.min(
+          hexDistance(c.hex, result.patrol.position),
+          hexDistance(c.hex, nextRouteHex),
+        );
+        if (d <= PATROL_DETECTION_HEXES) stepKnown.push({ camp: c, hex: nextRouteHex });
+      }
+      const stepKnownCaravans: typeof knownCaravans = [];
+      for (const c of world.caravans.values()) {
+        if (hexDistance(c.position, nextRouteHex) <= 1) {
+          stepKnownCaravans.push({
+            caravanId: c.id,
+            ownerActor: c.ownerActor,
+            hex: c.position,
+            suspicious: false,
+          });
+        }
+      }
+      const prevPos = result.patrol.position;
+      const stepResult = tickPatrol({
+        patrol: result.patrol,
+        rng: subRng.derive(`tick-${step}`),
+        knownBanditCampsOnRoute: stepKnown,
+        knownCaravansOnRoute: stepKnownCaravans,
+        reputation: world.reputation,
+        today,
+      });
+      if (!hexEquals(prevPos, stepResult.patrol.position)) trailDistance += 1;
+      // Merge events + pendingBattles into the top-level result.
+      result = {
+        ...stepResult,
+        events: [...result.events, ...stepResult.events],
+        pendingBattles: [...result.pendingBattles, ...stepResult.pendingBattles],
+      };
+      // Stop early if the patrol's been wiped or stopped advancing.
+      if (result.patrol.unit.count <= 0) break;
+    }
 
     // Persist patrol mutations.
     world.patrols.set(patrolId, result.patrol);
 
-    // Trail wear from the patrol step. Soldier-on-foot weight per docs/06.
-    if (!hexEquals(patrol.position, result.patrol.position)) {
+    // Trail wear from the patrol's daily movement. We approximate by
+    // landing the total day's wear at the END-of-day hex; granular
+    // per-hex wear isn't load-bearing for the road model.
+    if (trailDistance > 0) {
       addRoadWear(
         world,
         result.patrol.position,
-        result.patrol.unit.count * WEAR_PER_PATROL_SOLDIER,
+        result.patrol.unit.count * WEAR_PER_PATROL_SOLDIER * trailDistance,
       );
     }
 
@@ -7399,10 +8720,7 @@ const constructionPhase = (
     let masonBudget = settlement.jobAllocations.get(MASON_JOB) ?? 0;
     let carpenterBudget = settlement.jobAllocations.get(CARPENTER_JOB) ?? 0;
     if (shouldCapByClass) {
-      masonBudget = Math.min(
-        masonBudget,
-        allocatedWorkersForJob(laborClassContext, MASON_JOB),
-      );
+      masonBudget = Math.min(masonBudget, allocatedWorkersForJob(laborClassContext, MASON_JOB));
       carpenterBudget = Math.min(
         carpenterBudget,
         allocatedWorkersForJob(laborClassContext, CARPENTER_JOB),
@@ -7539,14 +8857,11 @@ const investmentPhase = (world: WorldState, _today: Day, events: TickEvent[]): v
 
     const def = getBuilding(best.buildingId);
 
-    // Pay construction: drain inputs from owner's stockpile. We've already
-    // confirmed sufficiency in scoreInvestmentCandidates; do it
-    // unconditionally here.
+    // Pay construction: drain inputs from owner's slice at this settlement
+    // (per docs/15 §C30). We've already confirmed sufficiency in
+    // scoreInvestmentCandidates; do it unconditionally here.
     for (const [resId, qty] of def.constructionCost) {
-      const have = owner.stockpile.get(resId) ?? 0;
-      const remaining = have - qty;
-      if (remaining > 1e-9) owner.stockpile.set(resId, remaining);
-      else owner.stockpile.delete(resId);
+      removeStockAt(owner, settlement.id, resId, qty);
     }
 
     // Per docs/08 §"Construction is heavy" + docs/15 §C8: don't add the
@@ -7853,12 +9168,13 @@ const scoreInvestmentCandidates = (
     const profitPerDay = revenue - cost;
     if (profitPerDay <= 0) continue;
 
-    // Construction cost in coin (using local prices).
+    // Construction cost in coin (using local prices). Per docs/15 §C30
+    // construction materials must be at THIS settlement to be usable.
     const def = getBuilding(recipe.building);
     let coinCost = 0;
     let payable = true;
     for (const [resId, qty] of def.constructionCost) {
-      const have = owner.stockpile.get(resId) ?? 0;
+      const have = getStockAt(owner, settlement.id, resId);
       if (have < qty) {
         payable = false;
         break;
@@ -7957,7 +9273,9 @@ const localStockForResource = (
 ): number => {
   let total = 0;
   for (const ownerId of settlement.stockpileOwners) {
-    total += world.actors.get(ownerId)?.stockpile.get(resource) ?? 0;
+    const a = world.actors.get(ownerId);
+    if (a === undefined) continue;
+    total += getStockAt(a, settlement.id, resource);
   }
   return total;
 };
@@ -7982,7 +9300,7 @@ const investmentResourceGate = (
 
   for (const ore of recipeOreInputs(recipe)) {
     const needed = recipe.inputs.get(ore) ?? 0;
-    const ownerHasOre = (owner.stockpile.get(ore) ?? 0) >= needed;
+    const ownerHasOre = getStockAt(owner, settlement.id, ore) >= needed;
     const localHasOre = localStockForResource(world, settlement, ore) >= needed;
     const mineCanFeedOre = settlementHasDepositBackedMine(world, settlement, ore);
     if (!ownerHasOre && !localHasOre && !mineCanFeedOre) return null;

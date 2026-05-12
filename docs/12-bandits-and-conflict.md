@@ -55,11 +55,11 @@ A bandit camp is a special kind of settlement entity:
 
 ### Camp size determines what they can do
 
-| Size | Capability |
-|---|---|
-| Small (<20) | Opportunistic ambushes on lone caravans. |
-| Medium (20–100) | Coordinated road attacks; small village raids. |
-| Large (100–500) | Regional menace; town raids; can shadow-rule a wilderness area. |
+| Size              | Capability                                                                                     |
+| ----------------- | ---------------------------------------------------------------------------------------------- |
+| Small (<20)       | Opportunistic ambushes on lone caravans.                                                       |
+| Medium (20–100)   | Coordinated road attacks; small village raids.                                                 |
+| Large (100–500)   | Regional menace; town raids; can shadow-rule a wilderness area.                                |
 | Insurgency (500+) | Effectively a rival polity. The governor must respond with serious force or lose the province. |
 
 A camp may grow until a patrol breaks it, internal disputes
@@ -225,6 +225,56 @@ A settlement under attack defends with: garrison soldiers, local
 militia (idle adults grabbing whatever they have), walls (a major
 factor — see [03 — Production](03-production.md) for `build_walls`).
 
+## Bandit raid parties (docs/15 §C32)
+
+Per pillar §1 (no hidden hands), every camp-originated action that
+touches another hex is a **physical, movable unit** — not an instant
+camp-internal action. The unit is a `BanditParty`: a subset of the
+camp's bandits that walks to the target, executes the mission on
+arrival, and walks back.
+
+**One party per camp at a time.** The camp's combat strength
+temporarily drops by the party's share while it's away (per
+mission: ~half for a raid, ~25% for a fence escort, ~20% for a
+recruit or bribe trip, the entire roster for a one-way `migrate`).
+
+**Mission resolution on arrival:**
+
+| Mission            | At target                                                                                                                           | Return cargo |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| `raid_settlement`  | Combat + loot drain (same maths as before)                                                                                          | Loot, coin   |
+| `raid_caravan`     | Ambush at the target hex if any caravan there                                                                                       | Cargo, coin  |
+| `fence_loot`       | Hand camp's loot to a friendly settlement actor for coin                                                                            | Coin         |
+| `recruit_drive`    | Camp's `recruit_drive` pressure-multiplier already engaged at dispatch — the party is the physical marker of the recruitment effort | —            |
+| `bribe_settlement` | Hand pre-loaded coin to a city_corp / governor; apply reputation deltas                                                             | —            |
+| `migrate`          | Found a new camp at this hex; old camp deleted                                                                                      | —            |
+
+**Round-trip target ~1 week**, so most missions fire against
+targets ≤3-4 hexes from the home camp.
+
+**If the home camp is destroyed while the party is away**, the
+returning party founds a new camp at its arrival hex. This is the
+only way a wiped camp's faction survives.
+
+**Patrol intercepts** (landed, docs/15 §C32):
+
+- Patrols scan for visible bandit camps + parties within
+  `PATROL_SIGHT_HEXES = 2`. If a target is in sight AND the
+  patrol's effective combat strength exceeds the target's, the
+  patrol enters pursuit — deviates from its cyclic route to chase
+  at `PATROL_PURSUIT_HEXES_PER_DAY = 30` (a small speed bonus so
+  fleeing parties don't perpetually escape at equal speed). After
+  `PATROL_PURSUIT_MAX_DAYS = 3` days of pursuit without catching
+  up, the patrol gives up and resumes its route.
+- Bandit parties scan for patrols within `PARTY_SIGHT_HEXES = 2`.
+  If a likely-to-win patrol is in sight, the party flips to
+  `fleeing` phase and walks away at 25 hex/day. Mission is paused
+  while fleeing; resumes when the threat clears.
+- `patrolPartyEngagementPhase` runs after both movement phases.
+  Any patrol within 2 hex of a bandit (camp or party) resolves a
+  single battle via `resolveBattle`. No bribery — every encounter
+  is fought.
+
 ## Bandit emergence in the tick loop (locked)
 
 Bandits aren't just an ambient hazard — they're a **social
@@ -252,6 +302,7 @@ reputation, and friends in low places.
    a famine-stricken village can contribute a visible trickle over a
    season. The goal is endemic danger, not a deterministic province-
    wide insurgency from normal peacetime.
+
 2. **Joining vs. founding**: defectors walk to the nearest existing
    camp within ~50 hexes if it has space; otherwise a new camp is
    founded in a wilderness forest/hills hex within 5–15 hexes of
@@ -268,7 +319,7 @@ reputation, and friends in low places.
    <3 bandits left dissolves and any remaining members rejoin
    nearby plebeians.
 4. **Camp decisions**: for each camp, call `decideCampAction(camp,
-   inputs)` (T16). Translate the action:
+inputs)` (T16). Translate the action:
    - `raid_caravan(targetHex)` → emit pendingBattle; resolve via
      T45 ambush at the caravan's hex. Caravan ambushes are
      probabilistic, not automatic: camp size, target value, guard
@@ -315,6 +366,7 @@ typically leaves 1-3 fled_escaped survivors who reach a settlement
 4-10 days later and update reputations.
 
 This means:
+
 - A successful raid on a Vibian caravan with 3 escapees is known
   to Family Vibian by day +5, Family Vibian's allies by day +12,
   the governor by day +20 (depending on geography).

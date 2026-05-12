@@ -334,7 +334,19 @@ const makeAssetsSection = (
   stockHeader.className = 'faction-screen-subhead';
   stockHeader.textContent = 'Stockpile';
   section.appendChild(stockHeader);
-  if (actor === undefined || actor.stockpile.size === 0) {
+  // Per docs/15 §C30: collapse the actor's per-settlement slices into a
+  // total view for the faction screen (most actors home to one settlement
+  // anyway). For multi-location actors we sum across — they'd see the
+  // settlement breakdown in a future drill-down view.
+  const totals = new Map<ResourceId, number>();
+  if (actor !== undefined) {
+    for (const slice of actor.stockpile.values()) {
+      for (const [r, q] of slice) {
+        totals.set(r, (totals.get(r) ?? 0) + q);
+      }
+    }
+  }
+  if (actor === undefined || totals.size === 0) {
     const empty = document.createElement('div');
     empty.className = 'faction-screen-muted';
     empty.textContent = '(empty)';
@@ -342,10 +354,7 @@ const makeAssetsSection = (
   } else {
     const list = document.createElement('div');
     list.className = 'stocklist faction-screen-stocklist';
-    const sorted = Array.from(actor.stockpile.entries()).sort((a, b) => b[1] - a[1]) as [
-      ResourceId,
-      number,
-    ][];
+    const sorted = Array.from(totals.entries()).sort((a, b) => b[1] - a[1]);
     for (const [r, qty] of sorted) {
       const row = document.createElement('div');
       row.className = 'stat-row';

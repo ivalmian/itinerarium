@@ -37,6 +37,7 @@ import {
 import { drawDemographicsFromPool, ROLE_BIASES } from '../sim/population/demographics.js';
 import {
   ACTOR_KINDS,
+  addStockAt,
   createActor,
   createCharacter,
   createFaction,
@@ -52,6 +53,7 @@ import type { NewsCarrier } from '../sim/reputation/news.js';
 import type { Caravan } from '../sim/caravan/caravan.js';
 import type { Patrol } from '../sim/conflict/patrol.js';
 import type { BanditCamp } from '../sim/bandit/camp.js';
+import type { BanditParty } from '../sim/bandit/party.js';
 import { createGuild, addGuildMember, type Guild } from '../sim/politics/guild.js';
 import {
   actorId,
@@ -64,6 +66,7 @@ import {
   settlementId,
   type ActorId,
   type BanditCampId,
+  type BanditPartyId,
   type CaravanId,
   type CharacterId,
   type Day,
@@ -99,6 +102,12 @@ export interface WorldState {
    */
   readonly patrols?: Map<string, Patrol>;
   readonly banditCamps?: Map<BanditCampId, BanditCamp>;
+  /**
+   * Per docs/15 §C32: bandit parties — movable units that handle
+   * camp-originated actions (raid, fence, recruit, migrate). Optional
+   * for back-compat with snapshots that pre-date the refactor.
+   */
+  readonly banditParties?: Map<BanditPartyId, BanditParty>;
   readonly newsCarriers?: Map<string, NewsCarrier>;
   /** Merchant guilds (per docs/15 §C17). Keyed by their Actor id. */
   readonly guilds?: Map<ActorId, Guild>;
@@ -392,16 +401,16 @@ const woodCordsForPopulation = (totalPop: number, minCords: number): number =>
 const toolsForPopulation = (totalPop: number, minTools: number): number =>
   Math.max(minTools, totalPop * STARTER_TOOLS_PER_CAPITA);
 
-const grantStockpile = (actor: Actor, resource: string, qty: number): void => {
+const grantStockpile = (
+  actor: Actor,
+  settlement: SettlementId,
+  resource: string,
+  qty: number,
+): void => {
   if (qty <= 0) return;
-  // ADD to existing stockpile (not replace) so a patron family granted
-  // reserves by multiple of their client villages accumulates the total.
-  // The previous .set() silently dropped earlier grants, leaving multi-
-  // village patrons with only their last village's grant — the root
-  // cause of the burn-in famine cascade.
-  const id = resourceId(resource);
-  const existing = actor.stockpile.get(id) ?? 0;
-  actor.stockpile.set(id, existing + qty);
+  // Per docs/15 §C30 the grant lands at the actor's slice for the named
+  // settlement. ADD to existing slice so multiple grants accumulate.
+  addStockAt(actor, settlement, resourceId(resource), qty);
 };
 
 const grantStarterMarketInventory = (actor: Actor, settlement: Settlement, scale = 1): void => {
@@ -422,7 +431,7 @@ const grantStarterMarketInventory = (actor: Actor, settlement: Settlement, scale
     ['goods.furniture', pop * 0.0001 * 180 * scale],
     ['material.pottery', pop * 0.001 * 120 * scale],
   ];
-  for (const [resource, qty] of grants) grantStockpile(actor, resource, qty);
+  for (const [resource, qty] of grants) grantStockpile(actor, settlement.id, resource, qty);
 };
 
 // --- Hex ownership ----------------------------------------------------------
@@ -616,10 +625,15 @@ const seedCityCorporation = (
   // higher because pottery production has a long bake_bread / wine /
   // oil cycle and amphora is durable.
   const pop = settlement.population.total();
-  grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
-  grantStockpile(actor, 'material.wood', woodCordsForPopulation(pop, 20));
-  grantStockpile(actor, 'material.amphora', Math.max(20, Math.floor(pop / 5)));
-  grantStockpile(actor, 'goods.tools', toolsForPopulation(pop, 50));
+  grantStockpile(
+    actor,
+    settlement.id,
+    'food.grain',
+    grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE),
+  );
+  grantStockpile(actor, settlement.id, 'material.wood', woodCordsForPopulation(pop, 20));
+  grantStockpile(actor, settlement.id, 'material.amphora', Math.max(20, Math.floor(pop / 5)));
+  grantStockpile(actor, settlement.id, 'goods.tools', toolsForPopulation(pop, 50));
   grantStarterMarketInventory(actor, settlement, 1.25);
   return actor;
 };
@@ -717,25 +731,41 @@ const seedFreeVillage = (
   // per docs/15 §C5. Local farms + the village smithy have to come
   // online within the first month; trade fills any remaining gap.
   const pop = settlement.population.total();
-  grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
-  grantStockpile(actor, 'goods.tools', toolsForPopulation(pop, 10));
-  grantStockpile(actor, 'material.wood', woodCordsForPopulation(pop, 5));
-  grantStockpile(actor, 'material.amphora', Math.max(10, Math.floor(pop / 10)));
+  grantStockpile(
+    actor,
+    settlement.id,
+    'food.grain',
+    grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE),
+  );
+  grantStockpile(actor, settlement.id, 'goods.tools', toolsForPopulation(pop, 10));
+  grantStockpile(actor, settlement.id, 'material.wood', woodCordsForPopulation(pop, 5));
+  grantStockpile(actor, settlement.id, 'material.amphora', Math.max(10, Math.floor(pop / 10)));
   grantStarterMarketInventory(actor, settlement, 0.7);
   return actor;
 };
 
-const seedClientVillage = (ctx: BuildContext, settlement: Settlement, patron: Actor): void => {
+const seedClientVillage = (ctx: BuildContext, settlement: Settlement, patron: Actor): Actor => {
   const villageRng = ctx.rng.derive(`client-village-${String(settlement.id)}`);
-  // The patron's faction is in the city, but we still want a named headman in
-  // the village. The headman belongs to the patron's faction (a freedman
-  // managing the estate) so reputation lookups walk back to the patron.
+  // Per docs/15 §C29: the patron is NOT a stockpile owner of the village.
+  // The village has its own household actor (same kind as a free village)
+  // that holds the harvest. The patron collects quarterly coin tribute via
+  // `tributePhase`. The headman is still a freedman in the patron's faction
+  // so reputation lookups walk back to the patron, but the village's
+  // economic ledger is its own.
+  const aId = actorId(nextId('actor'));
   const headmanId = characterId(nextId('char'));
   // Find the patron's faction (each patrician_family has exactly one).
   const patronFaction = [...ctx.factions.values()].find((f) => f.actor === patron.id);
   if (patronFaction === undefined) {
     throw new Error(`seedClientVillage: patron ${String(patron.id)} has no faction`);
   }
+  const actor = createActor({
+    id: aId,
+    kind: 'free_village',
+    name: `Client Village of ${settlement.name}`,
+    homeSettlement: settlement.id,
+    treasury: villageRng.int(50, 300),
+  });
   const headman = createCharacter({
     id: headmanId,
     name: generateFullName(villageRng, 'male'),
@@ -747,20 +777,27 @@ const seedClientVillage = (ctx: BuildContext, settlement: Settlement, patron: Ac
     location: settlement.anchor,
   });
   patronFaction.members.push(headmanId);
+  addActor(ctx, actor);
   addCharacter(ctx, headman);
   settlement.factions.push(patronFaction.id);
-  settlement.stockpileOwners.push(patron.id);
+  settlement.stockpileOwners.push(aId);
+  settlement.clientPatron = patron.id;
   seedClassHouseholds(ctx, settlement, settlement.name);
-  // ~30 days of grain + ~7 days of tools/wood for the patron's client
-  // village; the patron accumulates across multiple villages so a city
-  // family that holds 3-5 client villages still has months of headroom
-  // before any single village's harvest. Per docs/15 §C5.
+  // ~30 days of grain + ~7 days of tools/wood for the village's own pool,
+  // per docs/15 §C5 + §C29. Local farms + the village smithy have to come
+  // online within the first month; trade fills any remaining gap.
   const pop = settlement.population.total();
-  grantStockpile(patron, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
-  grantStockpile(patron, 'goods.tools', toolsForPopulation(pop, 10));
-  grantStockpile(patron, 'material.wood', woodCordsForPopulation(pop, 5));
-  grantStockpile(patron, 'material.amphora', Math.max(10, Math.floor(pop / 10)));
-  grantStarterMarketInventory(patron, settlement, 0.7);
+  grantStockpile(
+    actor,
+    settlement.id,
+    'food.grain',
+    grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE),
+  );
+  grantStockpile(actor, settlement.id, 'goods.tools', toolsForPopulation(pop, 10));
+  grantStockpile(actor, settlement.id, 'material.wood', woodCordsForPopulation(pop, 5));
+  grantStockpile(actor, settlement.id, 'material.amphora', Math.max(10, Math.floor(pop / 10)));
+  grantStarterMarketInventory(actor, settlement, 0.7);
+  return actor;
 };
 
 const seedHamlet = (ctx: BuildContext, settlement: Settlement, settlementName: string): Actor => {
@@ -797,9 +834,14 @@ const seedHamlet = (ctx: BuildContext, settlement: Settlement, settlementName: s
   settlement.factions.push(fId);
   settlement.stockpileOwners.push(aId);
   const pop = settlement.population.total();
-  grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
-  grantStockpile(actor, 'goods.tools', toolsForPopulation(pop, 10));
-  grantStockpile(actor, 'material.wood', woodCordsForPopulation(pop, 5));
+  grantStockpile(
+    actor,
+    settlement.id,
+    'food.grain',
+    grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE),
+  );
+  grantStockpile(actor, settlement.id, 'goods.tools', toolsForPopulation(pop, 10));
+  grantStockpile(actor, settlement.id, 'material.wood', woodCordsForPopulation(pop, 5));
   grantStarterMarketInventory(actor, settlement, 0.25);
   return actor;
 };
@@ -1071,6 +1113,7 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
     caravans: new Map<CaravanId, Caravan>(),
     patrols,
     banditCamps,
+    banditParties: new Map<BanditPartyId, BanditParty>(),
     newsCarriers: new Map<string, NewsCarrier>(),
     guilds,
     reputation: createReputationTable(),

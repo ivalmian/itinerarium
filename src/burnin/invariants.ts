@@ -98,15 +98,17 @@ export const populationNonNegative: Invariant = ({ world }) => {
 export const stockpileNonNegative: Invariant = ({ world }) => {
   const out: InvariantViolation[] = [];
   for (const actor of world.actors.values()) {
-    for (const [resource, qty] of actor.stockpile) {
-      if (!Number.isFinite(qty) || qty < 0) {
-        out.push(
-          violation(
-            'stockpileNonNegative',
-            `actor ${String(actor.id)} stockpile ${String(resource)} = ${qty}`,
-            'fatal',
-          ),
-        );
+    for (const [settlement, slice] of actor.stockpile) {
+      for (const [resource, qty] of slice) {
+        if (!Number.isFinite(qty) || qty < 0) {
+          out.push(
+            violation(
+              'stockpileNonNegative',
+              `actor ${String(actor.id)} stockpile@${String(settlement)} ${String(resource)} = ${qty}`,
+              'fatal',
+            ),
+          );
+        }
       }
     }
   }

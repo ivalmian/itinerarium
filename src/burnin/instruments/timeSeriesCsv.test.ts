@@ -15,10 +15,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  createTimeSeriesInstrument,
-  DEFAULT_MAX_ROWS_PER_CSV,
-} from './timeSeriesCsv.js';
+import { createTimeSeriesInstrument, DEFAULT_MAX_ROWS_PER_CSV } from './timeSeriesCsv.js';
 import {
   actorId,
   resourceId,
@@ -44,7 +41,8 @@ interface FakeSettlement {
 }
 interface FakeActor {
   readonly id: ActorId;
-  readonly stockpile: Map<ResourceId, number>;
+  // Per docs/15 §C30: actor stockpile is Map<SettlementId, Map<ResourceId, Quantity>>.
+  readonly stockpile: Map<SettlementId, Map<ResourceId, number>>;
 }
 interface FakeWorld {
   readonly settlements: Map<SettlementId, FakeSettlement>;
@@ -58,8 +56,8 @@ const makeFakeWorld = (): FakeWorld => {
   const sId = settlementId('S1');
   const a1Id = actorId('A1');
   const a2Id = actorId('A2');
-  const a1: FakeActor = { id: a1Id, stockpile: new Map([[grain, 10]]) };
-  const a2: FakeActor = { id: a2Id, stockpile: new Map([[grain, 5]]) };
+  const a1: FakeActor = { id: a1Id, stockpile: new Map([[sId, new Map([[grain, 10]])]]) };
+  const a2: FakeActor = { id: a2Id, stockpile: new Map([[sId, new Map([[grain, 5]])]]) };
   const settlement: FakeSettlement = {
     id: sId,
     stockpileOwners: [a1Id, a2Id],
@@ -81,7 +79,9 @@ const makeFakeWorld = (): FakeWorld => {
 // Cast helper — the instrument types its parameter as the real WorldState /
 // Settlement, but only ever touches `.settlements`, `.actors`, owners, and
 // market maps. The fake satisfies that structural shape.
-const castWorld = (w: FakeWorld): Parameters<ReturnType<typeof createTimeSeriesInstrument>['tick']>[0] =>
+const castWorld = (
+  w: FakeWorld,
+): Parameters<ReturnType<typeof createTimeSeriesInstrument>['tick']>[0] =>
   w as unknown as Parameters<ReturnType<typeof createTimeSeriesInstrument>['tick']>[0];
 
 const withTempDir = async (fn: (dir: string) => Promise<void>): Promise<void> => {
@@ -150,16 +150,21 @@ describe('createTimeSeriesInstrument', () => {
       inst.tick(castWorld(world), 0 as Day);
       expect(inst.seriesCount()).toBe(1);
       // Day 1: an actor mints wine.
-      world.actors.get(actorId('A1'))!.stockpile.set(wine, 4);
+      // Add wine to A1's slice at settlement S1.
+      const sId = settlementId('S1');
+      const a1 = world.actors.get(actorId('A1'))!;
+      let slice = a1.stockpile.get(sId);
+      if (slice === undefined) {
+        slice = new Map();
+        a1.stockpile.set(sId, slice);
+      }
+      slice.set(wine, 4);
       inst.tick(castWorld(world), 1 as Day);
       expect(inst.seriesCount()).toBe(2);
       const written = await inst.flush();
       // Two CSVs (grain + wine) for the one settlement.
       expect(written.length).toBe(2);
-      const wineCsv = await readFile(
-        written.find((p) => p.endsWith('drink.wine.csv'))!,
-        'utf8',
-      );
+      const wineCsv = await readFile(written.find((p) => p.endsWith('drink.wine.csv'))!, 'utf8');
       const wineLines = wineCsv.trim().split('\n');
       // Header + (backfilled day 0 zero row) + day 1 row.
       expect(wineLines.length).toBe(3);
@@ -255,9 +260,9 @@ describe('runBurnIn — time-series instrument integration', () => {
   });
 
   it('throws if instruments are requested but outDir is empty', async () => {
-    await expect(
-      runBurnIn(tinyOpts({ outDir: '', instruments: ['time-series'] })),
-    ).rejects.toThrow(/outDir/);
+    await expect(runBurnIn(tinyOpts({ outDir: '', instruments: ['time-series'] }))).rejects.toThrow(
+      /outDir/,
+    );
   });
 
   it('respects timeSeriesMaxRowsPerCsv to bound CSV size', async () => {

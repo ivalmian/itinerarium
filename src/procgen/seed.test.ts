@@ -280,12 +280,16 @@ describe('seedWorld', () => {
       }
     });
 
-    it('roughly the requested fraction of villages are free_villages', () => {
+    it('roughly the requested fraction of villages are free (no clientPatron)', () => {
+      // Per docs/15 §C29: both free and client villages now have a
+      // `free_village` actor (the village steward). The difference is
+      // whether `Settlement.clientPatron` is set — client villages point
+      // to a patrician_family, free villages don't.
       const w = buildFixtureWorld();
       const villages = [...w.settlements.values()].filter((s) => s.tier === 'village');
-      const freeVillages = [...w.actors.values()].filter((a) => a.kind === 'free_village');
+      const free = villages.filter((v) => v.clientPatron === undefined);
       // Default is 20% free; allow wide tolerance for small-N stochastic seeds.
-      const ratio = villages.length === 0 ? 0 : freeVillages.length / villages.length;
+      const ratio = villages.length === 0 ? 0 : free.length / villages.length;
       expect(ratio).toBeGreaterThanOrEqual(0);
       expect(ratio).toBeLessThanOrEqual(0.5);
     });
@@ -445,7 +449,10 @@ describe('seedWorld', () => {
           (a) => a.kind === 'city_corporation' && a.homeSettlement === c.id,
         );
         expect(cityActor).toBeDefined();
-        const grainStock = cityActor?.stockpile.get(resourceId('food.grain')) ?? 0;
+        const grainStock =
+          cityActor === undefined
+            ? 0
+            : (cityActor.stockpile.get(c.id)?.get(resourceId('food.grain')) ?? 0);
         // ~30 days of grain at 0.4 kg/day = 12 kg / person; in modii (6.7 kg) ~ 1.8 modii / person.
         const expectedMin = Math.floor(c.population.total() * 0.5);
         expect(grainStock).toBeGreaterThanOrEqual(expectedMin);
@@ -457,11 +464,13 @@ describe('seedWorld', () => {
       const villages = [...w.settlements.values()].filter((s) => s.tier === 'village');
       for (const v of villages) {
         // The village's stockpile owner is one of its stockpileOwners.
+        // Per docs/15 §C30, inventory is keyed by settlement, so we check
+        // each owner's slice AT this village.
         const owners = v.stockpileOwners
           .map((id) => w.actors.get(id))
           .filter((a): a is NonNullable<typeof a> => a !== undefined);
         const someoneHasGrain = owners.some(
-          (a) => (a.stockpile.get(resourceId('food.grain')) ?? 0) > 0,
+          (a) => (a.stockpile.get(v.id)?.get(resourceId('food.grain')) ?? 0) > 0,
         );
         expect(someoneHasGrain).toBe(true);
       }

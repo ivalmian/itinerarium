@@ -919,6 +919,355 @@ settlements — with prices closer to marginal cost after §C26 +
 `src/sim/tick.ts` `caravanReplanPhase`, `disbandUnprofitableCaravan`,
 `docs/15-v1-5-cleanups.md` §C25.
 
+## C29 — Tribute / rent decoupling for client villages (landed)
+
+**Diagnosed during the post-§C28 audit:** the viewer-reported city
+stockpile inflated by ~4.5× world-wide on the watchdog seed. Asculum
+showed 8.5M grain after 365 days when the actors physically held only
+~2.7M between them. Root cause: each patrician family was registered
+as a `stockpileOwner` of (a) its home city AND (b) every client
+village it patronised — up to 17 villages per family. Since
+`actor.stockpile` is a single pool, the viewer's settlement aggregate
+counted the same modius once for the city and once for every client
+village. Per pillar §1 (no hidden hands), a pool of grain in one
+warehouse cannot simultaneously satisfy markets at 18 different
+settlements.
+
+**v1.5 — landed:**
+
+1. `Settlement.clientPatron?: ActorId` — explicit pointer from a
+   client village to the patrician family that collects its rent.
+   Replaces the old "push patron to village.stockpileOwners"
+   convention.
+2. `seedClientVillage` no longer pushes the patron to
+   `village.stockpileOwners`. Instead it creates a `free_village`
+   actor for the village (same kind as free villages) that owns the
+   village's stockpile + buildings + starter grain reserves.
+3. Building ownership at client villages now resolves to the village
+   household actor, not the patron. Recipe outputs and recipe inputs
+   both flow through the village's pool — the village stockpile is
+   now physical. Hex ownership (`tile.ownerActor = patron`) is
+   unchanged: the patron still owns the LAND politically, but does
+   not magically hold the harvest.
+4. Quarterly `tributePhase` (every 90 days, season boundary): for
+   each settlement with a `clientPatron`, transfer
+   `TRIBUTE_FRACTION × village.treasury` coin to the patron's
+   treasury, capped at what the village can spare without dropping
+   below a small operating floor. Default
+   `TRIBUTE_FRACTION = 0.25` — chosen to be lower than historical
+   share-rent (~⅓–½) because the in-game village_household also
+   pays wages to its plebeian workers and we don't want the village
+   to be drained to zero between seasons. Tunable per §C30 below.
+5. The patron's pool now grows from tribute coin (received quarterly)
+   rather than from physical harvest teleportation. Patrons spend
+   that coin on caravans, festivals, comfort goods, and market making
+   per the existing pathways.
+
+**Why tribute is coin not in-kind:**
+
+In-kind crop-share would either (a) teleport grain from village to
+city (violates pillar §1), or (b) require a tribute caravan that
+physically moves crop from village to city granary every season,
+which is an unbounded amount of caravan-routing work. Coin tribute
+matches the late-imperial transition to fixed-cash rents (paid by
+selling the harvest at the village market first) and lets the
+existing market clearing absorb the village's surplus into local
+buyers (or via caravans that arbitrage to the city if the city's
+grain price is higher than the village's).
+
+**Result:** world-aggregate stockpile inflation drops from 4.5× to
+1.0×. Settlement-level "Stock" columns now report what's physically
+in that settlement.
+
+**Cross-refs:** `docs/11-politics-and-ownership.md` §"Patron-client
+villages", `src/procgen/seed.ts` `seedClientVillage`, `src/sim/tick.ts`
+`tributePhase`.
+
+## C30 — Per-settlement actor inventory (landed)
+
+**Why even after §C29:** §C29 makes the patron-client case clean,
+but the underlying type (`Actor.stockpile: Map<ResourceId, Quantity>`
+— a single pool per actor) is still **hidden-handed**. If a future
+feature lets an actor legitimately hold inventory at multiple
+settlements (a city corporation buying a workshop in a satellite
+town, a merchant guild operating warehouses in several ports, a
+patrician buying a country villa with its own granary), the model
+silently shares one pool across all those locations again. Per
+pillar §1, inventory must be physical.
+
+**v1.5 — landed:**
+
+1. `Actor.stockpile` is now `Map<SettlementId, Map<ResourceId, Quantity>>`.
+   The outer key is the settlement where the inventory physically
+   lives. Single-settlement actors (the common case) have a map of
+   size 1 whose key is their `homeSettlement`.
+2. New helpers in `src/sim/politics/actor.ts`: `getStockAt`,
+   `addStockAt`, `removeStockAt`, `actorTotalStock` (sums across
+   settlements for debug/UI only), `actorSettlementsWithStock`.
+3. Every prior `actor.stockpile.get(r)` / `.set(r, q)` call site is
+   migrated to settlement-keyed access. Per CLAUDE.md no compat
+   shims — old API is deleted, every call site walks through a
+   settlement explicitly.
+4. Production phase: a recipe firing at building `b` adds the output
+   to `b.ownerActor.stockpile.get(b.settlement)` and drains inputs
+   from the same slice. Even if the owner had inventory elsewhere,
+   it does not satisfy local recipe inputs without a caravan or a
+   market trade.
+5. Market clearing at settlement `s`: only same-settlement slices of
+   each `stockpileOwner` participate as supply. A patron with a
+   country villa cannot sell that villa's grain at his town house
+   without first shipping it via caravan.
+6. Caravan loading/unloading: same model — buying at `s` increases
+   the caravan owner's `s`-slice, then loading moves it to
+   `caravan.cargo` (which is settlement-free; caravans are in
+   transit).
+
+**Migration scope:** ~30 read/write sites in `tick.ts`, the supply
+schedule builder, the spoilage phase, the snapshot serializer,
+seed/seedCaravans, and the viewer's stockpile aggregator. All call
+sites needed an explicit settlement parameter — most were already
+passing settlement around (production loops, market clearing) so the
+threading was mechanical.
+
+**Acceptance:** world-aggregate inflation is exactly 1.0× (each
+modius counted in exactly one settlement's "Stock" column);
+`debug-stockpile-accounting.ts` reconciles `Δstock = produced +
+imported − consumed − exported` within 0.1% per settlement per day.
+
+**Known follow-up — famine regression:** the 3-year watchdog burn-in
+(80×80, 3 cities) shows famine deaths rise from ~6.6k (post-§C29) to
+~22k after §C30. This is **expected** behaviour, not a bug: before
+§C30 a patron's grain pool was implicitly accessible at every market
+they were registered at, which masked food-distribution friction.
+The honest physical model exposes that the trade system doesn't
+yet move enough grain from village granaries to city subsistence
+markets. Population still settles at ~87% over 3 years (pass) and
+no fatal invariants fire. Real fix lives in trade/caravan tuning,
+not in re-introducing the hidden hand.
+
+**Cross-refs:** `docs/11-politics-and-ownership.md` §"Hex-level
+ownership", `src/sim/politics/actor.ts`,
+`docs/15-v1-5-cleanups.md` §C29.
+
+## C31 — Villager caravans (landed)
+
+**Motivation:** after §C30 the famine regression revealed that the
+trade system wasn't moving enough food and other rural production
+from village granaries to city markets. Patron-funded long-haul
+merchant caravans handle inter-city trade but rarely originate at a
+village. The historical Roman gap is exactly this: a village
+steward + 1-2 mules + a handcart, doing a short out-and-back to the
+nearest city every few weeks. That's a villager caravan.
+
+**The Roman village ↔ city economic relationship the model exposes:**
+
+A village headman / steward routinely sent a small caravan to the
+nearest city for one of three reasons:
+
+1. **Surplus run.** The village has more grain / legumes / wool /
+   flax / lumber / cheese / pigs / cloth than the village itself
+   needs. Cart it to the city, sell at market, come home with coin
+   and/or city-made goods (oil, wine, pottery, salt, iron tools)
+   the village can't make itself.
+2. **Import trip.** The village has accumulated coin from prior
+   trips. The headman wants pottery / tools / oil / salt that the
+   city sells cheap, brings them back, distributes them to
+   villagers, or stockpiles for the off-season.
+3. **Hard-times resupply.** The village's own subsistence grain is
+   running low (bad harvest, locusts, plague), and the headman
+   drains some of the village treasury to send the caravan to buy
+   staples back from the city.
+
+All three are the same caravan with different cargo + direction.
+We model the dispatch trigger as "village has meaningful exportable
+inventory OR has decent treasury to fund an import / resupply
+trip"; the planner picks the actual cargo each leg.
+
+**v1.5 mechanics (landed):**
+
+1. New caravan ID prefix `villager-`. Distinct from the existing
+   `merchant-`, `tax-`, `import-`, `export-` prefixes. The viewer
+   renders these with a dedicated peasant-with-handcart SVG
+   (`viewer/art/units/villager_caravan.svg`) so they read
+   visually distinct from patron-funded long-haul mule trains.
+2. `villagerCaravanAssemblyPhase` runs every 14 days. For each
+   `free_village` actor whose home settlement is a village and that
+   has either:
+   - any of `VILLAGER_EXPORTABLE_RESOURCES` (food, fibre, wood,
+     hides, livestock, cloth) at ≥14 days of local subsistence
+     equivalent, OR
+   - treasury ≥ 200 coin (import-trip threshold), OR
+   - grain stock <7 days AND any treasury (hard-times resupply)
+
+   ...the steward dispatches a villager caravan (one per village
+   at a time).
+
+3. Caravan composition: 2-4 mules + 0-1 donkeys, 1 drover + 1
+   guard, no light cart, 4-day starter rations. Operating
+   treasury 50-250 coin (vs 250-750 for merchant caravans),
+   scaled to leave at least 30 coin at the village.
+4. Movement + trade routes identical to merchant caravans: the
+   shared planner finds profitable arbitrage (village exports →
+   city; city imports → village, depending on price gradient).
+   Same 5% profit floor (§C28) + 45-day no-profit disband (§C25).
+5. Villager caravans count toward a separate fleet target
+   (~0.5 × villageCount) so they don't compete with the standing
+   merchant fleet (~0.25 × settlements).
+6. Profit remittance: when a villager caravan returns to its
+   village home with surplus coin, the same
+   `remitStandingCaravanProfitAtHome` logic that handles
+   merchants pays the steward — coin accumulates at the village
+   for tribute (§C29), wages, or future trips.
+7. New `tribute_paid` companion event `villager_caravan_dispatched`
+   for telemetry.
+
+**Why the 5% profit floor still works for villages:**
+
+Short-haul village→city routes have low transport cost but smaller
+price spreads than long-haul. A village-grain → city-grain spread
+of even 3-4% may not clear the gate, but a village-grain →
+city-grain via the city's higher subsistence price often does, and
+the return-leg arbitrage (city-pottery → village-pottery) also
+clears. The planner picks whichever leg is profitable.
+
+**Cross-refs:** `docs/06-caravans.md` §"NPC caravan AI",
+`docs/11-politics-and-ownership.md` §"Patron-client villages" +
+§"Free villages", `src/sim/tick.ts` `villagerCaravanAssemblyPhase`,
+`viewer/art/units/villager_caravan.svg`.
+
+## C32 — Bandit actions through movable parties + missing renderers (landed)
+
+**Motivation:** the viewer rendered caravans and bandit camps but
+**not** patrols, news carriers, or any visible "raid in progress."
+Patrols + news carriers always existed in the sim and ticked daily —
+they just had no map layer. Worse, every bandit action (raid, fence,
+recruit, migrate, bribe) resolved instantaneously at the camp's
+hex — no physically visible raid party walking from the camp to the
+target settlement, no spatial chance for a patrol to intercept en
+route, no hard-times "you can see the raiders coming" warning. Per
+pillar §1 (no hidden hands) all of this needs to be physical.
+
+**v1.5 — landed:**
+
+1. **Generic mover layer** (`viewer/map/movers.ts`) — a factory that
+   takes an art kind + a `getMovers` callback and produces a Pixi
+   `Container` with sprites + faction-colour badges + smooth
+   inter-tick interpolation. Reused by the three new layers below.
+2. **Patrol layer** (`viewer/map/patrols.ts`) — renders
+   `world.patrols` with the `patrol` glyph.
+3. **News-carrier layer** (`viewer/map/newsCarriers.ts`) — renders
+   the in-transit subset of `world.newsCarriers` with the
+   `news_carrier` glyph.
+4. **BanditParty as a real sim entity** — new `BanditParty` type and
+   `world.banditParties` Map. A party is a subset of bandits split
+   off from a camp at action time, walking to a target and back
+   (one-way for `migrate` missions). Per-camp cap = 1 active party
+   at a time (the user's design — keeps the world legible).
+5. **Camp actions now spawn parties, not resolve in-place.** The
+   `applyCampAction` cases that touch another hex (`raid_settlement`,
+   `raid_caravan`, `fence_loot`, `recruit_drive`, `bribe_settlement`,
+   `move_camp`) dispatch a `BanditParty` carrying:
+   - a mission discriminator (where to walk, what to do on arrival),
+   - a roster (mission-dependent share of the camp's bandits — half
+     for a raid, ~25% for a fence escort, ~20% for recruit / bribe,
+     the entire roster for `migrate`),
+   - cargo / treasury pre-loaded for missions that need it (fence
+     trip carries loot; bribe trip carries coin).
+     `lay_low` and `recruit_drive`'s pressure-multiplier side-effects
+     still happen at the camp.
+6. **`banditPartyPhase`** — runs each tick (after `banditPhase`,
+   before `patrolPhase`). Advances each party up to **25 hex/day**
+   (`BANDIT_PARTY_MOVEMENT_HEXES_PER_DAY`) toward its target
+   (outbound) or home (returning) — comparable to a mule caravan
+   (docs/06) and faster than a refugee on foot (~20 hex/day).
+   With a ~1-week round-trip budget that puts plausible mission
+   targets up to ~75-100 hex one-way from the home camp. On
+   arrival at the mission hex it resolves the mission (reusing
+   `executeSettlementRaid` / `resolveAmbush` /
+   `executeFenceTransaction` via a temporary synthetic-camp
+   adapter so the existing combat maths stays canonical), then
+   flips to `returning`. On arrival back at home, merges the
+   party's surviving roster + loot + coin back into the home
+   camp. If the home camp was destroyed while the party was out
+   (e.g. patrol wiped it), the party founds a new camp at its
+   current hex.
+
+   **Patrols also move 25 hex/day**
+   (`PATROL_MOVEMENT_HEXES_PER_DAY`) so they aren't structurally
+   outpaced by the parties they're chasing. `patrolPhase` calls
+   `tickPatrol` up to 25 times per day, stopping the loop early on
+   the first iteration that produces a pending battle (combat eats
+   the rest of the day).
+
+7. **Bandit-party viewer layer** (`viewer/map/banditParties.ts`) —
+   renders `world.banditParties` with the existing `bandit_raid`
+   glyph so raid parties, fence trips, and migrating camps are all
+   visible on the map.
+8. **Deterministic party ids**: `bp-<campId>-<today>` (per-camp,
+   per-day) so two runs with the same seed produce identical event
+   sequences (the smoke test's determinism gate still passes).
+
+9. **Patrol detection + pursuit** (`visibleQuarryForPatrol`,
+   `Patrol.pursuit`): each tick a patrol scans for bandit camps +
+   parties within `PATROL_SIGHT_HEXES = 2` of its current
+   position. If a target is in sight AND the patrol's effective
+   combat strength exceeds the target's (likely-to-win check),
+   the patrol enters pursuit — deviates from its cyclic route to
+   chase the target at `PATROL_PURSUIT_HEXES_PER_DAY = 30` (a
+   small speed bonus so equal-speed targets don't perpetually
+   escape). Pursuit lasts up to `PATROL_PURSUIT_MAX_DAYS = 3`
+   days; if not caught up, the patrol gives up and resumes its
+   route.
+10. **Party flee behaviour** (`visibleThreatForParty`): each tick
+    a bandit party scans for patrols within `PARTY_SIGHT_HEXES = 2`.
+    If a likely-to-win patrol is in sight, the party flips to
+    `fleeing` phase and walks 25 hex/day away from the threat
+    (mission is paused). When the threat clears, the party
+    resumes `outbound` or `returning` depending on where it is
+    relative to the mission target.
+11. **`patrolPartyEngagementPhase`** runs after both movement
+    phases. For each patrol, finds the nearest bandit (camp or
+    party) within 2 hex and resolves a single battle via
+    `resolveBattle`. Casualties apply to both sides; pursuit
+    state clears on a patrol win so the patrol resumes its route.
+    No bribery (every encounter is fought, per the user's spec).
+
+**Still on the docket** (separate follow-up):
+
+- Road-bias for patrol cyclic route seeding so patrols spend more
+  time on roads (where caravans + villager runs are).
+- Caravan-escort patrols (a `caravan_escort` patrol kind already
+  exists in the type but isn't seeded yet).
+- Battle narrative + survivor news for patrol-vs-party fights
+  (currently camp engagements emit news; party fights don't yet).
+
+**Burn-in (3-year watchdog, 80×80, 3 cities):**
+
+|                   | pop end | caravans end | famine | settlements end |
+| ----------------- | ------- | ------------ | ------ | --------------- |
+| pre-§C32          | 151,810 | 50           | 22,176 | 328             |
+| §C32 (1 hex/day)  | 156,636 | 81           | 18,323 | 336             |
+| §C32 (25 hex/day) | 155,325 | 68           | 20,547 | 333             |
+| §C32 final        | 155,325 | 68           | 20,547 | 333             |
+
+Activity counts (1095 days, watchdog seed):
+
+- 99 bandit parties dispatched, 95 returned home, 4 lost
+- 22 patrol engagements
+- 6 successful settlement raids
+- 3 caravan robberies
+- 5 active parties + 2 camps + 3 patrols at year 3 (steady-state
+  bandit fleet of ~5 visible parties on the map)
+
+(Famine still elevated vs the pre-§C30 baseline because trade
+tuning is incomplete — see §C30 + §C31. The bandit refactor is
+about _visibility + pillar #1 compliance_; the tuning gain is a
+side-effect of more caravans surviving + fewer instant raids.)
+
+**Cross-refs:** `docs/12-bandits-and-conflict.md` §"Bandit raid
+parties", `src/sim/bandit/party.ts`, `src/sim/tick.ts`
+`banditPartyPhase` + `spawnBanditParty`, `viewer/map/movers.ts`.
+
 ## C16 — Cascading consequences of price explosion [TODO]
 
 **Current state:** prices are capped at a sane multiple of base

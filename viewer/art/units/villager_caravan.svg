@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="vc-ox" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#8e6a3a"/>
+      <stop offset="1" stop-color="#2e1c08"/>
+    </linearGradient>
+    <linearGradient id="vc-cart" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7a4e22"/>
+      <stop offset="1" stop-color="#3a2208"/>
+    </linearGradient>
+    <linearGradient id="vc-sack" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#dabb86"/>
+      <stop offset="1" stop-color="#7a5a2a"/>
+    </linearGradient>
+    <linearGradient id="vc-tunic" x1="0" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#9a8a5a"/>
+      <stop offset="1" stop-color="#3a2e14"/>
+    </linearGradient>
+    <filter id="vc-ds" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0.6"/>
+      <feOffset dx="0.5" dy="1"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <!-- shadow under group -->
+  <ellipse cx="16" cy="26" rx="13" ry="2" fill="#2a1e10" opacity="0.45"/>
+  <g filter="url(#vc-ds)">
+    <!-- ox (front, pulling) -->
+    <ellipse cx="6" cy="19" rx="4.2" ry="2.6" fill="url(#vc-ox)"/>
+    <!-- ox head -->
+    <ellipse cx="2.5" cy="17" rx="1.8" ry="1.4" fill="url(#vc-ox)"/>
+    <!-- horns -->
+    <path d="M 2 16 Q 1 14 1.5 13" stroke="#2a1808" stroke-width="0.6" fill="none"/>
+    <path d="M 3 16 Q 4 14 3.5 13" stroke="#2a1808" stroke-width="0.6" fill="none"/>
+    <!-- legs -->
+    <line x1="4" y1="21" x2="4" y2="25" stroke="#2a1808" stroke-width="0.8"/>
+    <line x1="6" y1="21" x2="6" y2="25" stroke="#2a1808" stroke-width="0.8"/>
+    <line x1="8" y1="21" x2="8" y2="25" stroke="#2a1808" stroke-width="0.8"/>
+    <!-- yoke / harness -->
+    <line x1="9" y1="18" x2="13" y2="19" stroke="#5a3a18" stroke-width="0.6"/>
+    <!-- cart body (handcart with low rails) -->
+    <path d="M 13 18 L 23 18 L 24 23 L 12 23 Z" fill="url(#vc-cart)" stroke="#1e1004" stroke-width="0.4"/>
+    <!-- cart rails -->
+    <line x1="13" y1="18" x2="13" y2="16" stroke="#3a2208" stroke-width="0.6"/>
+    <line x1="23" y1="18" x2="23" y2="16" stroke="#3a2208" stroke-width="0.6"/>
+    <line x1="13" y1="16" x2="23" y2="16" stroke="#3a2208" stroke-width="0.5"/>
+    <!-- grain sacks loaded -->
+    <ellipse cx="16" cy="17" rx="2" ry="1.6" fill="url(#vc-sack)" stroke="#3a2810" stroke-width="0.3"/>
+    <ellipse cx="20" cy="17" rx="2" ry="1.6" fill="url(#vc-sack)" stroke="#3a2810" stroke-width="0.3"/>
+    <ellipse cx="18" cy="15" rx="1.8" ry="1.4" fill="url(#vc-sack)" stroke="#3a2810" stroke-width="0.3"/>
+    <!-- cart wheel (single, side view) -->
+    <circle cx="15" cy="23" r="2.2" fill="#2a1808" stroke="#0a0402" stroke-width="0.4"/>
+    <circle cx="15" cy="23" r="1.2" fill="#5a3a18"/>
+    <line x1="14" y1="22" x2="16" y2="24" stroke="#0a0402" stroke-width="0.4"/>
+    <line x1="14" y1="24" x2="16" y2="22" stroke="#0a0402" stroke-width="0.4"/>
+    <circle cx="22" cy="23" r="2.2" fill="#2a1808" stroke="#0a0402" stroke-width="0.4"/>
+    <circle cx="22" cy="23" r="1.2" fill="#5a3a18"/>
+    <line x1="21" y1="22" x2="23" y2="24" stroke="#0a0402" stroke-width="0.4"/>
+    <line x1="21" y1="24" x2="23" y2="22" stroke="#0a0402" stroke-width="0.4"/>
+    <!-- peasant farmer walking behind cart -->
+    <ellipse cx="27" cy="15" rx="1.5" ry="1.4" fill="#e8c894"/>
+    <!-- straw hat -->
+    <path d="M 25 14 L 29 14 L 28.5 13 L 25.5 13 Z" fill="#caa040" stroke="#5a3e08" stroke-width="0.3"/>
+    <!-- tunic -->
+    <path d="M 25.5 16 L 28.5 16 L 29.5 23 L 24.5 23 Z" fill="url(#vc-tunic)" stroke="#1a140a" stroke-width="0.3"/>
+    <!-- walking stick -->
+    <line x1="30" y1="13" x2="30.5" y2="23" stroke="#6a4a26" stroke-width="0.5"/>
+  </g>
+  <!-- dust kick -->
+  <ellipse cx="15" cy="26" rx="2" ry="0.5" fill="#daca7a" opacity="0.45"/>
+  <ellipse cx="22" cy="26" rx="2" ry="0.5" fill="#daca7a" opacity="0.45"/>
+</svg>
