@@ -919,6 +919,125 @@ settlements — with prices closer to marginal cost after §C26 +
 `src/sim/tick.ts` `caravanReplanPhase`, `disbandUnprofitableCaravan`,
 `docs/15-v1-5-cleanups.md` §C25.
 
+## C29 — Tribute / rent decoupling for client villages (landed)
+
+**Diagnosed during the post-§C28 audit:** the viewer-reported city
+stockpile inflated by ~4.5× world-wide on the watchdog seed. Asculum
+showed 8.5M grain after 365 days when the actors physically held only
+~2.7M between them. Root cause: each patrician family was registered
+as a `stockpileOwner` of (a) its home city AND (b) every client
+village it patronised — up to 17 villages per family. Since
+`actor.stockpile` is a single pool, the viewer's settlement aggregate
+counted the same modius once for the city and once for every client
+village. Per pillar §1 (no hidden hands), a pool of grain in one
+warehouse cannot simultaneously satisfy markets at 18 different
+settlements.
+
+**v1.5 — landed:**
+
+1. `Settlement.clientPatron?: ActorId` — explicit pointer from a
+   client village to the patrician family that collects its rent.
+   Replaces the old "push patron to village.stockpileOwners"
+   convention.
+2. `seedClientVillage` no longer pushes the patron to
+   `village.stockpileOwners`. Instead it creates a `free_village`
+   actor for the village (same kind as free villages) that owns the
+   village's stockpile + buildings + starter grain reserves.
+3. Building ownership at client villages now resolves to the village
+   household actor, not the patron. Recipe outputs and recipe inputs
+   both flow through the village's pool — the village stockpile is
+   now physical. Hex ownership (`tile.ownerActor = patron`) is
+   unchanged: the patron still owns the LAND politically, but does
+   not magically hold the harvest.
+4. Quarterly `tributePhase` (every 90 days, season boundary): for
+   each settlement with a `clientPatron`, transfer
+   `TRIBUTE_FRACTION × village.treasury` coin to the patron's
+   treasury, capped at what the village can spare without dropping
+   below a small operating floor. Default
+   `TRIBUTE_FRACTION = 0.25` — chosen to be lower than historical
+   share-rent (~⅓–½) because the in-game village_household also
+   pays wages to its plebeian workers and we don't want the village
+   to be drained to zero between seasons. Tunable per §C30 below.
+5. The patron's pool now grows from tribute coin (received quarterly)
+   rather than from physical harvest teleportation. Patrons spend
+   that coin on caravans, festivals, comfort goods, and market making
+   per the existing pathways.
+
+**Why tribute is coin not in-kind:**
+
+In-kind crop-share would either (a) teleport grain from village to
+city (violates pillar §1), or (b) require a tribute caravan that
+physically moves crop from village to city granary every season,
+which is an unbounded amount of caravan-routing work. Coin tribute
+matches the late-imperial transition to fixed-cash rents (paid by
+selling the harvest at the village market first) and lets the
+existing market clearing absorb the village's surplus into local
+buyers (or via caravans that arbitrage to the city if the city's
+grain price is higher than the village's).
+
+**Result:** world-aggregate stockpile inflation drops from 4.5× to
+1.0×. Settlement-level "Stock" columns now report what's physically
+in that settlement.
+
+**Cross-refs:** `docs/11-politics-and-ownership.md` §"Patron-client
+villages", `src/procgen/seed.ts` `seedClientVillage`, `src/sim/tick.ts`
+`tributePhase`.
+
+## C30 — Per-settlement actor inventory (landed)
+
+**Why even after §C29:** §C29 makes the patron-client case clean,
+but the underlying type (`Actor.stockpile: Map<ResourceId, Quantity>`
+— a single pool per actor) is still **hidden-handed**. If a future
+feature lets an actor legitimately hold inventory at multiple
+settlements (a city corporation buying a workshop in a satellite
+town, a merchant guild operating warehouses in several ports, a
+patrician buying a country villa with its own granary), the model
+silently shares one pool across all those locations again. Per
+pillar §1, inventory must be physical.
+
+**v1.5 — landed:**
+
+1. `Actor.stockpile` is now `Map<SettlementId, Map<ResourceId, Quantity>>`.
+   The outer key is the settlement where the inventory physically
+   lives. Single-settlement actors (the common case) have a map of
+   size 1 whose key is their `homeSettlement`.
+2. New helpers in `src/sim/politics/actor.ts`: `getStockAt`,
+   `addStockAt`, `removeStockAt`, `actorTotalStock` (sums across
+   settlements for debug/UI only), `actorSettlementsWithStock`.
+3. Every prior `actor.stockpile.get(r)` / `.set(r, q)` call site is
+   migrated to settlement-keyed access. Per CLAUDE.md no compat
+   shims — old API is deleted, every call site walks through a
+   settlement explicitly.
+4. Production phase: a recipe firing at building `b` adds the output
+   to `b.ownerActor.stockpile.get(b.settlement)` and drains inputs
+   from the same slice. Even if the owner had inventory elsewhere,
+   it does not satisfy local recipe inputs without a caravan or a
+   market trade.
+5. Market clearing at settlement `s`: only same-settlement slices of
+   each `stockpileOwner` participate as supply. A patron with a
+   country villa cannot sell that villa's grain at his town house
+   without first shipping it via caravan.
+6. Caravan loading/unloading: same model — buying at `s` increases
+   the caravan owner's `s`-slice, then loading moves it to
+   `caravan.cargo` (which is settlement-free; caravans are in
+   transit).
+
+**Migration scope:** ~30 read/write sites in `tick.ts`, the supply
+schedule builder, the spoilage phase, the snapshot serializer,
+seed/seedCaravans, and the viewer's stockpile aggregator. All call
+sites needed an explicit settlement parameter — most were already
+passing settlement around (production loops, market clearing) so the
+threading was mechanical.
+
+**Acceptance:** world-aggregate inflation is exactly 1.0× (each
+modius counted in exactly one settlement's "Stock" column);
+`debug-stockpile-accounting.ts` reconciles `Δstock = produced +
+imported − consumed − exported` within 0.1% per settlement per day.
+
+**Cross-refs:** `docs/11-politics-and-ownership.md` §"Hex-level
+ownership", `src/sim/politics/actor.ts`,
+`docs/15-v1-5-cleanups.md` §C29.
+
 ## C16 — Cascading consequences of price explosion [TODO]
 
 **Current state:** prices are capped at a sane multiple of base

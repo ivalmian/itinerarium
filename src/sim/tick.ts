@@ -361,6 +361,17 @@ export type TickEvent =
       readonly coin: number;
     }
   | {
+      /**
+       * Per docs/15 §C29: quarterly coin tribute from a client village to its
+       * patrician_family patron. Fires from `tributePhase` every 90 days.
+       */
+      readonly type: 'tribute_paid';
+      readonly fromSettlement: SettlementId;
+      readonly fromActor: ActorId;
+      readonly toActor: ActorId;
+      readonly coin: number;
+    }
+  | {
       readonly type: 'road_upgraded';
       readonly hex: Hex;
       readonly toGrade: 'dirt';
@@ -570,6 +581,10 @@ export const tick = (inputs: TickInputs): TickResult => {
   // and starts accruing/decaying wear like any other dirt road.
   if ((today + 1) % 91 === 0) {
     roadMaintenancePhase(world, events);
+    // Same quarterly cadence: client villages pay coin tribute to their
+    // patron. Replaces the older model where the patron co-owned village
+    // stockpile (docs/15 §C29).
+    tributePhase(world, events);
   }
 
   // --- Empty settlements disappear (docs/05 §"Growth and decay") ----------
@@ -2295,6 +2310,73 @@ const roadMaintenancePhase = (world: WorldState, events: TickEvent[]): void => {
         events.push({ type: 'road_unmaintained', hex: { q: h.q, r: h.r } });
       }
     }
+  }
+};
+
+// --- Tribute (docs/15 §C29) -----------------------------------------------
+
+/**
+ * Per docs/15 §C29: quarterly coin tribute from each client village's
+ * `free_village` steward to its patrician_family patron. Replaces the
+ * earlier model where the patron magically co-owned the village stockpile.
+ *
+ * Mechanics:
+ *  - Runs every 90 days (season boundary), driven by the day counter in
+ *    `tick()`.
+ *  - For each settlement with `clientPatron` defined: find the village
+ *    steward (the `free_village` actor that is a stockpileOwner of the
+ *    village), compute tribute = `TRIBUTE_FRACTION × steward.treasury`,
+ *    cap so the steward keeps at least `TRIBUTE_OPERATING_FLOOR` coin
+ *    for next season's wages + fuel + tools, transfer the rest to
+ *    the patron's treasury.
+ *  - If the patron is gone (succession or disband), tribute is skipped
+ *    for that village this season — no orphan coin sink.
+ *
+ *   `TRIBUTE_FRACTION = 0.25` is below historical share-rent (~⅓–½)
+ *   because the village_household also pays plebeian wages; a higher
+ *   draw rate drains it to zero between seasons in burn-in.
+ *
+ * Emits a `tribute_paid` event per transfer for telemetry.
+ */
+const TRIBUTE_FRACTION = 0.25;
+const TRIBUTE_OPERATING_FLOOR = 50;
+
+const tributePhase = (world: WorldState, events: TickEvent[]): void => {
+  for (const settlement of world.settlements.values()) {
+    const patronId = settlement.clientPatron;
+    if (patronId === undefined) continue;
+    const patron = world.actors.get(patronId);
+    if (patron === undefined) continue;
+
+    // The village steward is the `free_village` actor that homes here. Per
+    // seedClientVillage it's pushed to stockpileOwners first, so it's
+    // typically stockpileOwners[0], but tolerate ordering changes by
+    // scanning explicitly.
+    let steward: Actor | undefined;
+    for (const ownerId of settlement.stockpileOwners) {
+      const a = world.actors.get(ownerId);
+      if (a === undefined) continue;
+      if (a.kind === 'free_village' && a.homeSettlement === settlement.id) {
+        steward = a;
+        break;
+      }
+    }
+    if (steward === undefined) continue;
+
+    const spendable = Math.max(0, steward.treasury - TRIBUTE_OPERATING_FLOOR);
+    if (spendable <= 0) continue;
+    const tribute = spendable * TRIBUTE_FRACTION;
+    if (tribute <= 1e-6) continue;
+
+    steward.treasury -= tribute;
+    patron.treasury += tribute;
+    events.push({
+      type: 'tribute_paid',
+      fromSettlement: settlement.id,
+      fromActor: steward.id,
+      toActor: patron.id,
+      coin: tribute,
+    });
   }
 };
 

@@ -141,6 +141,8 @@ interface SerializedSettlement {
   readonly buildings: readonly SerializedSettlementBuilding[];
   readonly factions: readonly string[];
   readonly stockpileOwners: readonly string[];
+  /** Per docs/15 §C29: optional patron for client villages. */
+  readonly clientPatron?: string;
   readonly market: SerializedMarketSnapshot;
   /** Optional for back-compat with snapshots from before C3/C6 landed. */
   readonly catchmentBaselinePop?: number;
@@ -374,6 +376,7 @@ const serializeSettlement = (s: Settlement): SerializedSettlement => {
     })),
     factions: s.factions.map(String),
     stockpileOwners: s.stockpileOwners.map(String),
+    ...(s.clientPatron !== undefined ? { clientPatron: String(s.clientPatron) } : {}),
     market: {
       recentImports: stringMapToArray(s.market.recentImports),
       recentExports: stringMapToArray(s.market.recentExports),
@@ -408,6 +411,7 @@ const deserializeSettlement = (s: SerializedSettlement): Settlement => {
     catchmentHexes: s.catchmentHexes.map(deserHex),
     factions: s.factions.map(factionId),
     stockpileOwners: s.stockpileOwners.map(actorId),
+    ...(s.clientPatron !== undefined ? { clientPatron: actorId(s.clientPatron) } : {}),
     ...(s.catchmentBaselinePop !== undefined
       ? { catchmentBaselinePop: s.catchmentBaselinePop }
       : {}),

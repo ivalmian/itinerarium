@@ -142,15 +142,26 @@ Two main forms.
 ### Patron-client villages (most common)
 
 - Village land is owned by one (occasionally two competing)
-  patrician family in a nearby city.
+  patrician family in a nearby city (`tile.ownerActor = patron`).
 - Village headman (`vilicus`) is the family's appointed agent,
   often a freedman or a trusted slave with limited authority.
-- Workers are tenants paying rent in kind, plus slaves the family
-  owns outright.
+- The village itself has its own `free_village` actor — the
+  village commons / steward fund. This actor owns the village's
+  buildings, runs production, holds the village's grain reserves,
+  and pays its plebeian workers' wages. Per docs/15 §C29 the
+  patron is **not** a stockpile owner of the village; per docs/15
+  §C30 inventory is physical-by-settlement.
+- Workers are coloni-style tenants whose surplus is gathered by
+  the village steward and converted to coin at the local market.
 - The family directs production goals (more grain this year,
   switch pasture to vines, slaughter more livestock for the family
   festival) but day-to-day work is the headman's call.
-- Surplus flows to the family town house in the city.
+- Surplus flows to the family town house **as quarterly coin
+  tribute** (`Settlement.clientPatron` points to the patron;
+  `tributePhase` runs every 90 days and transfers
+  `TRIBUTE_FRACTION × village.treasury` coin to the patron).
+  Grain physically stays at the village granary unless a caravan
+  hauls it to the city in response to a price gap.
 
 ### Free villages (less common)
 
@@ -189,14 +200,24 @@ forest hex, quarry, river weir) is owned by a specific actor:
   effectively claims it (formal recognition by the governor may
   follow, or may not).
 
-When a recipe runs at a catchment hex, output goes to the **hex
-owner's stockpile** at the settlement, not to a generic
-settlement pool. The owner then chooses whether to sell into the
-local market (see [08 — Money & Trade](08-money-and-trade.md) for
-the per-owner reservation-price logic).
+When a recipe runs at a catchment hex, output goes to the
+**building's `ownerActor` stockpile at this settlement**, not to a
+generic settlement pool. Per docs/15 §C30 inventory is keyed by
+settlement, so the same actor's stockpile in city A and village B
+are separate physical pools. For patron-client villages this
+distinction matters: the building owner is the village steward
+(the village's `free_village` actor), not the patron. The patron
+owns the LAND (`tile.ownerActor`) but the steward owns the
+HARVEST. Surplus reaches the patron via the quarterly tribute
+(`tributePhase`), not by direct accumulation in a shared pool.
+
+The owner then chooses whether to sell into the local market
+(see [08 — Money & Trade](08-money-and-trade.md) for the per-owner
+reservation-price logic).
 
 This is what makes "blockade the city" or "seize a family's mine"
-have real economic teeth: ownership is traceable end-to-end.
+have real economic teeth: ownership is traceable end-to-end and
+inventory is physically located.
 
 ## Slaves
 

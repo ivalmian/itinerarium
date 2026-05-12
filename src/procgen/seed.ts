@@ -725,17 +725,28 @@ const seedFreeVillage = (
   return actor;
 };
 
-const seedClientVillage = (ctx: BuildContext, settlement: Settlement, patron: Actor): void => {
+const seedClientVillage = (ctx: BuildContext, settlement: Settlement, patron: Actor): Actor => {
   const villageRng = ctx.rng.derive(`client-village-${String(settlement.id)}`);
-  // The patron's faction is in the city, but we still want a named headman in
-  // the village. The headman belongs to the patron's faction (a freedman
-  // managing the estate) so reputation lookups walk back to the patron.
+  // Per docs/15 §C29: the patron is NOT a stockpile owner of the village.
+  // The village has its own household actor (same kind as a free village)
+  // that holds the harvest. The patron collects quarterly coin tribute via
+  // `tributePhase`. The headman is still a freedman in the patron's faction
+  // so reputation lookups walk back to the patron, but the village's
+  // economic ledger is its own.
+  const aId = actorId(nextId('actor'));
   const headmanId = characterId(nextId('char'));
   // Find the patron's faction (each patrician_family has exactly one).
   const patronFaction = [...ctx.factions.values()].find((f) => f.actor === patron.id);
   if (patronFaction === undefined) {
     throw new Error(`seedClientVillage: patron ${String(patron.id)} has no faction`);
   }
+  const actor = createActor({
+    id: aId,
+    kind: 'free_village',
+    name: `Client Village of ${settlement.name}`,
+    homeSettlement: settlement.id,
+    treasury: villageRng.int(50, 300),
+  });
   const headman = createCharacter({
     id: headmanId,
     name: generateFullName(villageRng, 'male'),
@@ -747,20 +758,22 @@ const seedClientVillage = (ctx: BuildContext, settlement: Settlement, patron: Ac
     location: settlement.anchor,
   });
   patronFaction.members.push(headmanId);
+  addActor(ctx, actor);
   addCharacter(ctx, headman);
   settlement.factions.push(patronFaction.id);
-  settlement.stockpileOwners.push(patron.id);
+  settlement.stockpileOwners.push(aId);
+  settlement.clientPatron = patron.id;
   seedClassHouseholds(ctx, settlement, settlement.name);
-  // ~30 days of grain + ~7 days of tools/wood for the patron's client
-  // village; the patron accumulates across multiple villages so a city
-  // family that holds 3-5 client villages still has months of headroom
-  // before any single village's harvest. Per docs/15 §C5.
+  // ~30 days of grain + ~7 days of tools/wood for the village's own pool,
+  // per docs/15 §C5 + §C29. Local farms + the village smithy have to come
+  // online within the first month; trade fills any remaining gap.
   const pop = settlement.population.total();
-  grantStockpile(patron, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
-  grantStockpile(patron, 'goods.tools', toolsForPopulation(pop, 10));
-  grantStockpile(patron, 'material.wood', woodCordsForPopulation(pop, 5));
-  grantStockpile(patron, 'material.amphora', Math.max(10, Math.floor(pop / 10)));
-  grantStarterMarketInventory(patron, settlement, 0.7);
+  grantStockpile(actor, 'food.grain', grainModiiForPopulation(pop, GRAIN_DAYS_OF_RESERVE));
+  grantStockpile(actor, 'goods.tools', toolsForPopulation(pop, 10));
+  grantStockpile(actor, 'material.wood', woodCordsForPopulation(pop, 5));
+  grantStockpile(actor, 'material.amphora', Math.max(10, Math.floor(pop / 10)));
+  grantStarterMarketInventory(actor, settlement, 0.7);
+  return actor;
 };
 
 const seedHamlet = (ctx: BuildContext, settlement: Settlement, settlementName: string): Actor => {
