@@ -114,7 +114,7 @@ export const VIEWER_DEFAULTS: Required<
   sidebarHostId: 'sidebar',
 };
 
-const CARAVAN_MIN_VISUAL_TICK_MS = 160;
+const UNIT_MIN_VISUAL_TICK_MS = 160;
 
 interface BuildResult {
   world: WorldState;
@@ -178,12 +178,12 @@ const buildWorldFromOpts = (
   return { world };
 };
 
-const caravanVisualDurationMs = (state: ViewerState): number => {
+const unitVisualDurationMs = (state: ViewerState): number => {
   const tickIntervalMs =
     !state.paused && state.speed > 0 ? 1000 / speedToTicksPerSecond(state.speed) : 0;
   return tickIntervalMs > 0
-    ? Math.max(CARAVAN_MIN_VISUAL_TICK_MS, tickIntervalMs)
-    : CARAVAN_MIN_VISUAL_TICK_MS;
+    ? Math.max(UNIT_MIN_VISUAL_TICK_MS, tickIntervalMs)
+    : UNIT_MIN_VISUAL_TICK_MS;
 };
 
 const buildLayers = (
@@ -254,12 +254,16 @@ const buildLayers = (
   catchmentLayer.rebuild(world, hexSize);
   buildingsLayer.rebuild(world, hexSize);
   settlementsLayer.sync(world, hexSize);
-  caravansLayer.syncTick(world, undefined, hexSize, caravanVisualDurationMs(state));
+  caravansLayer.syncTick(world, undefined, hexSize, unitVisualDurationMs(state));
   caravansLayer.advanceVisual(world, 0, hexSize);
   banditCampsLayer.sync(world, hexSize);
-  patrolsLayer.syncTick(world, hexSize);
-  newsCarriersLayer.syncTick(world, hexSize);
-  banditPartiesLayer.syncTick(world, hexSize);
+  // Per docs/16-viewer §"Unit rendering smoothness": every mover layer
+  // uses the same tick-scaled visualDurationMs as the caravan layer, so
+  // patrols / news carriers / bandit raid parties glide over the full
+  // tick interval instead of sliding fast then sitting still.
+  patrolsLayer.syncTick(world, undefined, hexSize, unitVisualDurationMs(state));
+  newsCarriersLayer.syncTick(world, undefined, hexSize, unitVisualDurationMs(state));
+  banditPartiesLayer.syncTick(world, undefined, hexSize, unitVisualDurationMs(state));
 
   // Center the world initially.
   const cx = (hexMap.bounds.minX + hexMap.bounds.maxX) / 2;
@@ -663,7 +667,7 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
         readonly { q: number; r: number }[]
       >,
       hexSize,
-      caravanVisualDurationMs(state),
+      unitVisualDurationMs(state),
     );
 
     // Aggregate recipe outputs from the events for the resource panel.
@@ -684,9 +688,9 @@ export const bootViewer = async (opts: BootOpts = {}): Promise<ViewerApp> => {
     sidebar.update(world, result.events);
     layers.settlementsLayer.sync(world, hexSize);
     layers.banditCampsLayer.sync(world, hexSize);
-    layers.patrolsLayer.syncTick(world, hexSize);
-    layers.newsCarriersLayer.syncTick(world, hexSize);
-    layers.banditPartiesLayer.syncTick(world, hexSize);
+    layers.patrolsLayer.syncTick(world, undefined, hexSize, unitVisualDurationMs(state));
+    layers.newsCarriersLayer.syncTick(world, undefined, hexSize, unitVisualDurationMs(state));
+    layers.banditPartiesLayer.syncTick(world, undefined, hexSize, unitVisualDurationMs(state));
 
     // Rebuild building markers if a tick produced a building_completed event;
     // rebuild catchment shading on catchment_resized; rebuild road layer
