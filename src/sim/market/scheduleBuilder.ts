@@ -105,8 +105,19 @@ export const buildSettlementSchedules = (inputs: BuildScheduleInputs): Settlemen
     { readonly demand: DemandSchedule; readonly supply: SupplySchedule }
   >();
   const context = buildSettlementScheduleContext(inputs);
+  // Per docs/15 §C26: precompute the set of priced resources each
+  // market-maker actor will spread its treasury across — for the
+  // per-resource bid sizing.
+  const marketMakerResourcesByActor = buildMarketMakerResourcesByActor(inputs);
   for (const resource of inputs.resources) {
-    const demandSources: DemandSource[] = [
+    // Per docs/15 §C26 + §C27: market-making is the LAST-RESORT bidder.
+    // We build concrete demand sources first, find the minimum finite
+    // maxWillingnessToPay among them, and clamp the MM bid below that
+    // floor. Subsistence has WTP=∞ so it's always above MM; if any
+    // concrete comfort/derived/status/etc. source exists, MM stays
+    // strictly below it. The CDA matches by WTP descending, so concrete
+    // bids always fill first; MM only picks up residual supply.
+    const concreteDemandSources: DemandSource[] = [
       ...subsistenceSources(resource, inputs, context),
       ...comfortSources(resource, inputs, context),
       ...statusSources(resource, inputs, context),
@@ -117,14 +128,46 @@ export const buildSettlementSchedules = (inputs: BuildScheduleInputs): Settlemen
       ...productiveCapitalSources(resource, inputs, context),
       ...derivedInputSources(resource, inputs, context),
     ];
-    const demand = aggregateDemand(demandSources);
+    const minConcreteFiniteWtp = minFiniteWtpForConcreteSources(concreteDemandSources);
+    const mmDemandSources = marketMakerDemandSources(
+      resource,
+      inputs,
+      context,
+      marketMakerResourcesByActor,
+      minConcreteFiniteWtp,
+    );
+    const demand = aggregateDemand([...concreteDemandSources, ...mmDemandSources]);
     const supplySources = supplyForResource(resource, inputs, context, demand);
+    // MM ask remains additive — it's the +5% residual price tier above
+    // concrete asks. Concrete asks sit at MC (lower); MM ask only
+    // engages when demand walks up the supply ladder past MC.
+    const supplyWithMM = [...supplySources, ...marketMakerSupplySources(resource, inputs, context)];
     out.set(resource, {
       demand,
-      supply: aggregateSupply(supplySources),
+      supply: aggregateSupply(supplyWithMM),
     });
   }
   return { schedulesByResource: out };
+};
+
+/**
+ * Per docs/15 §C27: the minimum FINITE maxWillingnessToPay among the
+ * concrete (non-MM) demand sources for a resource. Subsistence has
+ * `maxWillingnessToPay = +Infinity` so it's excluded from this min —
+ * market-makers don't need to outbid an infinite WTP; they only need to
+ * sit below other finite bids. Returns Infinity when there is no finite
+ * concrete bid (i.e., only subsistence or no demand at all), in which
+ * case MM bids at its full -5% offset.
+ */
+const minFiniteWtpForConcreteSources = (sources: readonly DemandSource[]): number => {
+  let min = Number.POSITIVE_INFINITY;
+  for (const src of sources) {
+    const wtp = src.maxWillingnessToPay;
+    if (!Number.isFinite(wtp)) continue;
+    if (wtp <= 0) continue;
+    if (wtp < min) min = wtp;
+  }
+  return min;
 };
 
 // --- Defaults ---------------------------------------------------------------
@@ -656,17 +699,47 @@ const buildSettlementScheduleContext = (inputs: BuildScheduleInputs): Settlement
   };
 };
 
+/**
+ * Per the dormant-bid investigation in §C23: comfort/status demand sources
+ * were being SKIPPED entirely when the buyer's treasury was zero, even
+ * though there is real non-cash wealth (household stockpile, barter,
+ * in-kind transfers, savings stashed in goods). That made the bid-ask book
+ * silent on every consumed good in cities where households drained — the
+ * player saw no bid for olive oil despite a city with 228k units in
+ * stockpile and a population that wants it daily.
+ *
+ * `nominalBudgetFloorFraction` provides a small fraction of the nominal
+ * (population-derived) budget as a soft floor even when actor treasury is
+ * zero. Models the non-cash wealth households can leverage. The cleared
+ * volume that floor unlocks is real but small (default 5% of nominal); the
+ * primary effect is making the bid-ask book reflect the underlying want.
+ */
 const budgetCapForActor = (
   context: SettlementScheduleContext,
   actor: ActorId | undefined,
   fallback: number,
+  nominalBudgetFloorFraction = 0,
 ): number => {
-  const budget =
-    actor === undefined || context.actorTreasuryByActor === undefined
-      ? fallback
-      : Math.min(fallback, Math.max(0, context.actorTreasuryByActor.get(actor) ?? 0));
+  if (actor === undefined || context.actorTreasuryByActor === undefined) {
+    return effectiveMarketBudget(fallback);
+  }
+  const treasury = Math.max(0, context.actorTreasuryByActor.get(actor) ?? 0);
+  const treasuryCapped = Math.min(fallback, treasury);
+  const floor = Math.max(0, fallback * nominalBudgetFloorFraction);
+  const budget = Math.max(treasuryCapped, Math.min(fallback, floor));
   return effectiveMarketBudget(budget);
 };
+
+/**
+ * docs/15 §C23 was REVERTED in §C27. The original 5% nominal-budget floor
+ * on comfort/status demand created bids that appeared in the residual
+ * book but were cash-capped to 0 at trade execution — ghost bids that
+ * never cleared. The bid-book coverage of consumed goods is now provided
+ * by §C26 market-making (treasury-backed, real bids) instead. The
+ * constants are kept at 0 to preserve the `budgetCapForActor` signature.
+ */
+const COMFORT_NOMINAL_FLOOR_FRACTION = 0;
+const STATUS_NOMINAL_FLOOR_FRACTION = 0;
 
 const minedResourceForRecipe = (recipe: RecipeDef): ResourceId | undefined => {
   if (String(recipe.building) !== 'mine') return undefined;
@@ -801,7 +874,11 @@ const comfortSources = (
     const perBuyerBudget = nominalBudget / buyers.length;
     for (let i = 0; i < buyers.length; i++) {
       const buyer = buyers[i]!;
-      const cap = budgetCapForActor(context, buyer, perBuyerBudget);
+      // docs/15 §C23: floor at 5% of nominal so cash-poor households still
+      // bid for comfort goods (via non-cash wealth + barter), keeping the
+      // bid-ask book reflective of underlying want even when treasuries
+      // drain.
+      const cap = budgetCapForActor(context, buyer, perBuyerBudget, COMFORT_NOMINAL_FLOOR_FRACTION);
       if (cap <= 0) continue;
       out.push(
         comfortDemand({
@@ -849,7 +926,15 @@ const statusSources = (
   const perBuyerNominalWealth = nominalWealth / buyers.length;
   for (let i = 0; i < buyers.length; i++) {
     const buyer = buyers[i]!;
-    const cap = budgetCapForActor(context, buyer, perBuyerNominalWealth);
+    // docs/15 §C23: 5% nominal-wealth floor so cash-strapped patrician
+    // families still bid for status goods via credit / lineage / reputation
+    // wealth. Keeps the luxury book live across all family treasuries.
+    const cap = budgetCapForActor(
+      context,
+      buyer,
+      perBuyerNominalWealth,
+      STATUS_NOMINAL_FLOOR_FRACTION,
+    );
     // Threshold = wealth-per-want-unit × generous multiplier. Patricians
     // pay multiples of "fair" price for status goods; the step gives them
     // a ceiling reflecting actual purse depth.
@@ -1642,6 +1727,171 @@ const otherInputCostsPerInputUnit = (
   // We want cost per 1 unit of *primary input*, i.e., perOutputCost / inputPerOutput.
   const inputPerOutput = primaryQty / outputQty;
   return inputPerOutput > 0 ? perOutputCost / inputPerOutput : 0;
+};
+
+// --- Market making (docs/15 §C26) -----------------------------------------
+
+/**
+ * Per docs/15 §C26: actors that act as market makers — providing a
+ * standing bid + ask on goods they touch, even when no concrete
+ * concrete buyer/seller has a tighter price today.
+ */
+const MARKET_MAKER_KINDS: ReadonlySet<ActorKind> = new Set([
+  'patrician_family',
+  'city_corporation',
+  'governor_office',
+]);
+
+/** Fraction of inventory listed at +5% above last clearing price. */
+const PASSIVE_INVENTORY_LIST_FRACTION = 0.05;
+/** Fraction of treasury reserved for passive bidding across all priced goods. */
+const PASSIVE_TREASURY_BID_FRACTION = 0.1;
+/** Spread above last price for the passive ask. */
+const PASSIVE_ASK_MARKUP = 0.05;
+/** Spread below last price for the passive bid. */
+const PASSIVE_BID_DISCOUNT = 0.05;
+/** Minimum quote size in resource units — sub-eps quantities are dropped. */
+const MARKET_MAKER_MIN_QUOTE_UNITS = 1e-3;
+
+const isMarketMakerActor = (
+  kind: ActorKind | undefined,
+): kind is 'patrician_family' | 'city_corporation' | 'governor_office' => {
+  return kind !== undefined && MARKET_MAKER_KINDS.has(kind);
+};
+
+/**
+ * For each market-making actor at the settlement, enumerate the set of
+ * resources for which they have BOTH a stockpile entry OR a known recent
+ * clearing price (so a bid is meaningful). Pre-computed once per
+ * settlement so the per-resource demand pass can split the actor's
+ * treasury bid budget across the resources without re-walking everything.
+ *
+ * Returns Map<actorId, Set<resourceKey>>. The bid is sized per-resource
+ * by `treasury × PASSIVE_TREASURY_BID_FRACTION / |resources|`.
+ */
+const buildMarketMakerResourcesByActor = (
+  inputs: BuildScheduleInputs,
+): ReadonlyMap<ActorId, ReadonlySet<string>> => {
+  const out = new Map<ActorId, Set<string>>();
+  for (const actor of ownerCandidates(inputs)) {
+    const kind = inputs.ownerKindByActor?.get(actor);
+    if (!isMarketMakerActor(kind)) continue;
+    const treasury = inputs.actorTreasuryByActor?.get(actor) ?? 0;
+    if (treasury <= 0) continue;
+    const resourceKeys = new Set<string>();
+    for (const resource of inputs.resources) {
+      const recent = inputs.recentLocalPrices.get(resource);
+      if (recent === undefined || recent <= 0 || !Number.isFinite(recent)) continue;
+      // Service resources don't have a stockpile shape; skip.
+      if (getResource(resource).category === 'service') continue;
+      resourceKeys.add(String(resource));
+    }
+    if (resourceKeys.size > 0) out.set(actor, resourceKeys);
+  }
+  return out;
+};
+
+/**
+ * Standing market-making ASK from each patrician_family / city_corp /
+ * governor that holds the resource — 5% of stockpile listed at +5% above
+ * the last clearing price. Returns an empty array when no actor matches
+ * or no recent price exists to anchor against.
+ */
+const marketMakerSupplySources = (
+  resource: ResourceId,
+  inputs: BuildScheduleInputs,
+  _context: SettlementScheduleContext,
+): readonly SupplySource[] => {
+  if (getResource(resource).category === 'service') return [];
+  const recentPrice = inputs.recentLocalPrices.get(resource);
+  if (recentPrice === undefined || recentPrice <= 0 || !Number.isFinite(recentPrice)) return [];
+  const out: SupplySource[] = [];
+  for (const [ownerActor, byResource] of inputs.stockpilesByOwner) {
+    const stock = byResource.get(resource) ?? 0;
+    if (stock <= 0) continue;
+    const kind = inputs.ownerKindByActor?.get(ownerActor);
+    if (!isMarketMakerActor(kind)) continue;
+    // Per docs/15 §C26: MM ask is ADDITIVE — a higher-price residual
+    // tier layered above the actor's base supply (anchored at MC).
+    // The 5% premium is well above typical MC, so the two tiers don't
+    // double-count: the base supply clears first at the lower price; MM
+    // ask only catches demand willing to pay the 5% premium.
+    const listed = stock * PASSIVE_INVENTORY_LIST_FRACTION;
+    if (listed < MARKET_MAKER_MIN_QUOTE_UNITS) continue;
+    const askPrice = recentPrice * (1 + PASSIVE_ASK_MARKUP);
+    // Use ownerSupply directly with the maker's reservation = askPrice
+    // and an inventory-priced expectedFuturePrice. Patient maker urgency
+    // matches the actor's normal urgency profile.
+    out.push(
+      ownerSupply({
+        id: `mm-supply:${String(inputs.settlement.id)}:${String(ownerActor)}:${String(resource)}`,
+        ownerActor,
+        stockpile: listed,
+        reservedForOwnUse: 0,
+        productionCost: askPrice,
+        minimumReservationPrice: askPrice,
+        expectedFuturePrice: askPrice,
+        ownerUrgencyFactor: 0,
+        storageHoldingDays: 365,
+      }),
+    );
+  }
+  return out;
+};
+
+/**
+ * Standing market-making BID from each patrician_family / city_corp /
+ * governor with treasury — 10% of treasury split across the resources
+ * they price-track, each bid at -5% of last clearing price. Modeled as
+ * a status-style step source (bids at a single threshold price).
+ */
+/** Minimum gap below concrete WTP so MM is strictly outranked in CDA matching. */
+const MM_WTP_GAP_BELOW_CONCRETE = 1e-3;
+
+const marketMakerDemandSources = (
+  resource: ResourceId,
+  inputs: BuildScheduleInputs,
+  _context: SettlementScheduleContext,
+  resourcesByActor: ReadonlyMap<ActorId, ReadonlySet<string>>,
+  minConcreteFiniteWtp: number,
+): readonly DemandSource[] => {
+  if (getResource(resource).category === 'service') return [];
+  const recentPrice = inputs.recentLocalPrices.get(resource);
+  if (recentPrice === undefined || recentPrice <= 0 || !Number.isFinite(recentPrice)) return [];
+  const nominalBidPrice = recentPrice * (1 - PASSIVE_BID_DISCOUNT);
+  // Per docs/15 §C27: clamp MM bid strictly below the lowest concrete-bid
+  // WTP for this resource so concrete buyers (subsistence/comfort/etc.)
+  // always fill first in the CDA. If there is no finite concrete WTP, MM
+  // bids at its full -5% offset (the book had no other finite bidders
+  // anyway).
+  let bidPrice = nominalBidPrice;
+  if (Number.isFinite(minConcreteFiniteWtp) && minConcreteFiniteWtp > 0) {
+    bidPrice = Math.min(bidPrice, minConcreteFiniteWtp - MM_WTP_GAP_BELOW_CONCRETE);
+  }
+  if (bidPrice <= 0) return [];
+  const resourceKey = String(resource);
+  const out: DemandSource[] = [];
+  for (const [actor, resourceKeys] of resourcesByActor) {
+    if (!resourceKeys.has(resourceKey)) continue;
+    const treasury = inputs.actorTreasuryByActor?.get(actor) ?? 0;
+    if (treasury <= 0) continue;
+    const perResourceBudget =
+      (treasury * PASSIVE_TREASURY_BID_FRACTION) / Math.max(1, resourceKeys.size);
+    if (perResourceBudget <= 0) continue;
+    const quantity = perResourceBudget / bidPrice;
+    if (quantity < MARKET_MAKER_MIN_QUOTE_UNITS) continue;
+    out.push(
+      statusDemand({
+        id: `mm-demand:${String(inputs.settlement.id)}:${String(actor)}:${resourceKey}`,
+        wantQuantity: quantity,
+        segmentWealth: perResourceBudget,
+        veryHighThreshold: bidPrice,
+        buyerActor: actor,
+        buyerDisposition: 'stockpile',
+      }),
+    );
+  }
+  return out;
 };
 
 // --- Supply ----------------------------------------------------------------

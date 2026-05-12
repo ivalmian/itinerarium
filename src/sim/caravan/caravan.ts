@@ -182,6 +182,17 @@ export interface Caravan {
    * tax shipments, edge-hub imports/exports) push goals at creation.
    */
   goalStack?: Goal[];
+  /**
+   * Per docs/15 §C25: rolling counter of consecutive ticks the planner
+   * could not find a profitable route above the minimum-margin floor.
+   * Reset to 0 whenever a profitable plan is found. When this exceeds
+   * the disband threshold (default 45 days), the caravan disbands —
+   * its crew / animals / vehicles return to the owner stockpile or the
+   * local population pool. Without this counter the world accumulated
+   * zombie caravans that walked aimlessly between settlements with
+   * 0%-margin trades, draining their owner's treasury on rations.
+   */
+  noProfitableRouteDays?: number;
 }
 
 export interface CreateCaravanInput {

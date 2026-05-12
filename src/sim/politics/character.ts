@@ -187,3 +187,18 @@ export const generateLatinNomen = (rng: Rng): string => {
 export const generateFullName = (rng: Rng, sex: Sex): string => {
   return `${generateLatinPraenomen(rng, sex)} ${generateLatinNomen(rng)}`;
 };
+
+/**
+ * Generate a full Latin name with a SPECIFIC nomen (family name). Used by
+ * patrician families so all named characters in Family Vibian share the
+ * "Vibianus" / "Vibia" surname — matches docs/11 §"City patrician
+ * families" (one family = one nomen + many patriarchs/heirs over time).
+ *
+ * The praenomen is RNG-drawn from the sex-appropriate list. For female
+ * names we keep the family's masculine-nominative nomen (e.g. "Tullia
+ * Vibian") rather than declining it; this is a deliberate simplification
+ * — the viewer needs only the family-tag to be recognizable.
+ */
+export const generateFamilyMemberName = (rng: Rng, sex: Sex, nomen: string): string => {
+  return `${generateLatinPraenomen(rng, sex)} ${nomen}`;
+};
