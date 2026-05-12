@@ -33,6 +33,7 @@
 
 import { allBuildings, getBuilding } from './buildings/catalog.js';
 import { pickBestHex, type PlacementCandidate } from './buildings/placement.js';
+import { wholeUnitsForTransaction } from './market/wholeUnits.js';
 import { tickCaravanMovement } from './caravan/movement.js';
 import { MAX_ACTIVE_WORLD_CARAVANS } from './caravan/limits.js';
 import { expectedRiskOnApproximatePath, planCaravanRoute } from './caravan/ai.js';
@@ -3690,6 +3691,15 @@ const tradePhase = (
             : trade.quantity;
         const qty = Math.min(trade.quantity, maxByBuyerTreasury);
         if (qty <= 1e-9) continue;
+        // Note: in-settlement market clearing (this loop) stays
+        // fractional. The "whole units" rule per docs/08 governs
+        // transactions that physically move goods OUT of a
+        // settlement — caravan buy / sell, local trade between
+        // neighboring settlements, off-map export. Settlement-
+        // internal clearing is an aggregate accounting step over
+        // many small household trades; flooring it makes small
+        // populations look like they never buy daily perishables
+        // because their per-tick demand is < 1 unit.
 
         const coin = buyerPaysSeller ? Math.min(qty * trade.price, concreteBuyer.treasury) : 0;
         const serviceTrade = isServiceResource(resId);
@@ -4191,8 +4201,16 @@ const tryLocalTrade = (
       maxByDemand = Math.min(maxByDemand, remainingModii / modiiPerUnit);
     }
   }
-  const qty = Math.min(maxByLoad, sellerStock, maxByTreasury, maxByDemand);
-  if (qty <= 1e-9) return;
+  // Tangible goods cross ownership in whole units only (docs/08
+  // §"Whole-unit transactions"). Services pass through unrounded.
+  // Local trade excludes services upstream, so this is effectively a
+  // floor — kept as `wholeUnitsForTransaction` for symmetry with the
+  // other transaction sites.
+  const qty = wholeUnitsForTransaction(
+    resId,
+    Math.min(maxByLoad, sellerStock, maxByTreasury, maxByDemand),
+  );
+  if (qty <= 0) return;
 
   const coinPaid = qty * midPrice;
   // Apply the transfer. Per docs/15 §C30 the seller's slice is at THEIR
@@ -4465,7 +4483,17 @@ const INDUSTRIAL_LOCAL_TRADE_MAX_HEX_DISTANCE = 6;
 const MAX_HOUSEHOLD_PETTY_LOAD_KG = 50;
 const MAX_WORKSHOP_CARTAGE_LOAD_KG = 500;
 const MAX_INDUSTRIAL_CARTAGE_LOAD_KG = 3_000;
-const MAX_WALKING_HERD_LOCAL_TRADE_UNITS = 0.1;
+/**
+ * Per-trade cap on herd capital moved between neighboring settlements
+ * by foot. Originally 0.1 herd-unit ("a handful of sheep walking
+ * across to the next village") — but under the whole-unit
+ * transactions rule (docs/08) every trade is floored to an integer
+ * number of units, so a 0.1 cap forced zero-quantity trades and the
+ * pathway never activated. Set to 1 herd-unit (~30 sheep / 10 cattle
+ * / etc.) which is the smallest whole transaction the unit basis
+ * supports. Bigger transfers go via caravan.
+ */
+const MAX_WALKING_HERD_LOCAL_TRADE_UNITS = 1;
 
 const WORKSHOP_CARTAGE_RESOURCES: ReadonlySet<string> = new Set([
   'goods.tools',
@@ -5232,8 +5260,13 @@ const sellCaravanCargoAtLocalMarkets = (
     if (buyer === null) continue;
     const maxByTreasury = buyer.actor.treasury / buyer.price;
     const maxByBook = buyer.quantity ?? Number.POSITIVE_INFINITY;
-    const qty = Math.min(sellableQty, maxByTreasury, maxByBook);
-    if (qty <= 1e-9) continue;
+    // Whole-unit transaction (docs/08): caravans haul tangible goods,
+    // not services — floor to integer.
+    const qty = wholeUnitsForTransaction(
+      resource,
+      Math.min(sellableQty, maxByTreasury, maxByBook),
+    );
+    if (qty <= 0) continue;
     const coin = qty * buyer.price;
     const remaining = currentQty - qty;
     if (remaining > 1e-9) caravan.cargo.set(resource, remaining);
@@ -5276,8 +5309,12 @@ const buyPlannedCargoAtLocalMarkets = (
       const maxByCapacity = weightKg > 0 ? capacityRemainingKg / weightKg : remainingTarget;
       const sameOwner = seller.actor.id === caravan.ownerActor;
       const maxByTreasury = sameOwner ? remainingTarget : caravan.treasury / seller.price;
-      const qty = Math.min(remainingTarget, seller.stock, maxByCapacity, maxByTreasury);
-      if (qty <= 1e-9) continue;
+      // Whole-unit transaction (docs/08): caravans haul tangible goods.
+      const qty = wholeUnitsForTransaction(
+        resource,
+        Math.min(remainingTarget, seller.stock, maxByCapacity, maxByTreasury),
+      );
+      if (qty <= 0) continue;
       const coin = sameOwner ? 0 : qty * seller.price;
       decreaseStockpile(seller.actor, seller.settlement.id, resource, qty);
       increaseCaravanCargo(caravan, resource, qty);
@@ -5351,8 +5388,12 @@ const buyCaravanRationsAtLocalMarkets = (
     const maxByNeed = remainingKg / quote.weightKgPerUnit;
     const maxByCapacity = capacityRemainingKg / quote.weightKgPerUnit;
     const maxByTreasury = sameOwner ? maxByNeed : caravan.treasury / quote.seller.price;
-    const qty = Math.min(maxByNeed, maxByCapacity, maxByTreasury, quote.seller.stock);
-    if (qty <= 1e-9) continue;
+    // Whole-unit transaction (docs/08).
+    const qty = wholeUnitsForTransaction(
+      quote.resource,
+      Math.min(maxByNeed, maxByCapacity, maxByTreasury, quote.seller.stock),
+    );
+    if (qty <= 0) continue;
     const coin = sameOwner ? 0 : qty * quote.seller.price;
     decreaseStockpile(quote.seller.actor, quote.seller.settlement.id, quote.resource, qty);
     increaseCaravanCargo(caravan, quote.resource, qty);
@@ -5486,9 +5527,19 @@ const completeOffMapExportIfArrived = (
   if (!hexEquals(caravan.position, caravan.destination)) return false;
   if (!edgeHexKeys.has(hexKey(caravan.position))) return false;
   let exportedAny = false;
-  for (const [resource, qty] of Array.from(caravan.cargo.entries())) {
+  for (const [resource, rawQty] of Array.from(caravan.cargo.entries())) {
     const price = DEFAULT_GLOBAL_PRICES.get(resource);
-    if (price === undefined || price <= 0 || qty <= 0) continue;
+    if (price === undefined || price <= 0 || rawQty <= 0) continue;
+    // Whole-unit transaction (docs/08): off-map export crosses
+    // ownership at the world's edge, so round to integer. Any
+    // fractional residual stays in cargo for the next tick (the
+    // caravan despawns when cargo.size === 0; a residual < 1 unit
+    // is effectively spoilage / spillage).
+    const qty = wholeUnitsForTransaction(resource, rawQty);
+    if (qty <= 0) {
+      caravan.cargo.delete(resource);
+      continue;
+    }
     const coin = qty * price;
     const owner = world.actors.get(caravan.ownerActor);
     if (owner !== undefined) owner.treasury += coin;

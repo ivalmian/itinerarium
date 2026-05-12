@@ -402,8 +402,10 @@ describe('localTradePhase (docs/06 §"Local trade between nearby settlements")',
     );
     const trade = trades.find((t) => String(t.resource) === 'livestock.cattle');
     expect(trade).toBeDefined();
-    expect(trade!.quantity).toBeGreaterThan(0);
-    expect(trade!.quantity).toBeLessThanOrEqual(0.1 + 1e-6);
+    // Per docs/08 §"Whole-unit transactions": herd capital trades in
+    // whole herd-units (≈ 30 sheep / 10 cattle / 6 horses etc).
+    // The local-trade cap is one walking herd-unit per trade.
+    expect(trade!.quantity).toBe(1);
   });
 
   it('uses cartage-scale loads for bulky industrial inputs', () => {
@@ -428,28 +430,13 @@ describe('localTradePhase (docs/06 §"Local trade between nearby settlements")',
     expect(trade!.quantity).toBeLessThanOrEqual(3000 / 30 + 1e-6);
   });
 
-  it('uses wagon-scale lots for strategic workshop goods', () => {
-    const w = buildPairWorld({
-      distance: 1,
-      priceA: 1,
-      priceB: 100,
-      stockA: 1000,
-      treasuryB: 100000,
-      resource: 'goods.tools',
-    });
-
-    const r = tick({ world: w, rng: createRng('lt-workshop-cartage') });
-    const trade = localTradeEvents(r.events).find((t) => String(t.resource) === 'goods.tools');
-
-    expect(trade).toBeDefined();
-    // Tools weigh 8 kg/unit; workshop cartage caps at 500 kg ⇒ 62.5 units.
-    // The lot-cap is the only thing this test validates; the absolute
-    // quantity in this fixture is bottlenecked by demand (no smithy or
-    // barracks on the buyer settlement consumes tools), so we don't
-    // assert a lower bound — only that the cap is respected.
-    expect(trade!.quantity).toBeGreaterThan(0);
-    expect(trade!.quantity).toBeLessThanOrEqual(500 / 8 + 1e-6);
-  });
+  // (Removed test "uses wagon-scale lots for strategic workshop
+  // goods" — it relied on a phantom price-arbitrage trade of
+  // goods.tools with no real consumer on settlement B. Under
+  // docs/08 §"Whole-unit transactions" that floors to zero. The
+  // adjacent test "locally trades military workshop goods when
+  // barracks markets bid for them" covers the same lot-cap path
+  // with a real consumer.)
 
   it('locally trades military workshop goods when barracks markets bid for them', () => {
     const trades = localTradeEvents(
