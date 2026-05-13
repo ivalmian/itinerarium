@@ -40,6 +40,15 @@ import { annualPhase } from './phases/annual.js';
 import { civilUnrestPhase } from './phases/civilUnrest.js';
 import { demographicsPhase } from './phases/demographics.js';
 import { demolitionPhase } from './phases/demolition.js';
+import { movementPhase } from './phases/movement.js';
+import {
+  EDGE_HUB_EXPORT_CARAVAN_PREFIX,
+  EDGE_HUB_IMPORT_CARAVAN_PREFIX,
+  computeEdgeHexes,
+  edgeHubHomeGateForCaravan,
+  edgeHubPhase,
+  isEdgeHubImportCaravan,
+} from './phases/edgeHub.js';
 import { newsArrivalPhase } from './phases/newsArrival.js';
 import { patrolPartyEngagementPhase } from './phases/patrolPartyEngagement.js';
 import { hasPendingTaxAssessments, taxShipmentPhase } from './phases/taxShipment.js';
@@ -52,13 +61,8 @@ import {
   crossGuildRumorPhase,
   syncCaravanWithLocalGuild,
 } from './politics/guildLedger.js';
-import {
-  addRoadWear,
-  caravanTrailWear,
-  WEAR_PER_NEWS_CARRIER,
-  WEAR_PER_PATROL_SOLDIER,
-} from './world/roadWear.js';
-import { tickCaravanMovement } from './caravan/movement.js';
+import { addRoadWear, WEAR_PER_PATROL_SOLDIER } from './world/roadWear.js';
+// tickCaravanMovement moved out with the movement phase.
 import { MAX_ACTIVE_WORLD_CARAVANS } from './caravan/limits.js';
 import { expectedRiskOnApproximatePath, planCaravanRoute } from './caravan/ai.js';
 import {
@@ -92,7 +96,7 @@ import { createFaction } from './politics/faction.js';
 import { isGoalComplete, peekGoal, popGoal, type Goal } from './caravan/goal.js';
 import { actorId, banditCampId as makeBanditCampId, characterId, factionId } from './types.js';
 import { resolveAmbush, type AmbushResult } from './conflict/ambush.js';
-import { tickEdgeHubs, DEFAULT_GLOBAL_PRICES, DEFAULT_IMPORT_PALETTE } from './caravan/edgeHub.js';
+import { DEFAULT_GLOBAL_PRICES } from './caravan/edgeHub.js';
 import {
   isHarvestTributeDay,
   isMonthlyAssessmentDay,
@@ -111,7 +115,7 @@ import {
   type PriceObservation,
 } from './caravan/caravan.js';
 import { createNewsItem, createNewsCarrier } from './reputation/news.js';
-import { tickCarrierWithGrid } from './reputation/newsMovement.js';
+// tickCarrierWithGrid moved out with the movement phase.
 // processNewsArrival + NamedCharacter moved out with newsArrivalPhase.
 import type { ReputationMagnitude } from './reputation/table.js';
 import { clearMarket } from './market/clear.js';
@@ -156,7 +160,6 @@ import {
   hexEquals,
   hexKey,
   hexesWithinRange,
-  parseHexKey,
   type Hex,
 } from './world/hex.js';
 import {
@@ -1941,94 +1944,8 @@ const computeFamineDeaths = (settlement: Settlement, shortfallFrac: number): num
 };
 
 // --- Phase 3: Movement ------------------------------------------------------
-
-/**
- * Caravans advance via tickCaravanMovement (T23); news carriers advance via
- * tickCarrier (T18). Both already encode the per-day movement budget in
- * their own modules, so this phase is mostly orchestration.
- */
-const movementPhase = (
-  world: WorldState,
-  season: Season,
-  today: Day,
-  events: TickEvent[],
-): void => {
-  // Disband caravans whose health or crew hit 0 BEFORE moving. A 0% HP
-  // caravan means crew + animals are dead/incapacitated; zero crew means
-  // prior combat already removed everyone. The cargo is loose goods on
-  // the road (we don't model the loose-goods drop yet).
-  //
-  // Per docs/15 §C28: insolvency (treasury=0 AND cargo=0) is NOT an
-  // immediate-disband signal. We tried that and it killed caravans that
-  // were briefly in the gap between "just sold cargo, about to buy
-  // restock" or "just spawned, about to trade." The natural failure
-  // path is: insolvent caravan can't buy rations → health depletes →
-  // zero_health disband fires here. Letting that chain play out gives
-  // the caravan a chance to be rescued (sell loose cargo to a passing
-  // caravan, owner top-up, etc.) before the assets are returned to the
-  // owner.
-  const disbanded: { readonly id: CaravanId; readonly reason: 'zero_health' | 'zero_crew' }[] = [];
-  for (const [cId, c] of world.caravans) {
-    if (c.health <= 0) disbanded.push({ id: cId, reason: 'zero_health' });
-    else if (totalCrewCount(c) <= 0) disbanded.push({ id: cId, reason: 'zero_crew' });
-  }
-  for (const entry of disbanded) {
-    const c = world.caravans.get(entry.id);
-    if (c === undefined) continue;
-    world.caravans.delete(entry.id);
-    events.push({
-      type: 'caravan_disbanded',
-      caravan: entry.id,
-      at: { q: c.position.q, r: c.position.r },
-      reason: entry.reason,
-    });
-  }
-
-  for (const [cId, c] of world.caravans) {
-    let previousHex = { q: c.position.q, r: c.position.r };
-    const result = tickCaravanMovement({ caravan: c, grid: world.grid, season, today });
-    for (const e of result.events) {
-      if (e.type === 'arrived') {
-        events.push({
-          type: 'caravan_arrived',
-          caravan: cId,
-          at: { q: c.position.q, r: c.position.r },
-        });
-      }
-    }
-    // Trail wear: per docs/06 §"Trail wear → emergent dirt roads".
-    // Each pack animal + crew member entering this hex compacts the
-    // trail. A 50-mule + 12-crew caravan adds ~56 wear per hex.
-    const wearPerHex = caravanTrailWear(c);
-    for (const moved of result.hexesMoved) {
-      events.push({
-        type: 'caravan_moved',
-        caravan: cId,
-        from: previousHex,
-        to: { q: moved.q, r: moved.r },
-      });
-      previousHex = { q: moved.q, r: moved.r };
-      addRoadWear(world, moved, wearPerHex);
-    }
-  }
-  // News carriers walk per docs/13. Their arrival → reputation update is
-  // handled in the politics phase below.
-  if (world.newsCarriers !== undefined) {
-    for (const [id, carrier] of world.newsCarriers) {
-      if (carrier.arrived) continue;
-      const before = { q: carrier.position.q, r: carrier.position.r };
-      const next = tickCarrierWithGrid({ carrier, grid: world.grid, season, today });
-      world.newsCarriers.set(id, next);
-      // News carriers are single people on foot — small wear contribution.
-      if (!hexEquals(before, next.position)) {
-        addRoadWear(world, next.position, WEAR_PER_NEWS_CARRIER);
-      }
-    }
-  }
-  // Patrols are handled in politicsPhase, but they walk a route step
-  // per tick — wear is added inside patrolPhase where the step is taken.
-  void hexEquals;
-};
+//
+// movementPhase moved to src/sim/phases/movement.ts.
 
 // Trail-wear constants + helpers (addRoadWear, caravanTrailWear,
 // WEAR_PER_*) moved to src/sim/world/roadWear.ts so both this file
@@ -2085,230 +2002,7 @@ const remainingWorldCaravanSlots = (world: WorldState, plannedSpawns = 0): numbe
 
 // taxShipmentPhase + helpers moved to src/sim/phases/taxShipment.ts.
 
-// --- Edge-hub phase (docs/06 + docs/08) -----------------------------------
-
-const EDGE_HUB_IMPORT_CARAVAN_PREFIX = 'import-';
-const EDGE_HUB_EXPORT_CARAVAN_PREFIX = 'export-';
-const OFF_MAP_HOUSE_OWNER_PREFIX = 'off-map-house-';
-const EDGE_HUB_MAX_ACTIVE_IMPORT_CARAVANS = 12;
-const EDGE_HUB_MAX_ACTIVE_EXPORT_CARAVANS = 8;
-const EDGE_HUB_DISPATCH_INTERVAL_DAYS = 3;
-
-const isEdgeHubImportCaravan = (caravan: Caravan): boolean => {
-  return (
-    String(caravan.id).startsWith(EDGE_HUB_IMPORT_CARAVAN_PREFIX) &&
-    String(caravan.ownerActor).startsWith(OFF_MAP_HOUSE_OWNER_PREFIX)
-  );
-};
-
-const edgeHubHomeGateForCaravan = (
-  caravan: Caravan,
-  edgeHexKeys: ReadonlySet<string>,
-): Hex | null => {
-  const owner = String(caravan.ownerActor);
-  if (!owner.startsWith(OFF_MAP_HOUSE_OWNER_PREFIX)) return null;
-  const key = owner.slice(OFF_MAP_HOUSE_OWNER_PREFIX.length);
-  let h: Hex;
-  try {
-    h = parseHexKey(key);
-  } catch {
-    return null;
-  }
-  return edgeHexKeys.has(hexKey(h)) ? h : null;
-};
-
-const activeEdgeHubCaravanCounts = (
-  world: WorldState,
-): { readonly imports: number; readonly exports: number } => {
-  let imports = 0;
-  let exports = 0;
-  for (const caravan of world.caravans.values()) {
-    const id = String(caravan.id);
-    if (id.startsWith(EDGE_HUB_IMPORT_CARAVAN_PREFIX)) imports += 1;
-    else if (id.startsWith(EDGE_HUB_EXPORT_CARAVAN_PREFIX)) exports += 1;
-  }
-  return { imports, exports };
-};
-
-/**
- * Per-day off-map trade: spawn import + export caravans at edge hexes
- * with the same Caravan type used by NPC trade. Per docs/06 §"Edge-hub
- * caravans" + docs/08 §"off-map global market".
- *
- * Edge hexes are the hexes on the perimeter of the map (q or r at min /
- * max of the grid bounds). Cities + capital are import targets and
- * export sources. Import palette + global prices use library defaults.
- */
-const edgeHubPhase = (
-  world: WorldState,
-  season: Season,
-  today: Day,
-  rng: Rng,
-  events: TickEvent[],
-): void => {
-  if (today % EDGE_HUB_DISPATCH_INTERVAL_DAYS !== 0) return;
-
-  const edgeHexes = selectEdgeHubGates(computeEdgeHexes(world.grid));
-  if (edgeHexes.length === 0) return;
-
-  // City + capital settlements as import targets / export sources.
-  const cityImportTargets: {
-    settlementId: SettlementId;
-    hex: Hex;
-    localPrices: ReadonlyMap<ResourceId, number>;
-  }[] = [];
-  const cityExportSources: {
-    settlementId: SettlementId;
-    hex: Hex;
-    ownerActor: ActorId;
-    localPrices: ReadonlyMap<ResourceId, number>;
-    availableForExport: ReadonlyMap<ResourceId, Quantity>;
-  }[] = [];
-  for (const s of world.settlements.values()) {
-    if (s.tier !== 'small_city' && s.tier !== 'large_city') continue;
-    cityImportTargets.push({
-      settlementId: s.id,
-      hex: s.anchor,
-      localPrices: s.market.lastClearingPrice,
-    });
-    // Export source: pick the wealthiest stockpile owner anchored at the
-    // city; use their stockpile as availableForExport.
-    let owner: Actor | undefined;
-    let bestTreasury = -1;
-    for (const oId of s.stockpileOwners) {
-      const a = world.actors.get(oId);
-      if (a === undefined) continue;
-      if (a.kind !== 'patrician_family' && a.kind !== 'city_corporation') continue;
-      if (a.treasury <= bestTreasury) continue;
-      owner = a;
-      bestTreasury = a.treasury;
-    }
-    if (owner === undefined) continue;
-    cityExportSources.push({
-      settlementId: s.id,
-      hex: s.anchor,
-      ownerActor: owner.id,
-      localPrices: s.market.lastClearingPrice,
-      availableForExport: owner.stockpile.get(s.id) ?? EMPTY_RESOURCE_MAP,
-    });
-  }
-  if (cityImportTargets.length === 0 && cityExportSources.length === 0) return;
-
-  const activeEdgeCaravans = activeEdgeHubCaravanCounts(world);
-  const worldRoom = remainingWorldCaravanSlots(world);
-  if (worldRoom <= 0) return;
-  const result = tickEdgeHubs({
-    config: {
-      edgeHexes,
-      globalPrices: DEFAULT_GLOBAL_PRICES,
-      // Off-map trade enters through a small number of abstract border
-      // gates, not every passable perimeter hex. This keeps imports/exports
-      // as a paced long-haul flow instead of random-looking perimeter bursts.
-      baseImportSpawnProbPerDay: 0.02,
-      baseExportSpawnProbPerDay: 0.01,
-      activeImportCaravans: activeEdgeCaravans.imports,
-      activeExportCaravans: activeEdgeCaravans.exports,
-      maxImportSpawnsPerDay: 1,
-      maxExportSpawnsPerDay: 1,
-      maxTotalSpawnsPerDay: Math.min(1, worldRoom),
-      maxActiveImportCaravans: EDGE_HUB_MAX_ACTIVE_IMPORT_CARAVANS,
-      maxActiveExportCaravans: EDGE_HUB_MAX_ACTIVE_EXPORT_CARAVANS,
-      importPalette: DEFAULT_IMPORT_PALETTE,
-    },
-    today,
-    season,
-    cityImportTargets,
-    cityExportSources,
-    rng,
-  });
-
-  // Add new caravans into world.caravans. The export-side cargo was
-  // implicitly drawn from the owner's stockpile by tickEdgeHubs (per
-  // docs/06 §"Exports" — the owner intends to fund the trip), so we
-  // drain it here. Per docs/15 §C30 the drain is keyed to the owner's
-  // home settlement (the export source city).
-  for (const c of result.newCaravans) {
-    ensureCaravanOwnerActor(world, c);
-    world.caravans.set(c.id, c);
-    // For exports, drain the cargo from the owner's slice at their
-    // home city (the city that supplied the export goods).
-    const owner = world.actors.get(c.ownerActor);
-    if (owner === undefined) continue;
-    const sourceSettlement = owner.homeSettlement;
-    if (sourceSettlement === undefined) continue;
-    for (const [res, qty] of c.cargo) {
-      removeStockAt(owner, sourceSettlement, res, qty);
-    }
-  }
-
-  if (result.newCaravans.length > 0) {
-    events.push({
-      type: 'edge_hub_spawned',
-      newCaravans: result.newCaravans.length,
-    });
-  }
-};
-
-const ensureCaravanOwnerActor = (world: WorldState, caravan: Caravan): void => {
-  if (world.actors.has(caravan.ownerActor)) return;
-  world.actors.set(
-    caravan.ownerActor,
-    createActor({
-      id: caravan.ownerActor,
-      kind: 'off_map_house',
-      name: `Off-map merchant house ${String(caravan.ownerActor)}`,
-      treasury: 100_000,
-    }),
-  );
-};
-
-const edgeHexCache: WeakMap<WorldState['grid'], readonly Hex[]> = new WeakMap();
-const EDGE_HUB_GATE_COUNT = 8;
-
-const computeEdgeHexes = (grid: WorldState['grid']): readonly Hex[] => {
-  const cached = edgeHexCache.get(grid);
-  if (cached !== undefined) return cached;
-
-  let minQ = Infinity,
-    maxQ = -Infinity,
-    minR = Infinity,
-    maxR = -Infinity;
-  for (const [h] of grid.tiles()) {
-    if (h.q < minQ) minQ = h.q;
-    if (h.q > maxQ) maxQ = h.q;
-    if (h.r < minR) minR = h.r;
-    if (h.r > maxR) maxR = h.r;
-  }
-  const out: Hex[] = [];
-  for (const [h, t] of grid.tiles()) {
-    if (h.q === minQ || h.q === maxQ || h.r === minR || h.r === maxR) {
-      // Skip impassable edge hexes (lakes, mountains).
-      if (t.terrain === 'lake' || t.terrain === 'mountains') continue;
-      out.push({ q: h.q, r: h.r });
-    }
-  }
-  edgeHexCache.set(grid, out);
-  return out;
-};
-
-const selectEdgeHubGates = (edgeHexes: readonly Hex[]): readonly Hex[] => {
-  if (edgeHexes.length <= EDGE_HUB_GATE_COUNT) return edgeHexes;
-  const sorted = edgeHexes.slice().sort((a, b) => {
-    if (a.q !== b.q) return a.q - b.q;
-    return a.r - b.r;
-  });
-  const out: Hex[] = [];
-  const seen = new Set<string>();
-  for (let i = 0; i < EDGE_HUB_GATE_COUNT; i++) {
-    const idx = Math.round((i * (sorted.length - 1)) / (EDGE_HUB_GATE_COUNT - 1));
-    const h = sorted[Math.min(sorted.length - 1, Math.max(0, idx))] as Hex;
-    const key = hexKey(h);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({ q: h.q, r: h.r });
-  }
-  return out;
-};
+// edgeHubPhase + helpers moved to src/sim/phases/edgeHub.ts.
 
 // ageRecentFlowsPhase + trailWearTickPhase moved to src/sim/phases/
 // (with their shared road-wear helpers in src/sim/world/roadWear.ts).
