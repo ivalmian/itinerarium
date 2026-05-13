@@ -23,6 +23,13 @@ import type { ReputationEvent, ReputationKey, ReputationMagnitude } from './tabl
 /** Default refugee walking speed in hexes (km) per day, per docs/13. */
 const DEFAULT_REFUGEE_SPEED = 20;
 
+/**
+ * News carrier walking speed. Same constant as the refugee speed
+ * above — kept as a named export so the patrol + bandit phases that
+ * spawn carriers don't have to redeclare it.
+ */
+export const NEWS_CARRIER_SPEED = DEFAULT_REFUGEE_SPEED;
+
 export interface NewsItem {
   readonly id: string;
   readonly perpetrator: ReputationKey;
