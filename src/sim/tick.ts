@@ -40,6 +40,9 @@ import { annualPhase } from './phases/annual.js';
 import { civilUnrestPhase } from './phases/civilUnrest.js';
 import { demographicsPhase } from './phases/demographics.js';
 import { demolitionPhase } from './phases/demolition.js';
+import { newsArrivalPhase } from './phases/newsArrival.js';
+import { patrolPartyEngagementPhase } from './phases/patrolPartyEngagement.js';
+import { hasPendingTaxAssessments, taxShipmentPhase } from './phases/taxShipment.js';
 import { roadMaintenancePhase } from './phases/roadMaintenance.js';
 import { storageSpoilagePhase } from './phases/spoilage.js';
 import { trailWearTickPhase } from './phases/trailWearTick.js';
@@ -59,7 +62,6 @@ import { tickCaravanMovement } from './caravan/movement.js';
 import { MAX_ACTIVE_WORLD_CARAVANS } from './caravan/limits.js';
 import { expectedRiskOnApproximatePath, planCaravanRoute } from './caravan/ai.js';
 import {
-  campAsCombatUnit,
   createCamp,
   decideCampAction,
   recruit,
@@ -68,7 +70,6 @@ import {
 import {
   createBanditParty,
   missionTargetHex,
-  partyAsCombatUnit,
   partyAtHome,
   partyAtMissionTarget,
   partyEffectiveStrength,
@@ -93,13 +94,8 @@ import { actorId, banditCampId as makeBanditCampId, characterId, factionId } fro
 import { resolveAmbush, type AmbushResult } from './conflict/ambush.js';
 import { tickEdgeHubs, DEFAULT_GLOBAL_PRICES, DEFAULT_IMPORT_PALETTE } from './caravan/edgeHub.js';
 import {
-  assessTaxes,
-  createTaxShipmentCaravan,
   isHarvestTributeDay,
   isMonthlyAssessmentDay,
-  type SettlementTaxView,
-  type TaxAssessment,
-  type TaxRatesPercent,
 } from './politics/taxShipment.js';
 import { caravanId as makeCaravanIdLocal } from './types.js';
 import { resolveBattle } from './conflict/battle.js';
@@ -116,8 +112,7 @@ import {
 } from './caravan/caravan.js';
 import { createNewsItem, createNewsCarrier } from './reputation/news.js';
 import { tickCarrierWithGrid } from './reputation/newsMovement.js';
-import { processNewsArrival } from './reputation/newsArrival.js';
-import type { NamedCharacter } from './politics/character.js';
+// processNewsArrival + NamedCharacter moved out with newsArrivalPhase.
 import type { ReputationMagnitude } from './reputation/table.js';
 import { clearMarket } from './market/clear.js';
 import {
@@ -173,7 +168,6 @@ import {
   type BuildingId,
   type CaravanId,
   type Day,
-  type FactionId,
   type JobId,
   type Quantity,
   type RecipeId,
@@ -2089,201 +2083,7 @@ const goalDestination = (
 const remainingWorldCaravanSlots = (world: WorldState, plannedSpawns = 0): number =>
   Math.max(0, MAX_ACTIVE_WORLD_CARAVANS - world.caravans.size - plannedSpawns);
 
-// --- Tax shipment phase (docs/11 §"Taxes" + codex review #2) -------------
-
-const DEFAULT_TAX_RATES: TaxRatesPercent = {
-  harvestPct: 10, // 1/10 of recent harvest as grain tribute
-  cartTollPerCart: 0,
-  coinTaxPctOfWealth: 1, // 1% monthly coin assessment
-};
-
-const MAX_TAX_SHIPMENT_CARAVANS_DISPATCHED_PER_DAY = 1;
-const MAX_ACTIVE_TAX_SHIPMENT_CARAVANS = 24;
-const MAX_TAX_ASSESSMENTS_PER_CARAVAN = 24;
-const pendingTaxAssessmentsByWorld: WeakMap<WorldState, TaxAssessment[]> = new WeakMap();
-
-const compareTaxAssessments = (a: TaxAssessment, b: TaxAssessment): number => {
-  const settlement = String(a.fromSettlement).localeCompare(String(b.fromSettlement));
-  if (settlement !== 0) return settlement;
-  const owner = String(a.fromOwnerActor).localeCompare(String(b.fromOwnerActor));
-  if (owner !== 0) return owner;
-  const resource = String(a.resource).localeCompare(String(b.resource));
-  if (resource !== 0) return resource;
-  return a.quantityOwed - b.quantityOwed;
-};
-
-const activeTaxShipmentCaravanCount = (world: WorldState): number => {
-  let count = 0;
-  for (const caravan of world.caravans.values()) {
-    if (String(caravan.id).startsWith('tax-')) count += 1;
-  }
-  return count;
-};
-
-const pendingTaxQueueForWorld = (world: WorldState): TaxAssessment[] => {
-  let queue = pendingTaxAssessmentsByWorld.get(world);
-  if (queue === undefined) {
-    queue = [];
-    pendingTaxAssessmentsByWorld.set(world, queue);
-  }
-  return queue;
-};
-
-const drainTaxAssessment = (world: WorldState, assessment: TaxAssessment): number => {
-  const owner = world.actors.get(assessment.fromOwnerActor);
-  if (owner === undefined) return 0;
-  if (assessment.resource === COIN_RESOURCE) {
-    const drain = Math.min(owner.treasury, assessment.quantityOwed);
-    if (drain <= 0) return 0;
-    owner.treasury -= drain;
-    return drain;
-  }
-  const have = getStockAt(owner, assessment.fromSettlement, assessment.resource);
-  const drain = Math.min(have, assessment.quantityOwed);
-  if (drain <= 0) return 0;
-  decreaseStockpile(owner, assessment.fromSettlement, assessment.resource, drain);
-  return drain;
-};
-
-const takeTaxDispatchBatch = (
-  world: WorldState,
-  pending: TaxAssessment[],
-): { readonly assessment: TaxAssessment; readonly fromSettlement: Settlement } | null => {
-  while (pending.length > 0) {
-    const seed = pending.shift() as TaxAssessment;
-    const fromSettlement = world.settlements.get(seed.fromSettlement);
-    if (fromSettlement === undefined) continue;
-    const firstDrain = drainTaxAssessment(world, seed);
-    if (firstDrain <= 0) continue;
-
-    let total = firstDrain;
-    let included = 1;
-    for (let i = 0; i < pending.length && included < MAX_TAX_ASSESSMENTS_PER_CARAVAN; ) {
-      const candidate = pending[i] as TaxAssessment;
-      if (candidate.resource !== seed.resource) {
-        i += 1;
-        continue;
-      }
-      pending.splice(i, 1);
-      const drain = drainTaxAssessment(world, candidate);
-      if (drain <= 0) continue;
-      total += drain;
-      included += 1;
-    }
-
-    return {
-      assessment: { ...seed, quantityOwed: total },
-      fromSettlement,
-    };
-  }
-  return null;
-};
-
-const taxShipmentPhase = (world: WorldState, today: Day, rng: Rng, events: TickEvent[]): void => {
-  // Find the governor (one per province; per docs/11 there's one
-  // governor_office actor anchored at the capital).
-  let governor: Actor | undefined;
-  let capital: Settlement | undefined;
-  for (const a of world.actors.values()) {
-    if (a.kind === 'governor_office') {
-      governor = a;
-      break;
-    }
-  }
-  if (governor === undefined) return;
-  for (const s of world.settlements.values()) {
-    if (s.tier === 'large_city' && s.id === governor.homeSettlement) {
-      capital = s;
-      break;
-    }
-  }
-  if (capital === undefined) {
-    // Fall back: use the largest settlement as the capital.
-    let bestPop = -1;
-    for (const s of world.settlements.values()) {
-      const p = s.population.total();
-      if (p > bestPop) {
-        bestPop = p;
-        capital = s;
-      }
-    }
-  }
-  if (capital === undefined) return;
-
-  // Build settlement views: recent harvest = recent grain inflows; coin
-  // wealth = sum of stockpile owners' treasuries.
-  const settlementViews: SettlementTaxView[] = [];
-  for (const s of world.settlements.values()) {
-    if (s.id === capital.id) continue; // capital doesn't tax itself
-    const harvest = s.market.recentInflows.get(resourceId('food.grain')) ?? 0;
-    const cloth = s.market.recentInflows.get(resourceId('goods.cloth')) ?? 0;
-    const owners: { id: ActorId; treasury: number }[] = [];
-    for (const oId of s.stockpileOwners) {
-      const a = world.actors.get(oId);
-      if (a === undefined) continue;
-      owners.push({ id: a.id, treasury: a.treasury });
-    }
-    if (owners.length === 0) continue;
-    settlementViews.push({
-      id: s.id,
-      tier: s.tier,
-      recentHarvestQuantity: Math.max(0, Math.floor(harvest)),
-      recentClothProduction: Math.max(0, Math.floor(cloth)),
-      ownerActors: owners,
-    });
-  }
-
-  const assessments = assessTaxes({
-    governor,
-    taxRatesPercent: DEFAULT_TAX_RATES,
-    settlements: settlementViews,
-    today,
-  });
-  const pending = pendingTaxQueueForWorld(world);
-  if (assessments.length > 0) {
-    pending.push(...assessments.slice().sort(compareTaxAssessments));
-  }
-
-  // Spawn a bounded number of batched tax-shipment caravans per day and keep
-  // the rest queued. Harvest assessments can touch hundreds of settlements;
-  // a province dispatches district convoys over weeks, not one caravan per
-  // owner/settlement in a single discontinuous burst.
-  let dispatched = 0;
-  const activeTaxShipments = activeTaxShipmentCaravanCount(world);
-  while (
-    pending.length > 0 &&
-    dispatched < MAX_TAX_SHIPMENT_CARAVANS_DISPATCHED_PER_DAY &&
-    activeTaxShipments + dispatched < MAX_ACTIVE_TAX_SHIPMENT_CARAVANS &&
-    remainingWorldCaravanSlots(world, dispatched) > 0
-  ) {
-    const batch = takeTaxDispatchBatch(world, pending);
-    if (batch === null) break;
-    const a = batch.assessment;
-    const fromS = batch.fromSettlement;
-
-    const cId = makeCaravanIdLocal(
-      `tax-${today}-${String(a.fromSettlement)}-${String(a.fromOwnerActor)}-${String(a.resource)}-${dispatched}`,
-    );
-    if (world.caravans.has(cId)) continue; // dedupe within a tick
-    const caravan = createTaxShipmentCaravan({
-      id: cId,
-      assessment: a,
-      fromHex: fromS.anchor,
-      toHex: capital.anchor,
-      governorActor: governor.id,
-      rng: rng.derive(String(cId)),
-    });
-    world.caravans.set(cId, caravan);
-    dispatched += 1;
-    events.push({
-      type: 'tax_shipment_dispatched',
-      fromSettlement: a.fromSettlement,
-      toSettlement: capital.id,
-      grainModii: a.resource === resourceId('food.grain') ? a.quantityOwed : 0,
-      coin: a.resource === resourceId('goods.coin') ? a.quantityOwed : 0,
-    });
-  }
-};
+// taxShipmentPhase + helpers moved to src/sim/phases/taxShipment.ts.
 
 // --- Edge-hub phase (docs/06 + docs/08) -----------------------------------
 
@@ -3982,7 +3782,7 @@ const politicsPhase = (world: WorldState, rng: Rng, today: Day, events: TickEven
   if (
     isHarvestTributeDay(today) ||
     isMonthlyAssessmentDay(today) ||
-    (pendingTaxAssessmentsByWorld.get(world)?.length ?? 0) > 0
+    hasPendingTaxAssessments(world)
   ) {
     taxShipmentPhase(world, today, rng.derive('tax'), events);
   }
@@ -7482,209 +7282,10 @@ const spawnNewsFromAmbush = (
   });
 };
 
-const newsArrivalPhase = (world: WorldState, _today: Day, events: TickEvent[]): void => {
-  if (world.newsCarriers === undefined || world.newsCarriers.size === 0) return;
+// newsArrivalPhase + buildActorToFactionIndex moved to
+// src/sim/phases/newsArrival.ts.
 
-  // Index settlements by anchor hex once per call. Multiple settlements may
-  // share a hex (the pagus + dependent-hamlets case from docs/05 §"Same-hex
-  // coexistence"). The carrier physically arrives at the hex and would
-  // talk to whoever it finds there — but processNewsArrival's receiver
-  // list is `charactersAtSettlement`, which is itself hex-keyed (via
-  // NamedCharacter.location), so calling processNewsArrival once per
-  // same-hex settlement would apply the SAME reputation deltas to the
-  // SAME characters multiple times. To avoid that double-counting we
-  // process the carrier once against the FIRST same-hex settlement; the
-  // settlement reference is otherwise diagnostic-only inside
-  // processNewsArrival (per its docstring). The "settlement event log"
-  // semantics from docs/13 §5 will fan out to all same-hex settlements
-  // when that log lands.
-  const settlementsByAnchor = new Map<string, Settlement[]>();
-  for (const s of world.settlements.values()) {
-    const k = `${s.anchor.q},${s.anchor.r}`;
-    let bucket = settlementsByAnchor.get(k);
-    if (bucket === undefined) {
-      bucket = [];
-      settlementsByAnchor.set(k, bucket);
-    }
-    bucket.push(s);
-  }
-
-  // Build per-settlement character list. NamedCharacter.location is the hex
-  // they're currently at; we group by anchor hex match. Cached so multiple
-  // arrivals at the same settlement reuse the list.
-  const charsBySettlementAnchor = new Map<string, NamedCharacter[]>();
-  const factionByActor = buildActorToFactionIndex(world);
-  for (const c of world.characters.values()) {
-    const key = `${c.location.q},${c.location.r}`;
-    const list = charsBySettlementAnchor.get(key);
-    if (list === undefined) charsBySettlementAnchor.set(key, [c]);
-    else list.push(c);
-  }
-
-  for (const [id, carrier] of [...world.newsCarriers]) {
-    if (!carrier.arrived) continue;
-    const destKey = `${carrier.destination.q},${carrier.destination.r}`;
-    const destBucket = settlementsByAnchor.get(destKey);
-    if (destBucket === undefined || destBucket.length === 0) {
-      // Carrier arrived somewhere with no settlement (shouldn't happen
-      // since we picked anchors as destinations) — drop it.
-      world.newsCarriers.delete(id);
-      continue;
-    }
-    // Process against the first same-hex settlement (see comment above).
-    const settlement = destBucket[0]!;
-    const characters = charsBySettlementAnchor.get(destKey) ?? [];
-
-    const victimFaction =
-      carrier.carrying.victim !== null
-        ? factionByActor.get(String(carrier.carrying.victim))
-        : undefined;
-    const perpetratorFaction = factionByActor.get(String(carrier.carrying.perpetrator));
-
-    const inputs = {
-      carrier,
-      destinationSettlement: settlement,
-      charactersAtSettlement: characters,
-      reputation: world.reputation,
-      ...(victimFaction !== undefined ? { victimFaction } : {}),
-      ...(perpetratorFaction !== undefined
-        ? { banditAlignedFactions: [perpetratorFaction] as readonly FactionId[] }
-        : {}),
-    };
-    const result = processNewsArrival(inputs);
-    events.push({
-      type: 'news_carrier_arrived',
-      id,
-      settlement: settlement.id,
-      receiverCount: result.charactersUpdated,
-      deltasApplied: result.reputationDeltasApplied.length,
-    });
-    for (const d of result.reputationDeltasApplied) {
-      events.push({
-        type: 'reputation_updated',
-        holder: d.holder,
-        subject: d.subject,
-        delta: d.delta,
-      });
-    }
-    world.newsCarriers.delete(id);
-  }
-};
-
-const buildActorToFactionIndex = (world: WorldState): Map<string, FactionId> => {
-  const out = new Map<string, FactionId>();
-  for (const f of world.factions.values()) {
-    out.set(String(f.actor), f.id);
-  }
-  return out;
-};
-
-// --- Patrol-vs-party engagement (docs/15 §C32) ---------------------------
-
-/**
- * After both movement phases, any patrol whose position overlaps (within
- * the 2-hex sight radius) a bandit party fights on-hex. The cyclic-route
- * patrol logic in `patrolPhase` handles patrol-vs-camp engagements;
- * this catches the patrol-vs-party case the route logic doesn't see.
- *
- * Combat uses `resolveBattle` with `partyAsCombatUnit` adapter. The
- * patrol attacker bonus reflects "patrol charges to engage." On a
- * patrol win, the party's bandits are reduced (potentially to zero,
- * which the next `banditPartyPhase` cleans up). On a bandit win, the
- * patrol unit shrinks (potentially to zero, which clears the patrol
- * from `world.patrols`). No bribery (per the user's spec).
- */
-const PATROL_PARTY_ENGAGEMENT_HEXES = PATROL_SIGHT_HEXES;
-
-const patrolPartyEngagementPhase = (
-  world: WorldState,
-  rng: Rng,
-  today: Day,
-  events: TickEvent[],
-): void => {
-  if (world.patrols === undefined || world.patrols.size === 0) return;
-  // For each patrol, find the nearest bandit (camp or party) within
-  // engagement range and resolve a single battle.
-  for (const [patrolId, patrol] of [...world.patrols]) {
-    if (patrol.unit.count <= 0) {
-      world.patrols.delete(patrolId);
-      continue;
-    }
-    type Target = { kind: 'party'; party: BanditParty } | { kind: 'camp'; camp: BanditCamp };
-    let best: { target: Target; d: number } | undefined;
-    if (world.banditParties !== undefined) {
-      for (const party of world.banditParties.values()) {
-        if (party.banditCount <= 0) continue;
-        const d = hexDistance(party.position, patrol.position);
-        if (d > PATROL_PARTY_ENGAGEMENT_HEXES) continue;
-        if (best === undefined || d < best.d) best = { target: { kind: 'party', party }, d };
-      }
-    }
-    if (world.banditCamps !== undefined) {
-      for (const camp of world.banditCamps.values()) {
-        if (camp.banditCount <= 0) continue;
-        const d = hexDistance(camp.hex, patrol.position);
-        if (d > PATROL_PARTY_ENGAGEMENT_HEXES) continue;
-        if (best === undefined || d < best.d) best = { target: { kind: 'camp', camp }, d };
-      }
-    }
-    if (best === undefined) continue;
-
-    const subRng = rng.derive(`engage-${patrolId}`);
-    const defender =
-      best.target.kind === 'party'
-        ? partyAsCombatUnit(best.target.party, 'defending')
-        : campAsCombatUnit(best.target.camp, 'defending');
-    const battle = resolveBattle(patrol.unit, defender, {
-      ambush: false,
-      rng: subRng,
-    });
-    let outcome: 'patrol_won' | 'bandits_won' | 'mutual_rout';
-    if (battle.winnerId === patrol.unit.id) outcome = 'patrol_won';
-    else if (battle.winnerId === defender.id) outcome = 'bandits_won';
-    else outcome = 'mutual_rout';
-
-    const patrolCas = battle.casualties.find((c) => c.unitId === patrol.unit.id);
-    const defCas = battle.casualties.find((c) => c.unitId === defender.id);
-    const patrolDeaths = patrolCas?.deaths ?? 0;
-    const defDeaths = defCas?.deaths ?? 0;
-
-    const survivingPatrol = Math.max(0, patrol.unit.count - patrolDeaths);
-    patrol.unit = { ...patrol.unit, count: survivingPatrol };
-    if (survivingPatrol <= 0) {
-      world.patrols.delete(patrolId);
-    } else {
-      delete patrol.pursuit;
-      world.patrols.set(patrolId, patrol);
-    }
-
-    if (best.target.kind === 'party') {
-      best.target.party.banditCount = Math.max(0, best.target.party.banditCount - defDeaths);
-    } else if (world.banditCamps !== undefined) {
-      const survivingCamp = Math.max(0, best.target.camp.banditCount - defDeaths);
-      if (survivingCamp <= 0) {
-        world.banditCamps.delete(best.target.camp.id);
-      } else {
-        world.banditCamps.set(best.target.camp.id, {
-          ...best.target.camp,
-          banditCount: survivingCamp,
-        });
-      }
-    }
-
-    events.push({
-      type: 'patrol_engaged',
-      patrolId,
-      camp:
-        best.target.kind === 'camp'
-          ? best.target.camp.id
-          : (best.target.party.homeCamp ??
-            (`party:${String(best.target.party.id)}` as BanditCampId)),
-      outcome,
-    });
-    void today;
-  }
-};
+// patrolPartyEngagementPhase moved to src/sim/phases/patrolPartyEngagement.ts.
 
 // --- Patrol phase ----------------------------------------------------------
 
