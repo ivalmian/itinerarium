@@ -36,12 +36,15 @@ import { pickBestHex, type PlacementCandidate } from './buildings/placement.js';
 import { wholeUnitsForTransaction } from './market/wholeUnits.js';
 import { abandonmentPhase } from './phases/abandonment.js';
 import { ageRecentFlowsPhase } from './phases/ageRecentFlows.js';
+import { annualPhase } from './phases/annual.js';
 import { civilUnrestPhase } from './phases/civilUnrest.js';
 import { demographicsPhase } from './phases/demographics.js';
+import { demolitionPhase } from './phases/demolition.js';
 import { roadMaintenancePhase } from './phases/roadMaintenance.js';
 import { storageSpoilagePhase } from './phases/spoilage.js';
 import { trailWearTickPhase } from './phases/trailWearTick.js';
 import { tributePhase } from './phases/tribute.js';
+import { faminePressure } from './world/faminePressure.js';
 import {
   crossGuildRumorPhase,
   syncCaravanWithLocalGuild,
@@ -126,7 +129,7 @@ import {
   type SettlementDemandSourceBuilder,
 } from './market/scheduleBuilder.js';
 import type { DemandSource } from './market/demand.js';
-import { tickYearly } from './population/vitalRates.js';
+// vital-rate ticking moved into per-phase modules.
 import { planRecipeRun } from './production/engine.js';
 import { recipesByOutput, type RecipeDef } from './production/recipes.js';
 import { allRecipes } from './production/recipes.js';
@@ -137,7 +140,6 @@ import type { Rng } from './rng.js';
 import {
   addBuilding,
   clearMarketBook,
-  recomputeCatchment,
   recordClearingPrice,
   recordConsumption,
   recordExport,
@@ -146,13 +148,10 @@ import {
   recordMarketBook,
   recordMarketBookLadder,
   recordProduction,
-  removeBuilding,
-  shouldRecomputeCatchment,
   type MarketBookEntry,
   type MarketBookLadder,
   type MarketBookOrder,
   type PendingBuilding,
-  type PendingDemolition,
   type Settlement,
   type SettlementBuilding,
 } from './world/settlement.js';
@@ -166,7 +165,6 @@ import {
   type Hex,
 } from './world/hex.js';
 import {
-  jobId,
   buildingId,
   resourceId,
   type ActorId,
@@ -1576,10 +1574,9 @@ const maxCapacityForBuilding = (building: SettlementBuilding): number => {
 
 // --- Phase 2: Consumption ---------------------------------------------------
 
-interface FaminePressureRecord {
-  consecutiveShortageDays: number;
-  lastShortageDay: Day;
-}
+// `FaminePressureRecord` + the `faminePressure` WeakMap live in
+// src/sim/world/faminePressure.ts now — re-imported above so the
+// consumption + annual + patrol phases can all share one map.
 
 interface SubsistenceAccessRecord {
   readonly needModii: number;
@@ -1587,13 +1584,6 @@ interface SubsistenceAccessRecord {
 }
 
 type SubsistenceAccessMap = Map<Settlement, SubsistenceAccessRecord>;
-
-/**
- * Per-Settlement famine pressure. Keyed by the Settlement object reference
- * (not its id) so a fresh world built in a test starts with empty pressure
- * regardless of whether the previous test used the same string id.
- */
-const faminePressure: WeakMap<Settlement, FaminePressureRecord> = new WeakMap();
 
 const initializeSubsistenceAccess = (world: WorldState): SubsistenceAccessMap => {
   const out: SubsistenceAccessMap = new Map();
@@ -2051,71 +2041,10 @@ const movementPhase = (
 // (movement phase, addRoadWear callers) and src/sim/phases/
 // trailWearTick.ts can import them without circular references.
 
-const MASON_JOB = jobId('mason');
-const CARPENTER_JOB = jobId('carpenter');
+// MASON_JOB / CARPENTER_JOB moved to src/sim/buildings/constructionJobs.ts.
+import { MASON_JOB, CARPENTER_JOB } from './buildings/constructionJobs.js';
 
-// --- Demolition phase (docs/15 §C8 demolition) ---------------------------
-
-/**
- * Drain mason+carpenter worker-days toward each settlement's
- * pendingDemolitions. When workerDaysRemaining hits 0, removeBuilding
- * the entry, refund 50% of the original constructionCost to the
- * owner's stockpile, and emit a `building_demolished` event.
- */
-const demolitionPhase = (world: WorldState, _today: Day, events: TickEvent[]): void => {
-  for (const settlement of world.settlements.values()) {
-    if (settlement.pendingDemolitions.length === 0) continue;
-    let masonBudget = settlement.jobAllocations.get(MASON_JOB) ?? 0;
-    let carpenterBudget = settlement.jobAllocations.get(CARPENTER_JOB) ?? 0;
-    let budget = masonBudget + carpenterBudget;
-    if (budget <= 0) continue;
-
-    const completed: number[] = [];
-    for (let i = 0; i < settlement.pendingDemolitions.length && budget > 0; i++) {
-      const pd = settlement.pendingDemolitions[i] as PendingDemolition;
-      const apply = Math.min(budget, pd.workerDaysRemaining);
-      pd.workerDaysRemaining -= apply;
-      budget -= apply;
-      if (pd.workerDaysRemaining <= 0) completed.push(i);
-    }
-    void masonBudget;
-    void carpenterBudget;
-
-    for (let j = completed.length - 1; j >= 0; j--) {
-      const idx = completed[j] as number;
-      const pd = settlement.pendingDemolitions[idx] as PendingDemolition;
-      settlement.pendingDemolitions.splice(idx, 1);
-      // Remove the building if still present.
-      const stillPresent = settlement.buildings.some(
-        (b) => b.buildingId === pd.buildingId && hexEquals(b.hex, pd.hex),
-      );
-      if (stillPresent) {
-        try {
-          removeBuilding(settlement, pd.hex, pd.buildingId);
-        } catch {
-          // Already gone (raced); ignore.
-        }
-      }
-      // Refund 50% of materials, landing back in the owner's slice at
-      // THIS settlement (where the building stood) per docs/15 §C30.
-      const def = getBuilding(pd.buildingId);
-      const owner = world.actors.get(pd.ownerActor);
-      if (owner !== undefined) {
-        for (const [r, qty] of def.constructionCost) {
-          const refund = qty * 0.5;
-          if (refund <= 0) continue;
-          addStockAt(owner, settlement.id, r, refund);
-        }
-      }
-      events.push({
-        type: 'building_demolished',
-        settlement: settlement.id,
-        building: pd.buildingId,
-        ownerActor: pd.ownerActor,
-      });
-    }
-  }
-};
+// demolitionPhase moved to src/sim/phases/demolition.ts.
 
 // --- GoalStack helpers (docs/15 §C18) ------------------------------------
 
@@ -8848,61 +8777,5 @@ const pickBuildingHex = (
 
 // abandonmentPhase moved to src/sim/phases/abandonment.ts.
 
-const annualPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[]): void => {
-  for (const settlement of world.settlements.values()) {
-    if (settlement.population.total() === 0) continue;
-    tickYearly(settlement.population, rng.derive(`settle-${String(settlement.id)}`));
-    // Reset famine pressure each year so a one-bad-harvest year doesn't
-    // permanently haunt the settlement.
-    faminePressure.set(settlement, { consecutiveShortageDays: 0, lastShortageDay: -1 });
-  }
-  // docs/05 §"Dynamic catchment recompute": when pop has moved >25% from the
-  // last baseline AND >365 days have passed, claim or release catchment hexes
-  // to match the new tier+pop.
-  for (const settlement of world.settlements.values()) {
-    const pop = settlement.population.total();
-    if (!shouldRecomputeCatchment(settlement, pop, today + 1)) continue;
-    const owner = pickCatchmentOwnerForSettlement(world, settlement);
-    const result = recomputeCatchment({
-      settlement,
-      currentPop: pop,
-      today: today + 1,
-      grid: world.grid,
-      ownerActorForClaimed: owner,
-      otherSettlements: world.settlements.values(),
-    });
-    if (result.resized) {
-      events.push({
-        type: 'catchment_resized',
-        settlement: settlement.id,
-        oldRadius: result.oldRadius,
-        newRadius: result.newRadius,
-        claimed: result.claimed.length,
-        released: result.released.length,
-      });
-    }
-  }
-};
-
-/**
- * Pick the actor that should own newly-claimed catchment hexes for `settlement`.
- *
- * Mirrors the procgen ownership rules (see seed.ts Phase 7): for cities/towns
- * we prefer the city corporation, falling back to the first stockpile owner;
- * for villages/hamlets we use the first stockpile owner. Returns null only if
- * the settlement has no actors at all (defensive).
- */
-const pickCatchmentOwnerForSettlement = (
-  world: WorldState,
-  settlement: Settlement,
-): ActorId | null => {
-  for (const a of world.actors.values()) {
-    if (a.kind === 'city_corporation' && a.homeSettlement === settlement.id) {
-      return a.id;
-    }
-  }
-  if (settlement.stockpileOwners.length > 0) {
-    return settlement.stockpileOwners[0] ?? null;
-  }
-  return null;
-};
+// annualPhase + pickCatchmentOwnerForSettlement moved to
+// src/sim/phases/annual.ts.
