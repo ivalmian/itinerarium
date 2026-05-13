@@ -34,6 +34,24 @@
 import { allBuildings, getBuilding } from './buildings/catalog.js';
 import { pickBestHex, type PlacementCandidate } from './buildings/placement.js';
 import { wholeUnitsForTransaction } from './market/wholeUnits.js';
+import { abandonmentPhase } from './phases/abandonment.js';
+import { ageRecentFlowsPhase } from './phases/ageRecentFlows.js';
+import { civilUnrestPhase } from './phases/civilUnrest.js';
+import { demographicsPhase } from './phases/demographics.js';
+import { roadMaintenancePhase } from './phases/roadMaintenance.js';
+import { storageSpoilagePhase } from './phases/spoilage.js';
+import { trailWearTickPhase } from './phases/trailWearTick.js';
+import { tributePhase } from './phases/tribute.js';
+import {
+  crossGuildRumorPhase,
+  syncCaravanWithLocalGuild,
+} from './politics/guildLedger.js';
+import {
+  addRoadWear,
+  caravanTrailWear,
+  WEAR_PER_NEWS_CARRIER,
+  WEAR_PER_PATROL_SOLDIER,
+} from './world/roadWear.js';
 import { tickCaravanMovement } from './caravan/movement.js';
 import { MAX_ACTIVE_WORLD_CARAVANS } from './caravan/limits.js';
 import { expectedRiskOnApproximatePath, planCaravanRoute } from './caravan/ai.js';
@@ -65,12 +83,8 @@ import {
 } from './politics/actor.js';
 import { createCharacter, generateFullName } from './politics/character.js';
 import { createFaction } from './politics/faction.js';
-import {
-  buildGuildByMember,
-  mergeLedgerInto,
-  type Guild,
-  type GuildPriceObs,
-} from './politics/guild.js';
+// Guild helpers (buildGuildByMember, mergeLedgerInto, Guild, GuildPriceObs)
+// now live behind ./politics/guildLedger.ts.
 import { isGoalComplete, peekGoal, popGoal, type Goal } from './caravan/goal.js';
 import { actorId, banditCampId as makeBanditCampId, characterId, factionId } from './types.js';
 import { resolveAmbush, type AmbushResult } from './conflict/ambush.js';
@@ -90,7 +104,6 @@ import { tickPatrol, type Patrol } from './conflict/patrol.js';
 import { resolveRaid, type WallLevel } from './conflict/raid.js';
 import {
   dailyCarriedFoodReserveKg,
-  ANIMAL_KINDS,
   createCaravan,
   totalCrewCount,
   totalCarryKg,
@@ -113,14 +126,7 @@ import {
   type SettlementDemandSourceBuilder,
 } from './market/scheduleBuilder.js';
 import type { DemandSource } from './market/demand.js';
-import {
-  applyEndemicMortality,
-  maybeTriggerEpidemic,
-  tickInfection,
-  createSettlementHealth,
-  type SettlementHealth,
-} from './population/disease.js';
-import { tickDaily, tickYearly, ROMAN_VITAL_RATES } from './population/vitalRates.js';
+import { tickYearly } from './population/vitalRates.js';
 import { planRecipeRun } from './production/engine.js';
 import { recipesByOutput, type RecipeDef } from './production/recipes.js';
 import { allRecipes } from './production/recipes.js';
@@ -131,7 +137,6 @@ import type { Rng } from './rng.js';
 import {
   addBuilding,
   clearMarketBook,
-  computeStorageCapacity,
   recomputeCatchment,
   recordClearingPrice,
   recordConsumption,
@@ -153,8 +158,6 @@ import {
 } from './world/settlement.js';
 import { dayOfYearToSeason, isPassable, type Season } from './world/terrain.js';
 import {
-  HEX_DIRECTIONS,
-  hexAdd,
   hexDistance,
   hexEquals,
   hexKey,
@@ -2043,40 +2046,13 @@ const movementPhase = (
   void hexEquals;
 };
 
-// --- Trail wear helpers (docs/06 §"Trail wear → emergent dirt roads") ----
+// Trail-wear constants + helpers (addRoadWear, caravanTrailWear,
+// WEAR_PER_*) moved to src/sim/world/roadWear.ts so both this file
+// (movement phase, addRoadWear callers) and src/sim/phases/
+// trailWearTick.ts can import them without circular references.
 
-const WEAR_PER_PACK_ANIMAL = 0.2;
-const WEAR_PER_CREW = 0.05;
-const WEAR_PER_NEWS_CARRIER = 0.2;
-const WEAR_PER_PATROL_SOLDIER = 0.5;
-const WEAR_DECAY_PER_DAY = 1.0;
-const DIRT_ROAD_DECAY_PER_DAY = 0.75;
-const DIRT_UPGRADE_THRESHOLD = 100;
-const DIRT_DOWNGRADE_THRESHOLD = 20;
-const MAX_ROAD_WEAR = 200;
-const MAX_ROAD_WEAR_ADDED_PER_ENTRY = 10;
 const MASON_JOB = jobId('mason');
 const CARPENTER_JOB = jobId('carpenter');
-
-const caravanTrailWear = (c: Caravan): number => {
-  let crew = 0;
-  for (const m of c.crew) crew += m.count;
-  let animals = 0;
-  for (const k of ANIMAL_KINDS) {
-    animals += c.animals[k] ?? 0;
-  }
-  return crew * WEAR_PER_CREW + animals * WEAR_PER_PACK_ANIMAL;
-};
-
-const addRoadWear = (world: WorldState, h: Hex, amount: number): void => {
-  if (amount <= 0) return;
-  const tile = world.grid.get(h);
-  if (tile === undefined) return;
-  // Roman roads neither accrue wear nor decay (engineered + maintained).
-  if (tile.road === 'roman') return;
-  const boundedAmount = Math.min(amount, MAX_ROAD_WEAR_ADDED_PER_ENTRY);
-  tile.roadWear = Math.min(MAX_ROAD_WEAR, (tile.roadWear ?? 0) + boundedAmount);
-};
 
 // --- Demolition phase (docs/15 §C8 demolition) ---------------------------
 
@@ -2167,528 +2143,17 @@ const goalDestination = (
 };
 
 // --- Merchant guilds (docs/15 §C17) --------------------------------------
+//
+// `getGuildByMember`, `syncCaravanWithLocalGuild`, and
+// `crossGuildRumorPhase` moved to src/sim/politics/guildLedger.ts.
 
-const GUILD_LEDGER_MAX_AGE_DAYS = 60;
+// civilUnrestPhase moved to src/sim/phases/civilUnrest.ts.
 
-/** Cached per-tick: caravan_owner Actor → Guild. */
-let guildByMemberCache: ReadonlyMap<ActorId, Guild> | null = null;
-let guildByMemberCacheDay: Day | null = null;
-let guildByMemberCacheWorld: WorldState | null = null;
+// roadMaintenancePhase moved to src/sim/phases/roadMaintenance.ts.
 
-const getGuildByMember = (world: WorldState, today: Day): ReadonlyMap<ActorId, Guild> => {
-  if (
-    guildByMemberCache !== null &&
-    guildByMemberCacheDay === today &&
-    guildByMemberCacheWorld === world &&
-    world.guilds !== undefined
-  ) {
-    return guildByMemberCache;
-  }
-  const guilds = world.guilds?.values() ?? [];
-  guildByMemberCache = buildGuildByMember(guilds);
-  guildByMemberCacheDay = today;
-  guildByMemberCacheWorld = world;
-  return guildByMemberCache;
-};
+// tributePhase moved to src/sim/phases/tribute.ts.
 
-/**
- * On caravan arrival at a settlement: deposit the caravan's recent
- * observations into the local guild's ledger (if the caravan's owner
- * is a member of any guild). Then read the guild's collective ledger
- * back into the caravan's priceBook so the next leg uses the freshest
- * collective intel.
- */
-const syncCaravanWithLocalGuild = (world: WorldState, c: Caravan, today: Day): void => {
-  if (world.guilds === undefined || world.guilds.size === 0) return;
-  const memberGuilds = getGuildByMember(world, today);
-  const ownerGuild = memberGuilds.get(c.ownerActor);
-  if (ownerGuild === undefined) return;
-
-  // Deposit recent observations.
-  for (const [resource, byHex] of c.priceBook) {
-    let guildByHex = ownerGuild.priceLedger.get(resource);
-    for (const [hexK, obs] of byHex) {
-      if (guildByHex === undefined) {
-        guildByHex = new Map<string, GuildPriceObs>();
-        ownerGuild.priceLedger.set(resource, guildByHex);
-      }
-      const prev = guildByHex.get(hexK);
-      if (prev === undefined || obs.observedOnDay > prev.observedOnDay) {
-        guildByHex.set(hexK, obs);
-      }
-    }
-  }
-
-  // Pull the ledger back into the caravan's priceBook (only fresher entries).
-  for (const [resource, byHex] of ownerGuild.priceLedger) {
-    let book = c.priceBook.get(resource);
-    if (book === undefined) {
-      book = new Map();
-      c.priceBook.set(resource, book);
-    }
-    for (const [hexK, obs] of byHex) {
-      if (today - obs.observedOnDay > GUILD_LEDGER_MAX_AGE_DAYS) continue;
-      const prev = book.get(hexK);
-      if (prev === undefined || obs.observedOnDay > prev.observedOnDay) {
-        book.set(hexK, obs);
-      }
-    }
-  }
-};
-
-/**
- * Cross-guild rumor: when caravans owned by members of DIFFERENT
- * guilds happen to be on the same hex, exchange a slice of their
- * ledgers (the long-haul rumor channel). Runs once per tick.
- */
-const crossGuildRumorPhase = (world: WorldState, today: Day): void => {
-  if (world.guilds === undefined || world.guilds.size < 2) return;
-  const memberGuilds = getGuildByMember(world, today);
-  if (memberGuilds.size === 0) return;
-
-  // Group caravans by hex so we can find co-located members of distinct guilds.
-  const byHex = new Map<string, Caravan[]>();
-  for (const c of world.caravans.values()) {
-    const k = `${c.position.q},${c.position.r}`;
-    let arr = byHex.get(k);
-    if (arr === undefined) {
-      arr = [];
-      byHex.set(k, arr);
-    }
-    arr.push(c);
-  }
-  for (const [, caravans] of byHex) {
-    if (caravans.length < 2) continue;
-    // Pair members of different guilds.
-    for (let i = 0; i < caravans.length; i++) {
-      const cI = caravans[i] as Caravan;
-      const gI = memberGuilds.get(cI.ownerActor);
-      if (gI === undefined) continue;
-      for (let j = i + 1; j < caravans.length; j++) {
-        const cJ = caravans[j] as Caravan;
-        const gJ = memberGuilds.get(cJ.ownerActor);
-        if (gJ === undefined) continue;
-        if (gI === gJ) continue;
-        // Bidirectional exchange.
-        mergeLedgerInto(gI, gJ.priceLedger, today, GUILD_LEDGER_MAX_AGE_DAYS);
-        mergeLedgerInto(gJ, gI.priceLedger, today, GUILD_LEDGER_MAX_AGE_DAYS);
-      }
-    }
-  }
-};
-
-// --- Civil unrest cascade (docs/15 §C16) ---------------------------------
-
-/** Number of consecutive days of price > RIOT_PRICE_MULT × baseline before riot. */
-const RIOT_PRICE_STREAK_DAYS = 14;
-const RIOT_PRICE_MULT = 5;
-/** Days a riot persists before triggering an edict (governor must respond). */
-const EDICT_TRIGGER_AFTER_RIOT_DAYS = 7;
-/** Edict caps grain at this multiple of the baseline. */
-const EDICT_PRICE_CAP_MULT = 3;
-/** Days an edict can be in effect before mob looting if it isn't enough. */
-const LOOTING_TRIGGER_AFTER_EDICT_DAYS = 14;
-/** Mob takes this fraction of patrician + city-corp grain stockpile. */
-const LOOTING_FRACTION = 0.08;
-
-interface UnrestState {
-  /** Per-settlement, per-resource consecutive days price >= mult × baseline. */
-  readonly priceSpikeStreak: Map<string, number>;
-  /** Per-settlement: days since current riot started, or undefined if no riot. */
-  readonly riotDays: Map<SettlementId, number>;
-  /** Per-settlement: days since current edict issued, or undefined. */
-  readonly edictDays: Map<SettlementId, number>;
-}
-
-const unrest: UnrestState = {
-  priceSpikeStreak: new Map(),
-  riotDays: new Map(),
-  edictDays: new Map(),
-};
-
-const civilUnrestPhase = (world: WorldState, _today: Day, events: TickEvent[]): void => {
-  const grainResource = resourceId('food.grain');
-  const baseline = DEFAULT_GLOBAL_PRICES.get(grainResource) ?? 1.5;
-
-  for (const settlement of world.settlements.values()) {
-    if (settlement.population.total() === 0) continue;
-    const price = settlement.market.lastClearingPrice.get(grainResource) ?? 0;
-    const streakKey = `${String(settlement.id)}|food.grain`;
-
-    // Update streak.
-    if (price >= baseline * RIOT_PRICE_MULT) {
-      unrest.priceSpikeStreak.set(streakKey, (unrest.priceSpikeStreak.get(streakKey) ?? 0) + 1);
-    } else {
-      unrest.priceSpikeStreak.set(streakKey, 0);
-    }
-
-    const streak = unrest.priceSpikeStreak.get(streakKey) ?? 0;
-    const inRiot = unrest.riotDays.has(settlement.id);
-    const inEdict = unrest.edictDays.has(settlement.id);
-
-    // Trigger riot.
-    if (!inRiot && streak >= RIOT_PRICE_STREAK_DAYS) {
-      unrest.riotDays.set(settlement.id, 0);
-      events.push({
-        type: 'riot',
-        settlement: settlement.id,
-        trigger: grainResource,
-        priceMultipleOfBaseline: price / baseline,
-      });
-    }
-
-    // Advance riot timer.
-    if (inRiot) {
-      const days = (unrest.riotDays.get(settlement.id) ?? 0) + 1;
-      unrest.riotDays.set(settlement.id, days);
-
-      // Trigger edict after enough riot days.
-      if (!inEdict && days >= EDICT_TRIGGER_AFTER_RIOT_DAYS) {
-        unrest.edictDays.set(settlement.id, 0);
-        events.push({
-          type: 'edict_issued',
-          settlement: settlement.id,
-          resource: grainResource,
-          priceCap: baseline * EDICT_PRICE_CAP_MULT,
-        });
-        // Force-cap the recorded clearing price (next-tick demand sources
-        // will see the lower price and not bid as high).
-        recordClearingPrice(settlement, grainResource, baseline * EDICT_PRICE_CAP_MULT);
-      }
-    }
-
-    // Advance edict timer + trigger looting if cap insufficient.
-    if (inEdict) {
-      const days = (unrest.edictDays.get(settlement.id) ?? 0) + 1;
-      unrest.edictDays.set(settlement.id, days);
-
-      if (days >= LOOTING_TRIGGER_AFTER_EDICT_DAYS && price > baseline * RIOT_PRICE_MULT) {
-        // Mob loots grain from richest patricians + city corp.
-        for (const oId of settlement.stockpileOwners) {
-          const a = world.actors.get(oId);
-          if (a === undefined) continue;
-          if (a.kind !== 'patrician_family' && a.kind !== 'city_corporation') continue;
-          const have = getStockAt(a, settlement.id, grainResource);
-          if (have <= 0) continue;
-          const looted = have * LOOTING_FRACTION;
-          if (looted < 1) continue;
-          removeStockAt(a, settlement.id, grainResource, looted);
-          events.push({
-            type: 'mob_looting',
-            settlement: settlement.id,
-            resource: grainResource,
-            fromActor: a.id,
-            looted,
-          });
-        }
-        // Reset edict timer (governor re-issues + waits another window).
-        unrest.edictDays.set(settlement.id, 0);
-      }
-    }
-
-    // Cool-off: prices back to normal → end riot + edict.
-    if (price < baseline * RIOT_PRICE_MULT && streak === 0) {
-      unrest.riotDays.delete(settlement.id);
-      unrest.edictDays.delete(settlement.id);
-    }
-  }
-};
-
-// --- Roman road maintenance (docs/15 §C11) -------------------------------
-
-/** Per-Roman-hex coin cost per quarter (docs/15 §C11). 0.1 coin/hex/qtr =
- *  ~0.4/yr. With ~50-200 Roman hexes per province, that's 20-80 coin/yr,
- *  trivial against the seeded 20-50k governor treasury. */
-const ROMAN_HEX_COIN_PER_QUARTER = 0.1;
-/** Quarters of missed maintenance before a Roman hex demotes to dirt. */
-const MISSED_QUARTERS_TO_DOWNGRADE = 4;
-
-const roadMaintenancePhase = (world: WorldState, events: TickEvent[]): void => {
-  // Find the governor's office.
-  let governor: Actor | undefined;
-  for (const a of world.actors.values()) {
-    if (a.kind === 'governor_office') {
-      governor = a;
-      break;
-    }
-  }
-  if (governor === undefined) return;
-
-  for (const [h, tile] of world.grid.tiles()) {
-    if (tile.road !== 'roman') continue;
-    // Try to drain the per-hex cost from the governor.
-    if (governor.treasury >= ROMAN_HEX_COIN_PER_QUARTER) {
-      governor.treasury -= ROMAN_HEX_COIN_PER_QUARTER;
-      // Reset missed-quarters counter (paid).
-      if (tile.romanQuartersUnmaintained !== undefined) {
-        tile.romanQuartersUnmaintained = 0;
-      }
-    } else {
-      const missed = (tile.romanQuartersUnmaintained ?? 0) + 1;
-      tile.romanQuartersUnmaintained = missed;
-      if (missed >= MISSED_QUARTERS_TO_DOWNGRADE) {
-        // Demote this hex to dirt; trail wear takes over from here.
-        tile.road = 'dirt';
-        tile.roadWear = 100; // start at the upgrade threshold so daily decay doesn't reclaim it instantly
-        tile.romanQuartersUnmaintained = 0;
-        world.grid.markTileChanged(h);
-        events.push({ type: 'road_unmaintained', hex: { q: h.q, r: h.r } });
-      }
-    }
-  }
-};
-
-// --- Tribute (docs/15 §C29) -----------------------------------------------
-
-/**
- * Per docs/15 §C29: quarterly coin tribute from each client village's
- * `free_village` steward to its patrician_family patron. Replaces the
- * earlier model where the patron magically co-owned the village stockpile.
- *
- * Mechanics:
- *  - Runs every 90 days (season boundary), driven by the day counter in
- *    `tick()`.
- *  - For each settlement with `clientPatron` defined: find the village
- *    steward (the `free_village` actor that is a stockpileOwner of the
- *    village), compute tribute = `TRIBUTE_FRACTION × steward.treasury`,
- *    cap so the steward keeps at least `TRIBUTE_OPERATING_FLOOR` coin
- *    for next season's wages + fuel + tools, transfer the rest to
- *    the patron's treasury.
- *  - If the patron is gone (succession or disband), tribute is skipped
- *    for that village this season — no orphan coin sink.
- *
- *   `TRIBUTE_FRACTION = 0.25` is below historical share-rent (~⅓–½)
- *   because the village_household also pays plebeian wages; a higher
- *   draw rate drains it to zero between seasons in burn-in.
- *
- * Emits a `tribute_paid` event per transfer for telemetry.
- */
-const TRIBUTE_FRACTION = 0.25;
-const TRIBUTE_OPERATING_FLOOR = 50;
-
-const tributePhase = (world: WorldState, events: TickEvent[]): void => {
-  for (const settlement of world.settlements.values()) {
-    const patronId = settlement.clientPatron;
-    if (patronId === undefined) continue;
-    const patron = world.actors.get(patronId);
-    if (patron === undefined) continue;
-
-    // The village steward is the `free_village` actor that homes here. Per
-    // seedClientVillage it's pushed to stockpileOwners first, so it's
-    // typically stockpileOwners[0], but tolerate ordering changes by
-    // scanning explicitly.
-    let steward: Actor | undefined;
-    for (const ownerId of settlement.stockpileOwners) {
-      const a = world.actors.get(ownerId);
-      if (a === undefined) continue;
-      if (a.kind === 'free_village' && a.homeSettlement === settlement.id) {
-        steward = a;
-        break;
-      }
-    }
-    if (steward === undefined) continue;
-
-    const spendable = Math.max(0, steward.treasury - TRIBUTE_OPERATING_FLOOR);
-    if (spendable <= 0) continue;
-    const tribute = spendable * TRIBUTE_FRACTION;
-    if (tribute <= 1e-6) continue;
-
-    steward.treasury -= tribute;
-    patron.treasury += tribute;
-    events.push({
-      type: 'tribute_paid',
-      fromSettlement: settlement.id,
-      fromActor: steward.id,
-      toActor: patron.id,
-      coin: tribute,
-    });
-  }
-};
-
-// --- Storage spoilage (docs/15 §C10) -------------------------------------
-
-const SPOILAGE_RATE_PER_DAY = 0.002; // 0.2% per day above cap
-const NATURAL_SPOILAGE_MAX_DAYS = 14;
-/** Grace period: bootstrap stockpiles get a year to be consumed naturally
- *  before spoilage kicks in. Without this the procgen-seeded bootstrap
- *  (90 days of grain in a 30k city = 161k modii vs. one granary's 5k)
- *  spoils away in months and the world starves. */
-const SPOILAGE_GRACE_DAYS = 365;
-
-/**
- * Whether a resource can spoil at all. Hard goods (iron, tools,
- * weapons, cut stone) never spoil; perishables (grain, bread, meat,
- * fish, milk) can. We use the catalog's `perishableDays` as the
- * proxy: present = spoils, absent = inert. Per docs/02 + docs/15 §C10.
- */
-const isPerishable = (resource: ResourceId): boolean => {
-  const def = getResource(resource);
-  return def.perishableDays !== undefined && def.perishableDays > 0;
-};
-
-/**
- * Per-day, for each settlement: compute its aggregate storage capacity
- * (per-resource + wildcard kg). For each (owner, resource): if the
- * settlement's combined stockpile of `resource` exceeds the cap,
- * each owner's share spoils proportionally at 0.2%/day. The spoiled
- * goods evaporate (we don't model rats), and emit a `storage_spoilage`
- * event so telemetry can see the rejected delta.
- *
- * Why gentle: the prior C10 attempt did instant force-sales at a
- * floor price, which cascaded into inflation+market-collapse. Slow
- * decay lets the trade phase find equilibrium first; if cap is
- * still exceeded after the grace period, production naturally backs
- * off (output goes nowhere → seller's stockpile stays full → next
- * round's market clears at lower prices → derived input demand
- * falls). The system self-regulates instead of imploding.
- */
-const storageSpoilagePhase = (world: WorldState, events: TickEvent[]): void => {
-  naturalShortPerishableSpoilagePhase(world, events);
-  if (world.day < SPOILAGE_GRACE_DAYS) return;
-  for (const settlement of world.settlements.values()) {
-    if (settlement.population.total() === 0) continue;
-    const cap = computeStorageCapacity(settlement);
-
-    // Aggregate stockpiles across owners + count owners holding each
-    // resource so we can split the spoilage fairly.
-    const totalByResource = new Map<ResourceId, number>();
-    const ownersWithStock = new Map<ResourceId, Actor[]>();
-    let wildcardKgUsed = 0;
-
-    for (const oId of settlement.stockpileOwners) {
-      const a = world.actors.get(oId);
-      if (a === undefined) continue;
-      for (const [r, qty] of actorStockEntriesAt(a, settlement.id)) {
-        if (qty <= 0) continue;
-        totalByResource.set(r, (totalByResource.get(r) ?? 0) + qty);
-        let arr = ownersWithStock.get(r);
-        if (arr === undefined) {
-          arr = [];
-          ownersWithStock.set(r, arr);
-        }
-        arr.push(a);
-        // Resources with a per-resource cap don't draw on wildcard.
-        if (!cap.perResource.has(r)) {
-          wildcardKgUsed += qty * getResource(r).weightKgPerUnit;
-        }
-      }
-    }
-
-    // Per-resource caps first. Only PERISHABLE resources spoil — iron,
-    // tools, cut stone, etc. sit in stockpiles indefinitely.
-    for (const [r, total] of totalByResource) {
-      if (!isPerishable(r)) continue;
-      const limit = cap.perResource.get(r);
-      if (limit === undefined) continue;
-      if (total <= limit) continue;
-      const excess = total - limit;
-      const spoil = excess * SPOILAGE_RATE_PER_DAY;
-      drainSpoilageProportional(ownersWithStock.get(r) ?? [], settlement.id, r, spoil);
-      events.push({
-        type: 'storage_spoilage',
-        settlement: settlement.id,
-        resource: r,
-        spoiled: spoil,
-      });
-    }
-
-    // Wildcard pool: only perishables spoil. Hard goods (iron, tools,
-    // weapons) just stack up.
-    if (wildcardKgUsed > cap.wildcardKg && cap.wildcardKg > 0) {
-      let perishableKgUsed = 0;
-      for (const [r, total] of totalByResource) {
-        if (cap.perResource.has(r)) continue;
-        if (!isPerishable(r)) continue;
-        perishableKgUsed += total * getResource(r).weightKgPerUnit;
-      }
-      if (perishableKgUsed <= 0) continue;
-      const overflowKg = wildcardKgUsed - cap.wildcardKg;
-      const overflowPerishableShare = Math.min(overflowKg, perishableKgUsed);
-      const spoilFraction = (overflowPerishableShare * SPOILAGE_RATE_PER_DAY) / perishableKgUsed;
-      for (const [r, total] of totalByResource) {
-        if (cap.perResource.has(r)) continue;
-        if (!isPerishable(r)) continue;
-        const spoil = total * spoilFraction;
-        if (spoil <= 0) continue;
-        drainSpoilageProportional(ownersWithStock.get(r) ?? [], settlement.id, r, spoil);
-        events.push({
-          type: 'storage_spoilage',
-          settlement: settlement.id,
-          resource: r,
-          spoiled: spoil,
-        });
-      }
-    }
-  }
-};
-
-const naturalShortPerishableSpoilagePhase = (world: WorldState, events: TickEvent[]): void => {
-  for (const settlement of world.settlements.values()) {
-    if (settlement.population.total() === 0) continue;
-    const totalByResource = new Map<ResourceId, number>();
-    const ownersWithStock = new Map<ResourceId, Actor[]>();
-
-    for (const oId of settlement.stockpileOwners) {
-      const actor = world.actors.get(oId);
-      if (actor === undefined) continue;
-      for (const [resource, qty] of actorStockEntriesAt(actor, settlement.id)) {
-        if (qty <= 0) continue;
-        const fraction = naturalSpoilageFractionForResource(resource);
-        if (fraction <= 0) continue;
-        totalByResource.set(resource, (totalByResource.get(resource) ?? 0) + qty);
-        let owners = ownersWithStock.get(resource);
-        if (owners === undefined) {
-          owners = [];
-          ownersWithStock.set(resource, owners);
-        }
-        owners.push(actor);
-      }
-    }
-
-    for (const [resource, total] of totalByResource) {
-      const fraction = naturalSpoilageFractionForResource(resource);
-      const spoil = total * fraction;
-      if (spoil <= 1e-9) continue;
-      drainSpoilageProportional(
-        ownersWithStock.get(resource) ?? [],
-        settlement.id,
-        resource,
-        spoil,
-      );
-      events.push({
-        type: 'storage_spoilage',
-        settlement: settlement.id,
-        resource,
-        spoiled: spoil,
-      });
-    }
-  }
-};
-
-const naturalSpoilageFractionForResource = (resource: ResourceId): number => {
-  const days = getResource(resource).perishableDays;
-  if (days === undefined || days <= 0 || days > NATURAL_SPOILAGE_MAX_DAYS) return 0;
-  return 1 - Math.exp(-1 / days);
-};
-
-const drainSpoilageProportional = (
-  owners: readonly Actor[],
-  settlement: SettlementId,
-  resource: ResourceId,
-  totalSpoil: number,
-): void => {
-  if (owners.length === 0 || totalSpoil <= 1e-9) return;
-  // Weighted by current stock. Spoil more from the bigger holders.
-  let totalStock = 0;
-  for (const a of owners) totalStock += getStockAt(a, settlement, resource);
-  if (totalStock <= 0) return;
-  for (const a of owners) {
-    const have = getStockAt(a, settlement, resource);
-    if (have <= 0) continue;
-    const share = (have / totalStock) * totalSpoil;
-    if (share > 0) removeStockAt(a, settlement, resource, share);
-  }
-};
+// storageSpoilagePhase + helpers moved to src/sim/phases/spoilage.ts.
 
 // --- Caravan spawn pressure ------------------------------------------------
 
@@ -3116,98 +2581,9 @@ const selectEdgeHubGates = (edgeHexes: readonly Hex[]): readonly Hex[] => {
   return out;
 };
 
-/**
- * Count axial neighbors whose tile has any road (dirt or roman). Used by
- * the trail-wear decay step to scale dirt-road decay exponentially with
- * local road density.
- */
-const countRoadNeighbors = (grid: WorldState['grid'], h: Hex): number => {
-  let n = 0;
-  for (const dir of HEX_DIRECTIONS) {
-    const neighbor = grid.get(hexAdd(h, dir));
-    if (neighbor !== undefined && neighbor.road !== 'none') n++;
-  }
-  return n;
-};
-
-/**
- * Daily exponential decay applied to every settlement's market in/out-flow
- * counters. Half-life ≈ 30 days (factor exp(-1/30) ≈ 0.967/day), so the
- * counters approximate a 30-day rolling window. Entries that drift below
- * the prune threshold are deleted so the maps stay tidy.
- */
-const RECENT_FLOW_DECAY_FACTOR = Math.exp(-1 / 30);
-const RECENT_FLOW_PRUNE_BELOW = 0.5;
-
-const decayFlowMap = (m: Map<ResourceId, number>): void => {
-  for (const [r, v] of m) {
-    const next = v * RECENT_FLOW_DECAY_FACTOR;
-    if (next < RECENT_FLOW_PRUNE_BELOW) m.delete(r);
-    else m.set(r, next);
-  }
-};
-
-const ageRecentFlowsPhase = (world: WorldState): void => {
-  for (const settlement of world.settlements.values()) {
-    const m = settlement.market;
-    // Decay all six counters in lockstep so the aggregate identities
-    // `recentInflows == recentImports + recentProduction` and
-    // `recentOutflows == recentExports + recentConsumption` keep
-    // holding tick-to-tick (modulo float rounding).
-    decayFlowMap(m.recentImports);
-    decayFlowMap(m.recentExports);
-    decayFlowMap(m.recentProduction);
-    decayFlowMap(m.recentConsumption);
-    decayFlowMap(m.recentInflows);
-    decayFlowMap(m.recentOutflows);
-  }
-};
-
-/**
- * Daily wear maintenance: unbuilt trail memory decays slowly, while dirt
- * roads decay faster so unused roads disappear from both sim state and the
- * viewer. Wear past DIRT_UPGRADE_THRESHOLD on a 'none' hex promotes to
- * 'dirt'. Sustained wear < DIRT_DOWNGRADE_THRESHOLD on a 'dirt' hex demotes
- * back to 'none'.
- *
- * Iterates the entire grid; cheap because the per-tile work is just a
- * subtract + branch. At 6,400 hexes (80×80) this is ~0.1 ms.
- */
-const trailWearTickPhase = (world: WorldState, events: TickEvent[]): void => {
-  for (const [h, tile] of world.grid.tiles()) {
-    if (tile.road === 'roman') continue;
-    let wear = tile.roadWear ?? 0;
-    if (wear > 0) {
-      // Dirt-road decay scales exponentially with the number of road
-      // neighbors (any grade): 2^(n-2) × DIRT_ROAD_DECAY_PER_DAY. Isolated
-      // dirt stubs (n=0..1) persist with minimal traffic; dense crossroads
-      // (n=3+) are fragile because parallel routes compete and dirt-grade
-      // sections at a busy junction get superseded. See docs/06.
-      let decay: number;
-      if (tile.road === 'dirt') {
-        const n = countRoadNeighbors(world.grid, h);
-        decay = DIRT_ROAD_DECAY_PER_DAY * Math.pow(2, n - 2);
-      } else {
-        decay = WEAR_DECAY_PER_DAY;
-      }
-      wear = Math.max(0, wear - decay);
-      tile.roadWear = wear;
-    }
-    if (tile.road === 'none' && wear >= DIRT_UPGRADE_THRESHOLD) {
-      // Skip impassable terrain — no road can be there.
-      const t = tile.terrain;
-      if (t === 'lake' || t === 'river' || t === 'mountains') continue;
-      tile.road = 'dirt';
-      world.grid.markTileChanged(h);
-      events.push({ type: 'road_upgraded', hex: { q: h.q, r: h.r }, toGrade: 'dirt' });
-    } else if (tile.road === 'dirt' && wear < DIRT_DOWNGRADE_THRESHOLD) {
-      tile.road = 'none';
-      tile.roadWear = 0;
-      world.grid.markTileChanged(h);
-      events.push({ type: 'road_downgraded', hex: { q: h.q, r: h.r }, fromGrade: 'dirt' });
-    }
-  }
-};
+// ageRecentFlowsPhase + trailWearTickPhase moved to src/sim/phases/
+// (with their shared road-wear helpers in src/sim/world/roadWear.ts).
+// Imported at the top of this file.
 
 // --- Phase 4: Trade ---------------------------------------------------------
 
@@ -4602,78 +3978,7 @@ const localTradeMaxHexDistanceForResource = (resource: ResourceId): number =>
 
 // --- Phase 5: Demographics --------------------------------------------------
 
-/** Per-Settlement health record, keyed by reference for the same reason as faminePressure. */
-const settlementHealthMap: WeakMap<Settlement, SettlementHealth> = new WeakMap();
-
-const demographicsPhase = (
-  world: WorldState,
-  today: Day,
-  rng: Rng,
-  events: TickEvent[],
-  stats: TickStats,
-): void => {
-  for (const settlement of world.settlements.values()) {
-    if (settlement.population.total() === 0) continue;
-    const rngLabel = `settle-${String(settlement.id)}`;
-    // 1) Vital rates.
-    tickDaily(settlement.population, ROMAN_VITAL_RATES, rng.derive(`${rngLabel}|vital`));
-
-    // 2) Endemic mortality + epidemic.
-    const tile = world.grid.get(settlement.anchor);
-    if (tile === undefined) continue;
-    const endemic = applyEndemicMortality(
-      settlement.population,
-      tile.climate,
-      tile.terrain,
-      rng.derive(`${rngLabel}|endemic`),
-      today,
-    );
-    if (endemic.deaths > 0) {
-      stats.baselineDeaths += endemic.deaths;
-      events.push({
-        type: 'cohort_deaths',
-        settlement: settlement.id,
-        deaths: endemic.deaths,
-        cause: 'baseline',
-      });
-    }
-    let health = settlementHealthMap.get(settlement);
-    if (health === undefined) {
-      health = createSettlementHealth();
-      settlementHealthMap.set(settlement, health);
-    }
-    const density = settlement.population.total() / Math.max(1, settlement.urbanHexes.length);
-    const trigger = maybeTriggerEpidemic(
-      health,
-      settlement.population,
-      density,
-      tile.climate,
-      rng.derive(`${rngLabel}|epidemic-spawn`),
-      today,
-    );
-    if (trigger.triggered !== null) {
-      stats.epidemicsTriggered += 1;
-      events.push({
-        type: 'epidemic_started',
-        settlement: settlement.id,
-        disease: trigger.triggered.id,
-      });
-    }
-    const infRes =
-      health.infections.size === 0
-        ? { deaths: 0, recovered: 0 }
-        : tickInfection(health, settlement.population, rng.derive(`${rngLabel}|infection`), today);
-    if (infRes.deaths > 0) {
-      stats.diseaseDeaths += infRes.deaths;
-      events.push({
-        type: 'cohort_deaths',
-        settlement: settlement.id,
-        deaths: infRes.deaths,
-        cause: 'disease',
-      });
-    }
-  }
-};
+// demographicsPhase moved to src/sim/phases/demographics.ts.
 
 // --- Phase 6: Politics ------------------------------------------------------
 
@@ -9541,40 +8846,7 @@ const pickBuildingHex = (
 
 // --- Annual hook ------------------------------------------------------------
 
-/**
- * Empty settlements disappear (locked rule, docs/05 §"Growth and decay").
- * When a settlement's population reaches 0, the settlement is removed
- * the next daily tick. All buildings vanish with the settlement object.
- * Catchment hexes have `ownerActor` cleared (back to wilderness). Urban
- * hexes have `ownerActor` cleared AND have their terrain converted to
- * `ruin` (the abandoned town is now physically a ruin, potentially
- * re-discoverable later as a hidden feature). Stockpile actors survive
- * on `world.actors` with whatever goods they had.
- *
- * Runs daily so the settlement disappears immediately when pop hits 0,
- * not at the next year boundary.
- */
-const abandonmentPhase = (world: WorldState, _today: Day, events: TickEvent[]): void => {
-  const toRemove: Settlement[] = [];
-  for (const settlement of world.settlements.values()) {
-    if (settlement.population.total() === 0) toRemove.push(settlement);
-  }
-  for (const settlement of toRemove) {
-    for (const c of settlement.catchmentHexes) {
-      const t = world.grid.get(c);
-      if (t !== undefined) t.ownerActor = null;
-    }
-    for (const u of settlement.urbanHexes) {
-      const t = world.grid.get(u);
-      if (t !== undefined) {
-        t.ownerActor = null;
-        if (t.terrain === 'urban') t.terrain = 'ruin';
-      }
-    }
-    world.settlements.delete(settlement.id);
-    events.push({ type: 'settlement_abandoned', settlement: settlement.id });
-  }
-};
+// abandonmentPhase moved to src/sim/phases/abandonment.ts.
 
 const annualPhase = (world: WorldState, rng: Rng, today: Day, events: TickEvent[]): void => {
   for (const settlement of world.settlements.values()) {
