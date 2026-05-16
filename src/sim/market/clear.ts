@@ -36,6 +36,7 @@
 
 import { quantityAtDemandSource, type DemandSchedule } from './demand.js';
 import type { SupplySchedule } from './supply.js';
+import { integerCoinClearing } from './wholeUnits.js';
 
 export interface ClearingTrade {
   readonly buyerSourceId: string;
@@ -335,8 +336,14 @@ const insertSellerOrder = (orders: SellerOrder[], order: SellerOrder): void => {
 const finalizeClearing = (
   demand: DemandSchedule,
   supply: SupplySchedule,
-  clearingPrice: number,
+  rawClearingPrice: number,
 ): ClearingResult => {
+  // Quantize the clearing price to an integer ≥ 1 coin per docs/08
+  // §"Integer-coin prices". The CDA may have located an algebraic
+  // crossing inside a continuous subsistence/comfort segment as a
+  // non-integer; the recorded and matched-at price snaps to the
+  // nearest integer. +Infinity passes through (famine sentinel).
+  const clearingPrice = integerCoinClearing(rawClearingPrice);
   // For an infinite clearing price (no cap, demand outstrips supply forever),
   // sample with a very large but finite price so quantityAt evaluations remain
   // well-defined (subsistence's hyperbola is finite for finite p, and the
@@ -496,6 +503,14 @@ const finalizeNoSupplyStepDemand = (
         clearingPrice = bisectNoSupplyStepDemand(demandSources, lower, upper, eps, maxIter);
       }
     }
+  }
+
+  // Quantize the recorded clearing price to integer ≥ 1 per docs/08
+  // §"Integer-coin prices". This is a shadow price (no physical trade
+  // clears against zero supply), but the price ladder visible to
+  // observers still shows whole-coin rungs.
+  if (Number.isFinite(clearingPrice) && clearingPrice > 0) {
+    clearingPrice = integerCoinClearing(clearingPrice);
   }
 
   const evalPrice = Number.isFinite(clearingPrice) ? clearingPrice : Number.MAX_SAFE_INTEGER;
@@ -759,7 +774,9 @@ const derivePostClearingBook = (
   } else if (bestBid !== null && bestAsk !== null && bestBid > 0 && bestAsk > 0) {
     // Geometric mean is scale-friendly for goods that span orders of magnitude
     // in price; falls back to arithmetic for the tiny-positive case.
-    midPrice = Math.sqrt(bestBid * bestAsk);
+    // Quantized per docs/08 §"Integer-coin prices" — the ladder rung never
+    // shows a fractional mid.
+    midPrice = integerCoinClearing(Math.sqrt(bestBid * bestAsk));
   } else if (bestAsk !== null) {
     midPrice = bestAsk;
   } else if (bestBid !== null) {

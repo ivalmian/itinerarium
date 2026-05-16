@@ -185,6 +185,8 @@ describe('reservation price', () => {
   });
 
   it('minimumReservationPrice prevents local-only goods from collapsing to zero', () => {
+    // Per docs/08 §"Integer-coin prices": a true reservation of 0.35
+    // floors to the 1-coin quoted ask.
     const s = ownerSupply({
       ownerActor: A,
       stockpile: 100,
@@ -195,7 +197,7 @@ describe('reservation price', () => {
       ownerUrgencyFactor: 10,
       storageHoldingDays: 30,
     });
-    expect(s.reservationPrice).toBeCloseTo(0.35);
+    expect(s.reservationPrice).toBe(1);
   });
 
   it('spoilageDaysRemaining at or above storageHoldingDays yields no spoilage pressure', () => {

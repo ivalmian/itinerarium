@@ -474,8 +474,11 @@ describe('clearMarket — continuous demand (subsistence + comfort)', () => {
     ]);
     const result = clearMarket(demand, supply);
     // Supply step at p=2 makes 5 available. Comfort demand decays as
-    // 10*exp(-p/5); equals supply 5 at p = 5*ln(2) ≈ 3.466.
-    expect(result.clearingPrice).toBeCloseTo(5 * Math.log(2), 2);
+    // 10*exp(-p/5); raw crossing at p = 5*ln(2) ≈ 3.466. Per docs/08
+    // §"Integer-coin prices", the recorded clearing price rounds to the
+    // nearest integer ≥ 1 (3 here). Comfort quantity at p=3 is
+    // 10*exp(-0.6) ≈ 5.49, so all 5 units of supply still clear.
+    expect(result.clearingPrice).toBe(3);
     expect(result.totalTraded).toBeCloseTo(5);
   });
 });

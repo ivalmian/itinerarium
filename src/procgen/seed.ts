@@ -1763,6 +1763,16 @@ const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void =
     placeBest('temple', urbanCandidates, 1);
     placeBest('barracks', urbanCandidates, 1);
   }
+
+  // Mint: politically restricted (governor or large city). Per docs/08
+  // §"Mint output flows to treasury" the only way coin enters the
+  // province endogenously is through a running mint; without one,
+  // imports drain silver and the money supply contracts. Seed at
+  // large_city only — smaller cities depend on imported coin until the
+  // dynamic-investment loop (docs/15 §C4) builds out further.
+  if (settlement.tier === 'large_city') {
+    placeBest('mint', urbanCandidates, 1);
+  }
 };
 
 const buildingExistsAt = (s: Settlement, kind: string, hex: Hex): boolean => {
