@@ -88,6 +88,28 @@ export const cloneDemographics = (demo: Demographics | undefined): MutableDemogr
   return out;
 };
 
+/**
+ * Return a new Demographics map combining `a` and `b`. Bucket counts add;
+ * missing keys are treated as zero. Either input may be undefined.
+ *
+ * Used when an existing unit (bandit camp, caravan crew, patrol) recruits
+ * additional members and the recruited cohort's demographics should be
+ * folded into the unit's existing roster — see docs/12 §"Bandit
+ * demographics" and docs/06 §"Crew demographics".
+ */
+export const mergeDemographics = (
+  a: Demographics | undefined,
+  b: Demographics | undefined,
+): MutableDemographics => {
+  const out = cloneDemographics(a);
+  if (b === undefined) return out;
+  for (const [k, v] of b) {
+    if (v <= 0) continue;
+    out.set(k, (out.get(k) ?? 0) + v);
+  }
+  return out;
+};
+
 // --- Role bias profiles ----------------------------------------------------
 
 /**

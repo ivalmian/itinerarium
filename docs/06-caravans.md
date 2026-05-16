@@ -108,6 +108,11 @@ rng)` (in `src/sim/population/demographics.ts`).
   collapses to whatever's actually available when a small hamlet
   is the origin (a 50-person village fielding 5 guards may run
   out of prime-age men and dip into older bands).
+- **Replacement merchant assembly and villager caravan dispatch**
+  use the same draw: every newly-assembled crew entry in
+  `phases/caravan.ts` is given a demographics map sized to its count
+  with the role-appropriate bias. There is no longer a code path
+  that creates an anonymous count-only crew.
 
 Casualty rule (battle):
 

@@ -41,6 +41,7 @@ import {
   isEdgeHubImportCaravan,
 } from './edgeHub.js';
 import { fallbackRationUnitPrice } from './consumption.js';
+import { drawDemographicsFromPool, ROLE_BIASES } from '../population/demographics.js';
 import {
   createCaravan,
   dailyCarriedFoodReserveKg,
@@ -935,15 +936,56 @@ const createReplacementMerchantCaravan = (
   const operatingTreasury = Math.min(owner.treasury, rng.int(250, 750));
   if (operatingTreasury < MERCHANT_CARAVAN_MIN_OPERATING_TREASURY) return null;
   const tag = Math.floor(rng.next() * 1_000_000_000);
+  // Per docs/06 §"Crew demographics": replacement assembly draws each
+  // crew member's sex/age from the origin settlement's working-age pool
+  // with the role-appropriate bias. Without this, the recruited crew
+  // would be anonymous counts and casualty draws would have nothing
+  // realistic to remove from the home cohort.
+  const droverCount = rng.int(3, 5);
+  const guardCount = rng.int(4, 6);
+  const demoRng = rng.derive(`merchant-crew-${String(owner.id)}-${tag}`);
   const caravan = createCaravan({
     id: makeCaravanIdLocal(`merchant-${today}-${index}-${String(owner.id)}-${tag}`),
     ownerActor: owner.id,
     position: { q: origin.anchor.q, r: origin.anchor.r },
     destination: { q: origin.anchor.q, r: origin.anchor.r },
     crew: [
-      { kind: 'merchant', count: 1, weapons: 0.1, armor: 0.05 },
-      { kind: 'drover', count: rng.int(3, 5), weapons: 0.1, armor: 0.05 },
-      { kind: 'caravan_guard', count: rng.int(4, 6), weapons: 0.7, armor: 0.45 },
+      {
+        kind: 'merchant',
+        count: 1,
+        weapons: 0.1,
+        armor: 0.05,
+        demographics: drawDemographicsFromPool(
+          origin.population,
+          1,
+          ROLE_BIASES.caravan_merchant,
+          demoRng.derive('merchant'),
+        ),
+      },
+      {
+        kind: 'drover',
+        count: droverCount,
+        weapons: 0.1,
+        armor: 0.05,
+        demographics: drawDemographicsFromPool(
+          origin.population,
+          droverCount,
+          ROLE_BIASES.caravan_drover,
+          demoRng.derive('drover'),
+        ),
+      },
+      {
+        kind: 'caravan_guard',
+        count: guardCount,
+        weapons: 0.7,
+        armor: 0.45,
+        demographics: drawDemographicsFromPool(
+          origin.population,
+          guardCount,
+          ROLE_BIASES.caravan_guard,
+          demoRng.derive('guard'),
+        ),
+      },
     ],
     animals: { mule: muleCount, donkey: donkeyCount },
     vehicles:
@@ -1198,11 +1240,37 @@ const createVillagerCaravan = (
     position: { q: origin.anchor.q, r: origin.anchor.r },
     destination: { q: origin.anchor.q, r: origin.anchor.r },
     // Minimal crew: a driver and a single guard. No merchant — the village
-    // headman / steward is back at the granary.
-    crew: [
-      { kind: 'drover', count: 1, weapons: 0.1, armor: 0.05 },
-      { kind: 'caravan_guard', count: 1, weapons: 0.4, armor: 0.2 },
-    ],
+    // headman / steward is back at the granary. Demographics drawn from
+    // the origin village's pool per docs/06 §"Crew demographics".
+    crew: (() => {
+      const villagerRng = rng.derive(`villager-crew-${String(owner.id)}-${tag}`);
+      return [
+        {
+          kind: 'drover' as const,
+          count: 1,
+          weapons: 0.1,
+          armor: 0.05,
+          demographics: drawDemographicsFromPool(
+            origin.population,
+            1,
+            ROLE_BIASES.caravan_drover,
+            villagerRng.derive('drover'),
+          ),
+        },
+        {
+          kind: 'caravan_guard' as const,
+          count: 1,
+          weapons: 0.4,
+          armor: 0.2,
+          demographics: drawDemographicsFromPool(
+            origin.population,
+            1,
+            ROLE_BIASES.caravan_guard,
+            villagerRng.derive('guard'),
+          ),
+        },
+      ];
+    })(),
     animals: { mule: muleCount, donkey: donkeyCount },
     vehicles: { pack_saddle: 1 },
     treasury: operatingTreasury,

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { actorId, banditCampId } from '../types.js';
 import { hex } from '../world/hex.js';
 import { createRng } from '../rng.js';
-import { applyBanditCasualties, createCamp } from './camp.js';
+import { applyBanditCasualties, createCamp, recruit } from './camp.js';
 import { demoKey, totalDemographics } from '../population/demographics.js';
 
 const baseCampWithDemo = (banditCount = 10): ReturnType<typeof createCamp> =>
@@ -100,5 +100,48 @@ describe('applyBanditCasualties', () => {
     expect(updated.banditCount).toBe(5);
     expect(removed.size).toBe(0);
     expect(updated.banditDemographics).toBeUndefined();
+  });
+});
+
+describe('recruit (demographic-aware)', () => {
+  it('grows banditCount and merges recruited demographics into the camp roster', () => {
+    const c = baseCampWithDemo(10);
+    const beforeMale20 = c.banditDemographics?.get(demoKey('male', '20-24')) ?? 0;
+    const recruited = new Map<string, number>([
+      [demoKey('male', '15-19'), 2],
+      [demoKey('male', '20-24'), 1],
+    ]);
+    const updated = recruit(c, 3, recruited);
+    expect(updated.banditCount).toBe(13);
+    expect(totalDemographics(updated.banditDemographics)).toBe(13);
+    // The 20-24 bucket should be the camp's original count + the
+    // recruited delta (proves merge, not overwrite).
+    expect(updated.banditDemographics?.get(demoKey('male', '20-24'))).toBe(beforeMale20 + 1);
+    // The fresh 15-19 bucket appears even though the camp had none.
+    expect(updated.banditDemographics?.get(demoKey('male', '15-19'))).toBe(2);
+  });
+
+  it('still bumps banditCount on camps without demographics (no fake roster invented)', () => {
+    const c = createCamp({
+      id: banditCampId('camp-nodemo-recruit'),
+      name: 'NoDemoRecruit',
+      hex: hex(0, 0),
+      ownerActor: actorId('a'),
+      banditCount: 4,
+      hangersOnCount: 0,
+      weaponsPerBandit: 0,
+      armorPerBandit: 0,
+      averageHealth: 0.5,
+    });
+    const updated = recruit(c, 5, new Map([[demoKey('male', '20-24'), 5]]));
+    expect(updated.banditCount).toBe(9);
+    // No demographics were synthesized — the camp never had one, so the
+    // recruit-merge declines to invent partial roster state.
+    expect(updated.banditDemographics).toBeUndefined();
+  });
+
+  it('returns the same camp on zero recruits', () => {
+    const c = baseCampWithDemo(10);
+    expect(recruit(c, 0)).toBe(c);
   });
 });
