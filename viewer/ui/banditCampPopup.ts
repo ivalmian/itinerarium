@@ -23,6 +23,7 @@ import { createSparkline, fmtCompact } from './sparkline.js';
 import { createFactionLink } from './factionLink.js';
 import { findFactionByActor } from './factionScreen.js';
 import { popupEmpty, popupKv, popupSection } from './popup.js';
+import { appendUnitPersonnelSection } from './personnelSection.js';
 import { appendEventSummary } from './entityLinks.js';
 
 export interface BanditCampPopupContent {
@@ -44,7 +45,7 @@ export const renderBanditCampPopup = (opts: BanditCampPopupOpts): BanditCampPopu
 
   const root = document.createElement('div');
   root.appendChild(renderHeader(world, camp, state));
-  root.appendChild(renderCombatSection(camp));
+  root.appendChild(renderCombatSection(camp, world));
   root.appendChild(renderLootSection(camp));
   root.appendChild(renderDemographicsSection(camp));
   root.appendChild(renderHistorySection(camp, history));
@@ -89,7 +90,7 @@ const renderHeader = (world: WorldState, camp: BanditCamp, state: ViewerState): 
   return section;
 };
 
-const renderCombatSection = (camp: BanditCamp): HTMLElement => {
+const renderCombatSection = (camp: BanditCamp, world: WorldState): HTMLElement => {
   const section = popupSection('Combat profile');
   section.appendChild(
     popupKv([
@@ -100,6 +101,8 @@ const renderCombatSection = (camp: BanditCamp): HTMLElement => {
       ['Average health', `${(camp.averageHealth * 100).toFixed(0)}%`],
     ]),
   );
+  // Named personnel — list each named bandit + their kit (docs/04).
+  appendUnitPersonnelSection(section, world, String(camp.id));
   return section;
 };
 
