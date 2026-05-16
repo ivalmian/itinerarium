@@ -102,7 +102,7 @@ describe('resolveRaid: defender unit construction', () => {
   it('a large bandit raid against an unwalled hamlet with weak militia succeeds', () => {
     const stockpile = new Map<ResourceId, Quantity>([
       [rid('food.grain'), 200],
-      [rid('goods.weapons'), 5],
+      [rid('goods.gladius'), 5],
     ]);
     const r = resolveRaid(
       baseRaid({
@@ -136,7 +136,7 @@ describe('resolveRaid: loot prioritization', () => {
     // valueOf weapons >> grain, so bandits should empty weapons before touching much grain.
     const stockpile = new Map<ResourceId, Quantity>([
       [rid('food.grain'), 1000],
-      [rid('goods.weapons'), 50],
+      [rid('goods.gladius'), 50],
     ]);
     const r = resolveRaid(
       baseRaid({
@@ -151,12 +151,12 @@ describe('resolveRaid: loot prioritization', () => {
         militiaCount: 5,
         wallLevel: 0,
         settlementStockpile: stockpile,
-        valueOfResource: (id: ResourceId) => (id === rid('goods.weapons') ? 100 : 1),
+        valueOfResource: (id: ResourceId) => (id === rid('goods.gladius') ? 100 : 1),
         rng: createRng('loot-pick'),
       }),
     );
     expect(r.outcome).toBe('attacker_won');
-    expect(r.lootTaken.get(rid('goods.weapons'))).toBe(50);
+    expect(r.lootTaken.get(rid('goods.gladius'))).toBe(50);
   });
 
   it('cargo capacity caps total loot weight', () => {
@@ -223,7 +223,7 @@ describe('resolveRaid: determinism', () => {
   it('same seed produces identical outcome and loot', () => {
     const stockpile = new Map<ResourceId, Quantity>([
       [rid('food.grain'), 500],
-      [rid('goods.weapons'), 10],
+      [rid('goods.gladius'), 10],
     ]);
     const inputs1 = baseRaid({
       attacker: baseCamp({ banditCount: 100 }),

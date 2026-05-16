@@ -255,6 +255,22 @@ const DEFS: readonly JobInput[] = [
     trainingDays: 365,
   },
   {
+    id: 'bowyer',
+    sector: 'secondary',
+    name: 'Bowyer',
+    allowedClasses: FREE_AND_DEPENDENT,
+    trainingDays: 730,
+    notes: 'Makes bows; specialized woodwork.',
+  },
+  {
+    id: 'fletcher',
+    sector: 'secondary',
+    name: 'Fletcher',
+    allowedClasses: FREE_AND_DEPENDENT,
+    trainingDays: 180,
+    notes: 'Makes arrows; quick to train.',
+  },
+  {
     id: 'minter',
     sector: 'secondary',
     name: 'Minter',

@@ -44,9 +44,9 @@ const RES = {
   lumber: resourceId('material.lumber'),
   iron: resourceId('metal.iron'),
   tools: resourceId('goods.tools'),
-  weapons: resourceId('goods.weapons'),
-  armor: resourceId('goods.armor'),
-  shields: resourceId('goods.shields'),
+  weapons: resourceId('goods.gladius'),
+  armor: resourceId('goods.body_armor'),
+  shields: resourceId('goods.shield'),
   cart: resourceId('goods.cart'),
   furniture: resourceId('goods.furniture'),
   cutStone: resourceId('material.cut_stone'),
@@ -1054,7 +1054,7 @@ describe('buildSettlementSchedules — derived input demand', () => {
       const pair = result.schedulesByResource.get(RES.iron);
       if (!pair) throw new Error('missing iron schedule');
       const derived = pair.demand.sources.find((src) =>
-        src.id.startsWith(`derived:${String(s.id)}:forge_armor:`),
+        src.id.startsWith(`derived:${String(s.id)}:forge_body_armor:`),
       );
       return derived?.peakQuantity ?? 0;
     };

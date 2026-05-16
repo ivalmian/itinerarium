@@ -243,10 +243,33 @@ bronze; whether to split out `metal.copper` and `metal.tin`
 intermediates is tracked in docs/15 §C13.
 
 **Manufacture:** `weave_cloth`, `weave_linen_cloth`,
-`tailor_clothing`, `forge_tools`, `forge_weapons`, `forge_armor`,
-`make_shields`, `build_cart`, `make_furniture`, `weave_luxury`,
+`tailor_clothing`, `forge_tools`, `forge_gladius`, `forge_hasta`,
+`forge_pilum`, `forge_dagger`, `forge_helmet`, `forge_body_armor`,
+`make_shield`, `make_bow`, `make_arrow`, `make_sling`,
+`cast_sling_bullet`, `build_cart`, `make_furniture`, `weave_luxury`,
 `mint_coin`. (No `build_ship` — sea trade deferred; see
 [10 — Scope](10-scope-and-questions.md).)
+
+### Weapon-archetype substitution policy (locked)
+
+The military demand for "an armed soldier" is itemized per archetype
+across these recipes rather than as a single generic `goods.weapons`
+unit. A garrison soldier kit is one melee weapon, one ranged option,
+one shield, one helmet, and (when available) body armor. When the
+preferred archetype is unavailable, the soldier falls back through
+the priority order below:
+
+| Slot       | Preference                                                                                              |
+| ---------- | ------------------------------------------------------------------------------------------------------- |
+| Melee      | `goods.gladius` > `goods.hasta` > `goods.dagger` > bare-handed                                          |
+| Ranged     | `goods.bow` (with `goods.arrow`) > `goods.sling` (with `goods.sling_bullet`) > `goods.pilum` > none     |
+| Defense    | `goods.shield` (one); `goods.helmet` (one); `goods.body_armor` (one)                                    |
+
+A bandit / militia kit is the same priority order but the inventory
+floor is much lower — most bandits carry whatever they looted, often
+just a dagger and a sling. The battle resolver derives each unit's
+effective `weaponsScore` and `armorScore` from the actual issued
+inventory using this priority, not from a single 0–1 scalar.
 
 **Construction (one-shot, accumulates `service.public_works`):**
 `build_road`, `build_aqueduct`, `build_walls`, `build_warehouse`,

@@ -447,13 +447,13 @@ describe('localTradePhase (docs/06 §"Local trade between nearby settlements")',
           priceB: 100,
           stockA: 1000,
           treasuryB: 100000,
-          resource: 'goods.armor',
+          resource: 'goods.body_armor',
         }),
         rng: createRng('lt-armor-workshop-cartage'),
       }).events,
     );
 
-    const armorTrade = trades.find((t) => String(t.resource) === 'goods.armor');
+    const armorTrade = trades.find((t) => String(t.resource) === 'goods.body_armor');
     expect(armorTrade).toBeDefined();
     expect(armorTrade!.quantity).toBeGreaterThan(0);
   });

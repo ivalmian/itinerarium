@@ -61,7 +61,7 @@ describe('resolveAmbush: bandits ambushing a small caravan in forest', () => {
   it('30 bandits routinely overrun a 4-drover + 2-guard caravan and take cargo', () => {
     const caravan = baseCaravan();
     caravan.cargo.set(rid('food.grain'), 100);
-    caravan.cargo.set(rid('goods.weapons'), 5);
+    caravan.cargo.set(rid('goods.gladius'), 5);
     const result = resolveAmbush(
       baseAmbush({
         attacker: baseCamp({ banditCount: 30 }),
@@ -154,18 +154,18 @@ describe('resolveAmbush: cargo capacity caps loot', () => {
   it('high-value-per-kg cargo is taken first when capacity binds', () => {
     const caravan = baseCaravan();
     caravan.cargo.set(rid('food.grain'), 1000);
-    caravan.cargo.set(rid('goods.weapons'), 50);
+    caravan.cargo.set(rid('goods.gladius'), 50);
     const result = resolveAmbush(
       baseAmbush({
         attacker: baseCamp({ banditCount: 25 }),
         target: caravan,
-        valueOfResource: (id: ResourceId) => (id === rid('goods.weapons') ? 100 : 1),
+        valueOfResource: (id: ResourceId) => (id === rid('goods.gladius') ? 100 : 1),
         ambushHexTerrain: 'forest',
         rng: createRng('value-pick'),
       }),
     );
     expect(result.outcome).toBe('attacker_won');
-    expect(result.cargoTaken.get(rid('goods.weapons'))).toBe(50);
+    expect(result.cargoTaken.get(rid('goods.gladius'))).toBe(50);
   });
 });
 

@@ -1310,9 +1310,19 @@ const MAX_WALKING_HERD_LOCAL_TRADE_UNITS = 1;
 
 const WORKSHOP_CARTAGE_RESOURCES: ReadonlySet<string> = new Set([
   'goods.tools',
-  'goods.weapons',
-  'goods.armor',
-  'goods.shields',
+  // Weapon archetypes (docs/02 + docs/03). Each travels as a workshop
+  // cartage good — small wagon-lot batches over short distances.
+  'goods.gladius',
+  'goods.hasta',
+  'goods.pilum',
+  'goods.dagger',
+  'goods.bow',
+  'goods.arrow',
+  'goods.sling',
+  'goods.sling_bullet',
+  'goods.helmet',
+  'goods.body_armor',
+  'goods.shield',
   'goods.cart',
 ]);
 

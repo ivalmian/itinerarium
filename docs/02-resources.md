@@ -68,9 +68,17 @@ only — they don't restrict gameplay.
 | `goods.cloth`           | wool _or_ linen_fiber + weaver             | Bolts of fabric.                                                                                                        |
 | `goods.clothing`        | cloth + tailor                             | Wears out at population's consumption rate.                                                                             |
 | `goods.tools`           | iron + handle stock + smith                | Durable capital kits required for most production jobs. Recipes consume small wear fractions, not whole tools each day. |
-| `goods.weapons`         | iron + lumber + smith                      | Military equipment.                                                                                                     |
-| `goods.armor`           | iron + leather + smith                     | Military equipment.                                                                                                     |
-| `goods.shields`         | lumber + leather + bronze trim + carpenter | Military.                                                                                                               |
+| `goods.gladius`         | iron + lumber + charcoal + smith           | Roman short sword. Primary infantry melee weapon.                                                                       |
+| `goods.hasta`           | iron + lumber + charcoal + smith           | Thrusting spear. Cheaper alternative melee weapon.                                                                      |
+| `goods.pilum`           | iron + lumber + charcoal + smith           | Heavy throwing javelin. Issued in pairs to a soldier.                                                                   |
+| `goods.dagger`          | iron + charcoal + smith                    | Pugio short blade. Sidearm / utility weapon.                                                                            |
+| `goods.bow`             | wood + sinew + bowyer                      | Composite or self bow. Ranged weapon.                                                                                   |
+| `goods.arrow`           | wood + iron + feathers + fletcher          | Ammunition for bows. Quivers of 30 per archer.                                                                          |
+| `goods.sling`           | leather + tailor                           | Strap-and-pouch ranged weapon. Cheap to make.                                                                           |
+| `goods.sling_bullet`    | lead + smelter                             | Cast lead glandes for slings. Bundles of 50.                                                                            |
+| `goods.helmet`          | iron + charcoal + smith                    | Galea (helmet). Single-piece head protection.                                                                           |
+| `goods.body_armor`      | iron + leather + charcoal + smith          | Lorica (mail or scale shirt). Trunk protection.                                                                         |
+| `goods.shield`          | lumber + leather + bronze trim + carpenter | Scutum or parma. Single-handed defense.                                                                                 |
 | `goods.cart`            | lumber + iron + leather + wright           | Caravan capacity unit. Wears out.                                                                                       |
 | `goods.furniture`       | lumber + carpenter                         | Comfort/status good.                                                                                                    |
 | `goods.luxury_textiles` | cloth + dye + skilled weaver               | Elite demand.                                                                                                           |

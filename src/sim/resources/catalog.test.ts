@@ -61,9 +61,17 @@ describe('resource catalog', () => {
         'goods.cloth',
         'goods.clothing',
         'goods.tools',
-        'goods.weapons',
-        'goods.armor',
-        'goods.shields',
+        'goods.gladius',
+        'goods.hasta',
+        'goods.pilum',
+        'goods.dagger',
+        'goods.bow',
+        'goods.arrow',
+        'goods.sling',
+        'goods.sling_bullet',
+        'goods.helmet',
+        'goods.body_armor',
+        'goods.shield',
         'goods.cart',
         'goods.furniture',
         'goods.luxury_textiles',
@@ -131,7 +139,7 @@ describe('resource catalog', () => {
 
     it('assigns tier 2 to manufactured and exotic goods', () => {
       expect(getResource(resourceId('goods.cloth')).tier).toBe(2);
-      expect(getResource(resourceId('goods.weapons')).tier).toBe(2);
+      expect(getResource(resourceId('goods.gladius')).tier).toBe(2);
       // Tier 2b exotics are modeled as tier 2 with category 'exotic'.
       expect(getResource(resourceId('exotic.spices')).tier).toBe(2);
       expect(getResource(resourceId('exotic.silk')).tier).toBe(2);
