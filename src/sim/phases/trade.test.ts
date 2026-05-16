@@ -342,7 +342,7 @@ import {
       const sId = settlementId('garrison-market');
       const sellerId = actorId('weapon-seller');
       const barracksOwnerId = actorId('garrison-buyer');
-      const weapons = resourceId('goods.weapons');
+      const weapons = resourceId('goods.gladius');
       const settlement = createSettlement({
         id: sId,
         tier: 'town',

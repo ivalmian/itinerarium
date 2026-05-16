@@ -586,9 +586,20 @@ const PRODUCTION_OUTPUT_STOCK_TARGET_DAYS_BY_RESOURCE: ReadonlyMap<string, numbe
   // Military/capital goods are procurement-buffer outputs, not broad
   // household inventory. Keep their speculative stock target tight so
   // scarce iron flows to tools unless barracks/cart buyers are active.
-  ['goods.weapons', 0.05],
-  ['goods.armor', 0.02],
-  ['goods.shields', 0.05],
+  // Per docs/03 §"Weapon-archetype substitution policy": each archetype
+  // keeps its own tiny target; ammunition (arrows, sling bullets) gets a
+  // slightly higher target because they're consumed in bulk per battle.
+  ['goods.gladius', 0.05],
+  ['goods.hasta', 0.05],
+  ['goods.pilum', 0.05],
+  ['goods.dagger', 0.05],
+  ['goods.bow', 0.05],
+  ['goods.arrow', 0.2],
+  ['goods.sling', 0.05],
+  ['goods.sling_bullet', 0.2],
+  ['goods.helmet', 0.05],
+  ['goods.body_armor', 0.02],
+  ['goods.shield', 0.05],
   ['goods.cart', 0.1],
 ]);
 

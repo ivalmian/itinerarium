@@ -523,9 +523,22 @@ const DERIVED_INPUT_MARGIN = 0.05;
 /** Producers stop bidding for inputs once they hold this many days of output. */
 const DEFAULT_PRODUCER_OUTPUT_STOCK_TARGET_DAYS = 14;
 const PRODUCER_OUTPUT_STOCK_TARGET_DAYS_BY_RESOURCE: ReadonlyMap<string, number> = new Map([
-  ['goods.weapons', 0.05],
-  ['goods.armor', 0.02],
-  ['goods.shields', 0.05],
+  // Per docs/03 "Military and capital workshop outputs are even tighter":
+  // weapons/armor/shields keep tiny showroom buffers unless garrisons
+  // or merchant capital is actively buying. Each archetype carries the
+  // same low target; the procurement side decides what actually gets
+  // ordered (see INSTITUTIONAL_PROCUREMENT_BY_BUILDING below).
+  ['goods.gladius', 0.05],
+  ['goods.hasta', 0.05],
+  ['goods.pilum', 0.05],
+  ['goods.dagger', 0.05],
+  ['goods.bow', 0.05],
+  ['goods.arrow', 0.2],
+  ['goods.sling', 0.05],
+  ['goods.sling_bullet', 0.2],
+  ['goods.helmet', 0.05],
+  ['goods.body_armor', 0.02],
+  ['goods.shield', 0.05],
   ['goods.cart', 0.1],
 ]);
 
@@ -575,11 +588,35 @@ const INSTITUTIONAL_PROCUREMENT_BY_BUILDING: ReadonlyMap<
       // ~24 soldiers × 0.06 modii/day, plus slow equipment upkeep.
       { resource: 'food.grain' as ResourceId, quantityPerCapacity: 1.5, maxPriceMultiplier: 8 },
       { resource: 'goods.tools' as ResourceId, quantityPerCapacity: 0.03, maxPriceMultiplier: 4 },
-      { resource: 'goods.weapons' as ResourceId, quantityPerCapacity: 0.01, maxPriceMultiplier: 4 },
-      { resource: 'goods.armor' as ResourceId, quantityPerCapacity: 0.003, maxPriceMultiplier: 4 },
+      // Per docs/03 §"Weapon-archetype substitution policy": a garrison
+      // kit is one melee + one ranged + helmet + body_armor + shield per
+      // soldier, with substitution priority gladius > hasta > dagger and
+      // bow > sling > pilum. Procurement targets the preferred archetype
+      // for each slot at roughly 1% per capacity-unit (matching the old
+      // combined goods.weapons rate of 0.01), with fallback archetypes
+      // ordered at lower rates so the substitution chain has stockpiles
+      // to draw from when the primary is short.
+      { resource: 'goods.gladius' as ResourceId, quantityPerCapacity: 0.007, maxPriceMultiplier: 4 },
+      { resource: 'goods.hasta' as ResourceId, quantityPerCapacity: 0.002, maxPriceMultiplier: 4 },
+      { resource: 'goods.pilum' as ResourceId, quantityPerCapacity: 0.005, maxPriceMultiplier: 4 },
+      { resource: 'goods.dagger' as ResourceId, quantityPerCapacity: 0.005, maxPriceMultiplier: 4 },
+      { resource: 'goods.bow' as ResourceId, quantityPerCapacity: 0.002, maxPriceMultiplier: 4 },
+      { resource: 'goods.arrow' as ResourceId, quantityPerCapacity: 0.06, maxPriceMultiplier: 4 },
+      { resource: 'goods.sling' as ResourceId, quantityPerCapacity: 0.001, maxPriceMultiplier: 4 },
       {
-        resource: 'goods.shields' as ResourceId,
-        quantityPerCapacity: 0.012,
+        resource: 'goods.sling_bullet' as ResourceId,
+        quantityPerCapacity: 0.05,
+        maxPriceMultiplier: 4,
+      },
+      { resource: 'goods.helmet' as ResourceId, quantityPerCapacity: 0.005, maxPriceMultiplier: 4 },
+      {
+        resource: 'goods.body_armor' as ResourceId,
+        quantityPerCapacity: 0.003,
+        maxPriceMultiplier: 4,
+      },
+      {
+        resource: 'goods.shield' as ResourceId,
+        quantityPerCapacity: 0.008,
         maxPriceMultiplier: 4,
       },
     ],

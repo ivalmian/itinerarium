@@ -455,9 +455,21 @@ A combat unit is a group of people characterized by:
 - `training`: 0–1 scalar derived from class/role:
   - soldier ~0.9, caravan_guard ~0.6, bandit ~0.4,
     idle_militia ~0.2, civilian ~0.1.
-- `weapons`: 0–1 from issued `goods.weapons` per combatant
-  (none = 0, basic = 0.5, full kit = 1.0).
-- `armor`: 0–1 from issued `goods.armor` per combatant.
+- `weapons`: 0–1 **derived from the unit's issued weapon inventory**
+  per combatant — not a single resource. Each combatant draws one
+  melee + (optionally) one ranged from the unit's stockpile per the
+  archetype priority in [docs/03 §"Weapon-archetype substitution
+  policy"](03-production.md). Per-archetype effective strength:
+  `goods.gladius` = 1.0, `goods.hasta` = 0.85, `goods.pilum` = 0.7,
+  `goods.dagger` = 0.5; `goods.bow` (with `goods.arrow`) = 0.9,
+  `goods.sling` (with `goods.sling_bullet`) = 0.6.
+  Unit `weapons` score = sum of (best melee + best ranged) over
+  combatants / 2 × count.
+- `armor`: 0–1 derived from issued protective gear per combatant.
+  `goods.helmet` = 0.3 contribution, `goods.body_armor` = 0.5
+  contribution, `goods.shield` = 0.2 contribution; one of each per
+  combatant. Unit `armor` score = mean over combatants of the sum
+  of equipped contributions.
 - `health`: 0–1 (fatigue, disease, prior wounds reduce it).
 - `posture`: `attacking` / `defending` / `fleeing`.
 - `terrain_bonus`: defender bonus when in walls, on a hilltop, in

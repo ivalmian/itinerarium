@@ -174,7 +174,7 @@ are never officials or merchants; patricians are never miners).
 **Secondary sector:** `miller`, `baker`, `presser`, `vintner`,
 `dairy_worker`, `tanner`, `collier`, `sawyer`, `mason`,
 `brickmaker`, `potter`, `smelter`, `smith`, `weaver`, `tailor`,
-`wright`, `carpenter`, `minter`.
+`wright`, `carpenter`, `bowyer`, `fletcher`, `minter`.
 
 **Tertiary:** `merchant`, `drover`, `caravan_guard`, `soldier`,
 `officer`, `scribe`, `official`, `priest`, `physician`,

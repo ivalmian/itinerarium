@@ -147,8 +147,21 @@ export const DEFAULT_GLOBAL_PRICES: ReadonlyMap<ResourceId, number> = new Map<Re
   // by actual caravans rather than leaving smithies permanently capped.
   [resourceId('metal.iron'), 12],
   [resourceId('goods.tools'), 25],
-  [resourceId('goods.weapons'), 40],
-  [resourceId('goods.armor'), 80],
+  // Weapon archetypes per docs/03 §"Weapon-archetype substitution
+  // policy". Off-map landed prices reflect the value-to-weight ratio
+  // of each item; mass-produced gear (gladius, helmet) lands cheaper
+  // than rarer specialty weapons (body_armor, bow).
+  [resourceId('goods.gladius'), 50],
+  [resourceId('goods.hasta'), 30],
+  [resourceId('goods.pilum'), 35],
+  [resourceId('goods.dagger'), 20],
+  [resourceId('goods.bow'), 55],
+  [resourceId('goods.arrow'), 4],
+  [resourceId('goods.sling'), 8],
+  [resourceId('goods.sling_bullet'), 1],
+  [resourceId('goods.helmet'), 60],
+  [resourceId('goods.body_armor'), 200],
+  [resourceId('goods.shield'), 45],
   // Status / luxury
   [resourceId('goods.luxury_textiles'), 100],
   [resourceId('metal.silver'), 700],
@@ -183,8 +196,21 @@ export const DEFAULT_IMPORT_PALETTE: readonly ImportPaletteEntry[] = [
   { resource: resourceId('metal.iron'), weight: 12, cargoKg: [150, 420] },
   { resource: resourceId('goods.tools'), weight: 7, cargoKg: [80, 220] },
   { resource: resourceId('goods.cloth'), weight: 1, cargoKg: [80, 240] },
-  { resource: resourceId('goods.weapons'), weight: 0.5, cargoKg: [10, 40] },
-  { resource: resourceId('goods.armor'), weight: 0.25, cargoKg: [2, 12] },
+  // Military archetype imports — total weight matches the old combined
+  // weapons/armor share (~0.75) but spread across the kit so a city
+  // with a specific shortage can pull the right item via the
+  // price-responsive selection in chooseImportCargoFor().
+  { resource: resourceId('goods.gladius'), weight: 0.2, cargoKg: [10, 30] },
+  { resource: resourceId('goods.hasta'), weight: 0.1, cargoKg: [10, 25] },
+  { resource: resourceId('goods.pilum'), weight: 0.05, cargoKg: [8, 20] },
+  { resource: resourceId('goods.dagger'), weight: 0.05, cargoKg: [20, 50] },
+  { resource: resourceId('goods.bow'), weight: 0.05, cargoKg: [10, 20] },
+  { resource: resourceId('goods.arrow'), weight: 0.05, cargoKg: [200, 500] },
+  { resource: resourceId('goods.sling'), weight: 0.03, cargoKg: [20, 50] },
+  { resource: resourceId('goods.sling_bullet'), weight: 0.03, cargoKg: [400, 1000] },
+  { resource: resourceId('goods.helmet'), weight: 0.05, cargoKg: [5, 15] },
+  { resource: resourceId('goods.body_armor'), weight: 0.05, cargoKg: [2, 8] },
+  { resource: resourceId('goods.shield'), weight: 0.1, cargoKg: [10, 25] },
   { resource: resourceId('exotic.spices'), weight: 2, cargoKg: [200, 800] },
   { resource: resourceId('exotic.silk'), weight: 2, cargoKg: [100, 400] },
   { resource: resourceId('exotic.incense'), weight: 1.5, cargoKg: [200, 600] },
