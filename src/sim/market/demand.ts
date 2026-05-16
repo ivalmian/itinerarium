@@ -24,6 +24,7 @@
  */
 
 import type { ActorId } from '../types.js';
+import { integerCoinBid } from './wholeUnits.js';
 
 export type DemandCurveKind = 'subsistence' | 'comfort' | 'status' | 'derived';
 
@@ -177,7 +178,10 @@ export const comfortDemandDirect = (
   const safeBudget = Math.max(0, budget);
   // For zero budget, treat the curve as a vanishing want — any positive
   // price knocks demand out (consumers have nothing to spend on this).
-  const maxWtp = safeBudget > 0 ? safeBudget * cutoffMultiplier : 0;
+  // Quantize positive WTP to integer ≥ 1 per docs/08 §"Integer-coin
+  // prices" (comfort buyers bid in whole coins; sub-1 positives floor to
+  // 1, zero stays zero so a cashless segment is still representable).
+  const maxWtp = integerCoinBid(safeBudget > 0 ? safeBudget * cutoffMultiplier : 0);
   const source: MutableDemandSource = {
     id,
     curve: 'comfort',
@@ -238,11 +242,13 @@ export const statusDemandDirect = (
   // Effective want clipped by what total wealth could afford even one unit;
   // an entirely cashless patrician cannot bid.
   const effectiveWant = wealth > 0 || want === 0 ? want : 0;
+  // Status WTP is the price ceiling above which the patrician walks away;
+  // quantize to integer coin per docs/08 §"Integer-coin prices".
   const source: MutableDemandSource = {
     id,
     curve: 'status',
     peakQuantity: effectiveWant,
-    maxWillingnessToPay: threshold,
+    maxWillingnessToPay: integerCoinBid(threshold),
     quantityAt: stepQuantityAt,
   };
   if (buyerActor !== undefined) source.buyerActor = buyerActor;
@@ -291,11 +297,14 @@ export const derivedInputDemandDirect = (
   const inputPerOutputSafe = Math.max(0, inputPerOutput);
   const quantityDemanded = breakEven > 0 ? capacity * inputPerOutputSafe : 0;
   const safeBreakEven = breakEven > 0 ? breakEven : 0;
+  // Derived producer bid is the break-even input price the buyer can pay
+  // before output economics turn unprofitable. Quantize to integer coin
+  // per docs/08 §"Integer-coin prices"; sub-1 positive values floor to 1.
   const source: MutableDemandSource = {
     id,
     curve: 'derived',
     peakQuantity: quantityDemanded,
-    maxWillingnessToPay: safeBreakEven,
+    maxWillingnessToPay: integerCoinBid(safeBreakEven),
     quantityAt: stepQuantityAt,
   };
   if (buyerActor !== undefined) source.buyerActor = buyerActor;

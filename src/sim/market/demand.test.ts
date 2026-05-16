@@ -149,8 +149,9 @@ describe('statusDemand', () => {
 });
 
 describe('derivedInputDemand', () => {
-  it('returns the full quantity below the break-even input price', () => {
-    // expected revenue per input unit = 5, other costs = 1, margin = 0.5 → break-even = 3.5.
+  it('returns the full quantity below the integer-quoted break-even input price', () => {
+    // expected revenue per input unit = 5, other costs = 1, margin = 0.5 → raw break-even = 3.5;
+    // per docs/08 §"Integer-coin prices", the quoted bid floors to integer 3.
     const d = derivedInputDemand({
       expectedOutputRevenuePerInputUnit: 5,
       otherCostsPerInputUnit: 1,
@@ -161,10 +162,9 @@ describe('derivedInputDemand', () => {
     // quantityDemanded = capacity * inputPerOutput = 20.
     expect(d.quantityAt(0.01)).toBe(20);
     expect(d.quantityAt(3)).toBe(20);
-    expect(d.quantityAt(3.5)).toBe(20);
   });
 
-  it('returns 0 above the break-even input price', () => {
+  it('returns 0 above the integer-quoted break-even input price', () => {
     const d = derivedInputDemand({
       expectedOutputRevenuePerInputUnit: 5,
       otherCostsPerInputUnit: 1,
@@ -172,7 +172,8 @@ describe('derivedInputDemand', () => {
       productionCapacity: 10,
       inputPerOutput: 2,
     });
-    expect(d.quantityAt(3.51)).toBe(0);
+    // Quoted bid = floor(3.5) = 3, so price 3.01 already drops the buyer.
+    expect(d.quantityAt(3.01)).toBe(0);
     expect(d.quantityAt(100)).toBe(0);
   });
 
@@ -200,7 +201,9 @@ describe('derivedInputDemand', () => {
     expect(d.peakQuantity).toBe(20);
   });
 
-  it('maxWillingnessToPay equals break-even input price', () => {
+  it('maxWillingnessToPay equals the integer-quoted break-even input price', () => {
+    // Raw break-even = 3.5; quoted bid floors to integer 3 per docs/08
+    // §"Integer-coin prices".
     const d = derivedInputDemand({
       expectedOutputRevenuePerInputUnit: 5,
       otherCostsPerInputUnit: 1,
@@ -208,7 +211,7 @@ describe('derivedInputDemand', () => {
       productionCapacity: 10,
       inputPerOutput: 2,
     });
-    expect(d.maxWillingnessToPay).toBeCloseTo(3.5);
+    expect(d.maxWillingnessToPay).toBe(3);
   });
 });
 
@@ -276,12 +279,13 @@ describe('aggregateDemand', () => {
     const agg = aggregateDemand([status, derived]);
     const bps = agg.breakpoints();
     const prices = bps.map((b) => b.price);
+    // Both breakpoints sit at integer coin prices per docs/08 §"Integer-
+    // coin prices": status at 500 (already integer), derived at floor(3.5)=3.
     expect(prices).toContain(500);
-    expect(prices.some((p) => Math.abs(p - 3.5) < 1e-9)).toBe(true);
-    // Each step must drop by the source's peak quantity (negative change).
+    expect(prices).toContain(3);
     const statusBp = bps.find((b) => b.price === 500);
     expect(statusBp?.quantityChange).toBe(-2);
-    const derivedBp = bps.find((b) => Math.abs(b.price - 3.5) < 1e-9);
+    const derivedBp = bps.find((b) => b.price === 3);
     expect(derivedBp?.quantityChange).toBe(-20);
   });
 });

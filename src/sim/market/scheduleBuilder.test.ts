@@ -1229,13 +1229,15 @@ describe('buildSettlementSchedules — labor class pricing', () => {
         stockpilesByOwner: new Map([[PATRICIAN, new Map([[RES.grain, 100]])]]),
         resources: [RES.grain],
         recentLocalPrices: new Map([
-          // High bread price makes the paid-labor component exceed the
-          // raw grain salvage floor; enslaved labor should still omit it.
-          [RES.bread, 60],
-          [RES.salt, 25],
-          [RES.wood, 700],
-          [RES.cloth, 100],
-          [RES.tools, 10],
+          // Amplified basket prices so the per-worker wage cost is large
+          // enough that the plebeian-vs-slave MC delta is visible at the
+          // integer-coin quotation granularity (docs/08 §"Integer-coin
+          // prices"). At sub-1-coin deltas the rounded asks would tie.
+          [RES.bread, 6000],
+          [RES.salt, 2500],
+          [RES.wood, 70000],
+          [RES.cloth, 10000],
+          [RES.tools, 1000],
         ]),
         today: 0 as Day,
         season: 'spring',
@@ -1343,6 +1345,12 @@ describe('buildSettlementSchedules — owner kind drives urgency', () => {
   });
 
   it('does not let urgent raw staple sellers chase a collapsed local price to zero', () => {
+    // Pre-quantization the salvage floor for grain was ~0.335 coin/kg.
+    // With integer-coin quotes (docs/08 §"Integer-coin prices") that
+    // floor renders as 1 coin — the smallest integer ≥ 1 — which is
+    // still well above the collapsed 0.001-coin local price memory.
+    // The point of the test (urgency cannot pull a desperate seller
+    // through the floor) holds; only the quoted unit changes.
     const s = baseSettlement();
     const result = buildSettlementSchedules({
       settlement: s,
@@ -1357,7 +1365,7 @@ describe('buildSettlementSchedules — owner kind drives urgency', () => {
     if (!pair) throw new Error('missing grain schedule');
     const source = pair.supply.sources.find((src) => src.ownerActor === PLEBEIAN);
     if (!source) throw new Error('missing plebeian supply source');
-    expect(source.reservationPrice).toBeCloseTo(0.335);
+    expect(source.reservationPrice).toBe(1);
   });
 });
 
@@ -1377,12 +1385,14 @@ describe('buildSettlementSchedules — market making (docs/15 §C26)', () => {
     });
     const pair = result.schedulesByResource.get(RES.oil);
     if (!pair) throw new Error('missing oil schedule');
-    // The market-making source asks at 6 × 1.05 = 6.3 and offers 5% of
-    // the 1000-unit stockpile = 50 units.
+    // The market-making source asks at 6 × 1.05 = 6.3, which quantizes
+    // UP to 7 per docs/08 §"Integer-coin prices" (asks round up so a
+    // seller never quotes below their real ask). Offers 5% of the
+    // 1000-unit stockpile = 50 units.
     const mmSupply = pair.supply.sources.find(
-      (src) => src.ownerActor === PATRICIAN && Math.abs(src.reservationPrice - 6.3) < 1e-6,
+      (src) => src.ownerActor === PATRICIAN && src.reservationPrice === 7,
     );
-    if (!mmSupply) throw new Error('expected MM ask at 6.3');
+    if (!mmSupply) throw new Error('expected MM ask at integer 7 (ceil of 6.3)');
     expect(mmSupply.availableToSell).toBeCloseTo(50);
   });
 
@@ -1402,23 +1412,24 @@ describe('buildSettlementSchedules — market making (docs/15 §C26)', () => {
       ownerKindByActor: new Map([[CITY, 'city_corporation']]),
       actorTreasuryByActor: new Map([[CITY, 10000]]),
     });
-    // Oil bid: 10% × 10000 / 2 resources = 500 coin at 6 × 0.95 = 5.7 →
-    // 500 / 5.7 ≈ 87.7 units.
+    // Oil bid: raw 6 × 0.95 = 5.7; quantized DOWN to 5 per docs/08
+    // §"Integer-coin prices" (bids floor so a buyer never quotes above
+    // their reserve).
     const oil = result.schedulesByResource.get(RES.oil);
     if (!oil) throw new Error('missing oil schedule');
     const oilBid = oil.demand.sources.find(
       (src) => src.curve === 'status' && src.buyerActor === CITY,
     );
     if (!oilBid) throw new Error('expected MM bid on oil');
-    expect(oilBid.maxWillingnessToPay).toBeCloseTo(5.7, 5);
-    // Wine bid: 10% × 10000 / 2 resources = 500 coin at 5 × 0.95 = 4.75.
+    expect(oilBid.maxWillingnessToPay).toBe(5);
+    // Wine bid: raw 5 × 0.95 = 4.75; quantized DOWN to 4.
     const wine = result.schedulesByResource.get(RES.wine);
     if (!wine) throw new Error('missing wine schedule');
     const wineBid = wine.demand.sources.find(
       (src) => src.curve === 'status' && src.buyerActor === CITY,
     );
     if (!wineBid) throw new Error('expected MM bid on wine');
-    expect(wineBid.maxWillingnessToPay).toBeCloseTo(4.75, 5);
+    expect(wineBid.maxWillingnessToPay).toBe(4);
   });
 
   it('does not post market-making quotes for plebeian or hamlet households', () => {
@@ -1481,8 +1492,9 @@ describe('buildSettlementSchedules — market making (docs/15 §C26)', () => {
     );
     if (!mmBid) throw new Error('expected MM bid on oil');
     // 6 × 0.95 = 5.7 (no clamp because no finite concrete WTP for oil
-    // from a patrician-only population).
-    expect(mmBid.maxWillingnessToPay).toBeCloseTo(5.7, 5);
+    // from a patrician-only population); quantized DOWN to integer 5
+    // per docs/08 §"Integer-coin prices".
+    expect(mmBid.maxWillingnessToPay).toBe(5);
   });
 
   it('MM bid sits below concrete comfort bid when both exist (docs/15 §C27)', () => {

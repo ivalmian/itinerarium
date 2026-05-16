@@ -31,6 +31,7 @@
  */
 
 import type { ActorId } from '../types.js';
+import { integerCoinAsk } from './wholeUnits.js';
 
 export interface SupplySource {
   readonly id: string;
@@ -134,10 +135,14 @@ export const ownerSupplyDirect = (
   const divisor = 1 + Math.max(0, ownerUrgencyFactor) + spoilagePressure;
   const urgencyAdjusted = divisor > 0 ? raw / divisor : raw;
   const floor = Math.max(0, productionCost, minimumReservationPrice ?? 0);
+  // Quantize to integer coin per docs/08 §"Integer-coin prices": producer
+  // asks round UP so the seller never quotes below their real cost. Sub-1
+  // values clamp to the 1-coin floor.
+  const reservationPrice = integerCoinAsk(Math.max(floor, urgencyAdjusted));
   const source: MutableSupplySource = {
     id,
     ownerActor,
-    reservationPrice: Math.max(floor, urgencyAdjusted),
+    reservationPrice,
     availableToSell,
     quantityAt: supplySourceQuantityAt,
   };

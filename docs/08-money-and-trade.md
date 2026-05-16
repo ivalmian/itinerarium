@@ -463,6 +463,80 @@ to integer units; passes service resources through unchanged.
 Applied at every external trade site: caravan buy / sell / ration,
 local trade between settlements, off-map export.
 
+### Integer-coin prices (locked)
+
+The smallest unit of account is **one coin**. Quoted per-unit prices
+across the whole market layer — producer reservation asks, consumer
+willingness-to-pay bids, the daily clearing price, and the residual
+bid-ask book — are **integers ≥ 1 coin**. There is no half-coin or
+tenth-coin quote anywhere in the system. A loaf of bread on offer is
+quoted at "1 coin" or "2 coin", never "0.4 coin" or "1.3 coin".
+
+Rounding discipline (so the integerization is information-preserving
+on the side that matters for the auction):
+
+- **Producer asks round UP.** If marginal cost + opportunity premium
+  computes to 2.3 coin, the seller asks 3 coin. A seller never
+  knowingly quotes below their real cost.
+- **Consumer bids round DOWN.** If a buyer's true willingness-to-pay
+  computes to 2.7 coin, they bid 2 coin. A buyer never quotes above
+  their true reserve.
+- **Subsistence bids stay infinite.** The "any price I can afford"
+  case keeps `+Infinity` WTP and clamps at the wealth constraint;
+  it does not pass through the rounding step (subsistence is the
+  vertical demand segment, not a quoted bid).
+- **Clearing price is an integer ≥ 1** that satisfies both sides at
+  some point along the intersection segment. The CDA still walks the
+  sorted breakpoints; the recorded clearing price is the integer
+  nearest to the algebraic intersection, clamped to ≥ 1.
+- **Floor of 1 coin per unit.** Any quote whose math wants a positive
+  value below 1 is clamped to 1. Zero stays zero (a true free /
+  unwanted good).
+
+What this rules in and out:
+
+- A good with true marginal cost ~0.3 coin / unit will quote at 1
+  coin and clear at 1 coin. This **inflates the floor** for cheap
+  comfort goods. Subsistence is unaffected (infinite WTP). Comfort
+  buyers whose discretionary budget would only have covered 0.3 coin
+  per unit drop out of that market — a deliberate welfare cost,
+  documented to keep player-facing pricing legible.
+- Producer marginal cost still flows through the input chain at
+  full float precision (kg of iron × coin/kg of iron = recipe input
+  cost). Only the externally quoted per-unit price quantizes. A
+  smith's internal accounting can still reflect that a kilo of iron
+  cost 4.6 coin to acquire; the smith's tool ask just rounds to a
+  whole coin.
+- Total coin transferred in a trade is `units × price-per-unit`,
+  both integers, so totals stay integer too. No fractional coin
+  ever moves between treasuries.
+
+Implementation: `src/sim/market/wholeUnits.ts` adds
+`integerCoinPrice(p)` (round UP for asks),
+`floorCoinPrice(p)` (round DOWN for bids), and
+`integerCoinClearing(p)` (round to nearest, clamp ≥ 1). These are
+applied at the quote sites in `src/sim/market/supply.ts`,
+`src/sim/market/demand.ts`, `src/sim/market/clear.ts`, and at every
+price-observation write (`Caravan.priceBook`, guild ledgers).
+
+### Mint output flows to treasury (locked)
+
+`mint_coin` is the only recipe whose output is **not** a stockpile
+good. A successful mint run consumes its silver input from the
+owner's stockpile, then **credits `output × 1 coin` directly into
+the owner's `treasury`**. No `goods.coin` ever sits in the mint's
+stockpile from minting.
+
+`goods.coin` still exists as a physical resource for the cases
+where coin actually moves as cargo: tax shipments, edge-hub
+incoming/outgoing convoys, player coin carried in a caravan, bandit
+loot. In all those cases the coin physically arrives at a
+destination and is then credited to the destination actor's
+`treasury` on arrival (already wired). The mint-to-treasury rule
+just removes the special case where coin was being treated as
+stockpile inventory by the producer despite never being held that
+way.
+
 - **Famine**: prices spike, rich survive, poor starve, granaries
   empty, caravans flood in until supply meets demand or the city
   dies.
