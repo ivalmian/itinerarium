@@ -337,6 +337,64 @@ describe('deserializeWorld → round-trip', () => {
   });
 });
 
+describe('Person registry round-trip (docs/04 §"Person registry for moving units")', () => {
+  it('preserves persons + per-Person equipment slots through a procgen-world round-trip', () => {
+    const grid = generateTerrain({
+      seed: 'snap-persons',
+      widthHexes: 30,
+      heightHexes: 30,
+      mountainsCoveragePct: 10,
+      oceanCoveragePct: 5,
+    });
+    const sites = siteSettlements({
+      seed: 'snap-persons-sites',
+      grid,
+      cityCount: 2,
+      townCount: 3,
+      villageCount: 8,
+      hamletCount: 5,
+    });
+    const original = seedWorld({ seed: 'snap-persons-seed', grid, settlementSites: sites });
+    expect(original.persons!.size).toBeGreaterThan(0);
+    const snap = serializeWorld(original, original.day);
+    const restored = deserializeWorld(snap);
+    expect(restored.persons!.size).toBe(original.persons!.size);
+    expect(restored.personEquipment!.size).toBe(original.personEquipment!.size);
+
+    // Spot-check: a few specific Person records survive name + age + role.
+    for (const [id, p] of original.persons!) {
+      const r = restored.persons!.get(id);
+      if (r === undefined) continue;
+      expect(r.name).toBe(p.name);
+      expect(r.age).toBe(p.age);
+      expect(r.role).toBe(p.role);
+      expect(r.status).toBe(p.status);
+      expect(r.sex).toBe(p.sex);
+    }
+
+    // Equipment slot map survives: every issued kit item round-trips.
+    for (const [pid, slots] of original.personEquipment!) {
+      const restoredSlots = restored.personEquipment!.get(pid);
+      if (restoredSlots === undefined) continue;
+      for (const [res, qty] of slots) {
+        expect(restoredSlots.get(res)).toBe(qty);
+      }
+    }
+  });
+
+  it('omits the persons/personEquipment fields when both registries are empty', () => {
+    const w = buildTinyWorld();
+    const snap = serializeWorld(w, w.day);
+    // buildTinyWorld doesn't populate persons; the snapshot should
+    // skip the fields entirely rather than serialize empty arrays.
+    expect(snap.world.persons).toBeUndefined();
+    expect(snap.world.personEquipment).toBeUndefined();
+    const restored = deserializeWorld(snap);
+    expect(restored.persons!.size).toBe(0);
+    expect(restored.personEquipment!.size).toBe(0);
+  });
+});
+
 describe('round-trip a full procgen-seeded world', () => {
   it('preserves the headline counts and a few specific fields', () => {
     const grid = generateTerrain({

@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import { createRng } from '../rng.js';
-import { factionId, personId } from '../types.js';
+import { demoKey } from '../population/demographics.js';
+import { factionId, personId, resourceId, type ResourceId, type PersonId } from '../types.js';
 import { createPerson, markDead } from './person.js';
 import {
+  ageToBand,
   allAlive,
   emptyPersonRegistry,
   getPerson,
+  markPersonsDeadByDemographics,
   registerPerson,
   tickAnnualAging,
 } from './registry.js';
@@ -77,5 +80,148 @@ describe('tickAnnualAging', () => {
     const a = seed();
     const b = seed();
     expect(a).toBe(b);
+  });
+});
+
+describe('ageToBand', () => {
+  it.each([
+    [0, '0-4'],
+    [4, '0-4'],
+    [5, '5-9'],
+    [9, '5-9'],
+    [25, '25-29'],
+    [79, '75-79'],
+    [80, '80+'],
+    [102, '80+'],
+  ])('maps age %i → band %s', (age, band) => {
+    expect(ageToBand(age)).toBe(band);
+  });
+});
+
+describe('markPersonsDeadByDemographics', () => {
+  const buildUnitRegistry = (
+    unitId: string,
+    members: ReadonlyArray<{ idSuffix: string; sex: 'male' | 'female'; age: number }>,
+  ) => {
+    const reg = emptyPersonRegistry();
+    for (const m of members) {
+      const p = createPerson({
+        id: personId(`p-${m.idSuffix}`),
+        name: `Name ${m.idSuffix}`,
+        age: m.age,
+        sex: m.sex,
+        class: 'plebeian',
+        faction: factionId('faction:t'),
+        role: 'soldier',
+        bornOnDay: 0,
+        unitId,
+      });
+      registerPerson(reg, p);
+    }
+    return reg;
+  };
+
+  it('marks the correct number of bucket-matching Persons dead and returns their equipment', () => {
+    const reg = buildUnitRegistry('unit-1', [
+      { idSuffix: 'a', sex: 'male', age: 22 }, // 20-24
+      { idSuffix: 'b', sex: 'male', age: 23 }, // 20-24
+      { idSuffix: 'c', sex: 'male', age: 32 }, // 30-34
+      { idSuffix: 'd', sex: 'female', age: 21 }, // 20-24
+    ]);
+    const equip = new Map<PersonId, Map<ResourceId, number>>();
+    equip.set(personId('p-a'), new Map([[resourceId('goods.gladius'), 1]]));
+    equip.set(personId('p-b'), new Map([[resourceId('goods.shield'), 1]]));
+
+    const removed = new Map<string, number>([
+      [demoKey('male', '20-24'), 2],
+    ]);
+    const { deadIds, returnedKit } = markPersonsDeadByDemographics(
+      reg,
+      equip,
+      'unit-1',
+      removed,
+      createRng('cas-1'),
+      400,
+    );
+
+    expect(deadIds.length).toBe(2);
+    // Both dead Persons are 20-24 males.
+    for (const id of deadIds) {
+      const p = getPerson(reg, id);
+      expect(p?.status).toBe('dead');
+      expect(p?.diedOnDay).toBe(400);
+      expect(p?.sex).toBe('male');
+      expect(ageToBand(p!.age)).toBe('20-24');
+    }
+    // Their equipment is back in the returned kit and removed from the slot map.
+    expect(returnedKit.get(resourceId('goods.gladius'))).toBe(1);
+    expect(returnedKit.get(resourceId('goods.shield'))).toBe(1);
+    expect(equip.size).toBe(0);
+    // Other Persons untouched.
+    expect(getPerson(reg, personId('p-c'))?.status).toBe('alive');
+    expect(getPerson(reg, personId('p-d'))?.status).toBe('alive');
+  });
+
+  it('falls back to other unit Persons when a bucket is exhausted', () => {
+    const reg = buildUnitRegistry('unit-2', [
+      { idSuffix: 'a', sex: 'male', age: 22 },
+      { idSuffix: 'b', sex: 'female', age: 31 },
+    ]);
+    // Request 2 dead from a bucket that only has 1 member; the second
+    // death falls back to any other alive Person in the unit.
+    const removed = new Map<string, number>([[demoKey('male', '20-24'), 2]]);
+    const { deadIds } = markPersonsDeadByDemographics(
+      reg,
+      undefined,
+      'unit-2',
+      removed,
+      createRng('fallback'),
+      100,
+    );
+    expect(deadIds.length).toBe(2);
+    expect(getPerson(reg, personId('p-a'))?.status).toBe('dead');
+    expect(getPerson(reg, personId('p-b'))?.status).toBe('dead');
+  });
+
+  it('ignores Persons from other units', () => {
+    const reg = emptyPersonRegistry();
+    registerPerson(
+      reg,
+      createPerson({
+        id: personId('p-our'),
+        name: 'Ours',
+        age: 25,
+        sex: 'male',
+        class: 'plebeian',
+        faction: factionId('f'),
+        role: 'soldier',
+        bornOnDay: 0,
+        unitId: 'unit-A',
+      }),
+    );
+    registerPerson(
+      reg,
+      createPerson({
+        id: personId('p-other'),
+        name: 'Other',
+        age: 25,
+        sex: 'male',
+        class: 'plebeian',
+        faction: factionId('f'),
+        role: 'soldier',
+        bornOnDay: 0,
+        unitId: 'unit-B',
+      }),
+    );
+    markPersonsDeadByDemographics(
+      reg,
+      undefined,
+      'unit-A',
+      new Map([[demoKey('male', '25-29'), 5]]),
+      createRng('iso'),
+      10,
+    );
+    expect(getPerson(reg, personId('p-our'))?.status).toBe('dead');
+    expect(getPerson(reg, personId('p-other'))?.status).toBe('alive');
   });
 });

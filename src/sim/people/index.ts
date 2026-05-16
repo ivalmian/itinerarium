@@ -18,6 +18,8 @@ export {
   registerPerson,
   getPerson,
   allAlive,
+  ageToBand,
+  markPersonsDeadByDemographics,
   tickAnnualAging,
 } from './registry.js';
 

@@ -26,6 +26,7 @@
  */
 
 import {
+  applyBanditCasualties,
   createCamp,
   decideCampAction,
   recruit,
@@ -39,7 +40,7 @@ import {
   type BanditParty,
   type BanditPartyMission,
 } from '../bandit/party.js';
-import { totalCrewCount, type Caravan } from '../caravan/caravan.js';
+import { applyCrewCasualties, totalCrewCount, type Caravan } from '../caravan/caravan.js';
 import { resolveAmbush, type AmbushResult } from '../conflict/ambush.js';
 import { resolveRaid, type WallLevel } from '../conflict/raid.js';
 import type { Patrol } from '../conflict/patrol.js';
@@ -59,10 +60,12 @@ import {
 } from '../politics/actor.js';
 import { createCharacter, generateFullName } from '../politics/character.js';
 import {
+  drainDemographics,
   drawDemographicsFromPool,
   mergeDemographics,
   ROLE_BIASES,
 } from '../population/demographics.js';
+import { markPersonsDeadByDemographics } from '../people/registry.js';
 import { createFaction } from '../politics/faction.js';
 import {
   createNewsCarrier,
@@ -643,11 +646,29 @@ const executeSettlementRaid = (
       if (p.unit.count <= 0 && world.patrols !== undefined) world.patrols.delete(p.id);
     }
   }
-  // Apply bandit casualties.
+  // Apply bandit casualties: drain banditCount + banditDemographics
+  // together, then mark the matching Persons dead in the global
+  // registry so battle reports + reputation propagation can name them.
   const banditDeaths = result.banditCasualties.deaths;
-  const survivingCamp = Math.max(0, camp.banditCount - banditDeaths);
-  if (survivingCamp <= 0) world.banditCamps.delete(campId);
-  else world.banditCamps.set(campId, { ...camp, banditCount: survivingCamp });
+  if (banditDeaths > 0) {
+    const drained = applyBanditCasualties(
+      camp,
+      Math.min(banditDeaths, camp.banditCount),
+      rng.derive(`bandit-cas-${String(campId)}`),
+    );
+    if (world.persons !== undefined) {
+      markPersonsDeadByDemographics(
+        world.persons,
+        world.personEquipment,
+        String(campId),
+        drained.removed,
+        rng.derive(`bandit-pers-${String(campId)}`),
+        today,
+      );
+    }
+    if (drained.camp.banditCount <= 0) world.banditCamps.delete(campId);
+    else world.banditCamps.set(campId, drained.camp);
+  }
 
   // Total cargo lost (count) for telemetry.
   let cargoLost = 0;
@@ -995,15 +1016,28 @@ const resolvePartyMissionAtTarget = (
         ambushHexTerrain: tile.terrain,
         rng: rng.derive('ambush'),
       });
-      // Apply caravan casualties.
-      let deathsRemaining = result.caravanCasualties.crewDeaths;
-      for (const m of targetCaravan.crew) {
-        if (deathsRemaining <= 0) break;
-        const take = Math.min(m.count, deathsRemaining);
-        m.count -= take;
-        deathsRemaining -= take;
+      // Apply caravan casualties: use the canonical helper so
+      // demographics drain proportionally; then mirror the dead into
+      // the global Person registry so battle reports can name them.
+      const crewRemoved = applyCrewCasualties(
+        targetCaravan,
+        result.caravanCasualties.crewDeaths,
+        rng.derive(`crew-cas-${String(targetCaravan.id)}`),
+      );
+      if (world.persons !== undefined && crewRemoved.size > 0) {
+        const merged = new Map<string, number>();
+        for (const sub of crewRemoved.values()) {
+          for (const [k, v] of sub) merged.set(k, (merged.get(k) ?? 0) + v);
+        }
+        markPersonsDeadByDemographics(
+          world.persons,
+          world.personEquipment,
+          String(targetCaravan.id),
+          merged,
+          rng.derive(`crew-pers-${String(targetCaravan.id)}`),
+          today,
+        );
       }
-      targetCaravan.crew = targetCaravan.crew.filter((m) => m.count > 0);
       const caravanCrewWiped = totalCrewCount(targetCaravan) <= 0;
       // Transfer cargo from caravan to PARTY (not camp loot — party
       // carries it home).
@@ -1016,8 +1050,29 @@ const resolvePartyMissionAtTarget = (
       }
       targetCaravan.treasury = Math.max(0, targetCaravan.treasury - result.coinTaken);
       party.treasury += result.coinTaken;
-      // Apply party casualties.
+      // Apply party casualties. Drain banditDemographics in step with
+      // banditCount and reflect into the global Person registry.
+      const partyDeaths = Math.min(party.banditCount, result.banditCasualties.deaths);
       party.banditCount = Math.max(0, party.banditCount - result.banditCasualties.deaths);
+      if (partyDeaths > 0 && party.banditDemographics !== undefined) {
+        const partyDemo = new Map(party.banditDemographics);
+        const drained = drainDemographics(
+          partyDemo,
+          partyDeaths,
+          rng.derive(`party-cas-${String(party.id)}`),
+        );
+        party.banditDemographics = partyDemo;
+        if (world.persons !== undefined && drained.size > 0) {
+          markPersonsDeadByDemographics(
+            world.persons,
+            world.personEquipment,
+            String(party.id),
+            drained,
+            rng.derive(`party-pers-${String(party.id)}`),
+            today,
+          );
+        }
+      }
       if (result.outcome === 'attacker_won' || result.outcome === 'caravan_fled') {
         if (homeCampId !== null) lastSuccessfulRaidDay.set(homeCampId, today);
       }

@@ -47,6 +47,7 @@ import {
   characterId,
   factionId,
   jobId,
+  personId,
   resourceId,
   settlementId,
   type ActorId,
@@ -54,9 +55,11 @@ import {
   type CharacterId,
   type Day,
   type FactionId,
+  type PersonId,
   type ResourceId,
   type SettlementId,
 } from './types.js';
+import { createPerson, type Person } from './people/person.js';
 import type { WorldState } from '../procgen/seed.js';
 import type { SettlementSite } from '../procgen/settlements.js';
 
@@ -222,6 +225,27 @@ interface SerializedSettlementSite {
   readonly estimatedPopulation: number;
 }
 
+interface SerializedPerson {
+  readonly id: string;
+  readonly name: string;
+  readonly age: number;
+  readonly sex: Person['sex'];
+  readonly class: Person['class'];
+  readonly faction: string;
+  readonly role: Person['role'];
+  readonly status: Person['status'];
+  readonly health: number;
+  readonly bornOnDay: Day;
+  readonly diedOnDay?: Day;
+  readonly unitId?: string;
+  readonly namedCharacterId?: string;
+}
+
+interface SerializedPersonEquipment {
+  readonly personId: string;
+  readonly slots: ReadonlyArray<readonly [string, number]>;
+}
+
 export interface SerializedWorldState {
   readonly day: Day;
   readonly gridTiles: ReadonlyArray<readonly [string, SerializedHexTile]>;
@@ -230,6 +254,8 @@ export interface SerializedWorldState {
   readonly factions: ReadonlyArray<readonly [string, SerializedFaction]>;
   readonly characters: ReadonlyArray<readonly [string, SerializedNamedCharacter]>;
   readonly caravans: ReadonlyArray<readonly [string, SerializedCaravan]>;
+  readonly persons?: ReadonlyArray<SerializedPerson>;
+  readonly personEquipment?: ReadonlyArray<SerializedPersonEquipment>;
   readonly reputation: readonly SerializedReputationEntry[];
   readonly bySite: readonly SerializedSettlementSite[];
 }
@@ -577,6 +603,46 @@ const deserializeCharacter = (c: SerializedNamedCharacter): NamedCharacter =>
     traits: c.traits,
   });
 
+const serializePerson = (p: Person): SerializedPerson => ({
+  id: String(p.id),
+  name: p.name,
+  age: p.age,
+  sex: p.sex,
+  class: p.class,
+  faction: String(p.faction),
+  role: p.role,
+  status: p.status,
+  health: p.health,
+  bornOnDay: p.bornOnDay,
+  ...(p.diedOnDay !== undefined ? { diedOnDay: p.diedOnDay } : {}),
+  ...(p.unitId !== undefined ? { unitId: p.unitId } : {}),
+  ...(p.namedCharacterId !== undefined ? { namedCharacterId: p.namedCharacterId } : {}),
+});
+
+const deserializePerson = (p: SerializedPerson): Person => {
+  // createPerson handles defaults (status='alive', health=1) but the
+  // snapshot's status may be 'dead'/'captured'/etc., so layer the
+  // recorded state on top of the validated base.
+  const base = createPerson({
+    id: personId(p.id),
+    name: p.name,
+    age: p.age,
+    sex: p.sex,
+    class: p.class,
+    faction: factionId(p.faction),
+    role: p.role,
+    bornOnDay: p.bornOnDay,
+    status: p.status,
+    health: p.health,
+    ...(p.unitId !== undefined ? { unitId: p.unitId } : {}),
+    ...(p.namedCharacterId !== undefined
+      ? { namedCharacterId: characterId(p.namedCharacterId) }
+      : {}),
+  });
+  if (p.diedOnDay === undefined) return base;
+  return { ...base, diedOnDay: p.diedOnDay };
+};
+
 const serializeCaravan = (c: Caravan): SerializedCaravan => {
   const priceBook: [string, [string, SerializedPriceObservation][]][] = [];
   for (const [res, inner] of c.priceBook) {
@@ -706,6 +772,19 @@ export const serializeWorld = (world: WorldState, capturedAtDay: Day): WorldSnap
   for (const [id, c] of world.caravans) {
     caravans.push([String(id), serializeCaravan(c)]);
   }
+  const persons: SerializedPerson[] = [];
+  if (world.persons !== undefined) {
+    for (const p of world.persons.values()) persons.push(serializePerson(p));
+  }
+  const personEquipment: SerializedPersonEquipment[] = [];
+  if (world.personEquipment !== undefined) {
+    for (const [pid, slots] of world.personEquipment) {
+      if (slots.size === 0) continue;
+      const slotArr: [string, number][] = [];
+      for (const [res, qty] of slots) slotArr.push([String(res), qty]);
+      personEquipment.push({ personId: String(pid), slots: slotArr });
+    }
+  }
   return {
     schemaVersion: SCHEMA_VERSION,
     capturedAtDay,
@@ -717,6 +796,8 @@ export const serializeWorld = (world: WorldState, capturedAtDay: Day): WorldSnap
       factions,
       characters,
       caravans,
+      ...(persons.length > 0 ? { persons } : {}),
+      ...(personEquipment.length > 0 ? { personEquipment } : {}),
       reputation: serializeReputation(world.reputation),
       bySite: world.bySite.map(serializeSite),
     },
@@ -755,6 +836,18 @@ export const deserializeWorld = (snap: WorldSnapshot): WorldState => {
   for (const [id, c] of w.caravans) {
     caravans.set(caravanId(id), deserializeCaravan(c));
   }
+  const persons = new Map<PersonId, Person>();
+  if (w.persons !== undefined) {
+    for (const p of w.persons) persons.set(personId(p.id), deserializePerson(p));
+  }
+  const personEquipment = new Map<PersonId, Map<ResourceId, number>>();
+  if (w.personEquipment !== undefined) {
+    for (const entry of w.personEquipment) {
+      const slot = new Map<ResourceId, number>();
+      for (const [res, qty] of entry.slots) slot.set(resourceId(res), qty);
+      personEquipment.set(personId(entry.personId), slot);
+    }
+  }
   return {
     day: w.day,
     grid,
@@ -767,6 +860,8 @@ export const deserializeWorld = (snap: WorldSnapshot): WorldState => {
     banditCamps: new Map(),
     banditParties: new Map(),
     newsCarriers: new Map(),
+    persons,
+    personEquipment,
     reputation: deserializeReputation(w.reputation),
     bySite: w.bySite.map(deserializeSite),
   };
