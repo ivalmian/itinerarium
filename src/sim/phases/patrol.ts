@@ -34,6 +34,9 @@
 
 import { resolveBattle } from '../conflict/battle.js';
 import { tickPatrol } from '../conflict/patrol.js';
+import { drainDemographics } from '../population/demographics.js';
+import { markPersonsDeadByDemographics } from '../people/registry.js';
+import { applyBanditCasualties, type BanditCamp } from '../bandit/camp.js';
 import {
   advanceTowardHex,
   PATROL_DETECTION_HEXES,
@@ -49,7 +52,6 @@ import type { ActorId, CaravanId, Day } from '../types.js';
 import { addRoadWear, WEAR_PER_PATROL_SOLDIER } from '../world/roadWear.js';
 import { hexDistance, hexEquals, type Hex } from '../world/hex.js';
 import type { Settlement } from '../world/settlement.js';
-import type { BanditCamp } from '../bandit/camp.js';
 import type { WorldState } from '../../procgen/seed.js';
 import type { TickEvent } from '../tick.js';
 
@@ -335,21 +337,56 @@ export const patrolPhase = (
       const patrolDeaths = patrolCas?.deaths ?? 0;
       const campDeaths = campCas?.deaths ?? 0;
 
-      // Update patrol unit (in place since `result.patrol` is the live one).
+      // Drain patrol demographics + Person registry in step with count.
       const survivingPatrol = Math.max(0, result.patrol.unit.count - patrolDeaths);
       result.patrol.unit = { ...result.patrol.unit, count: survivingPatrol };
+      if (patrolDeaths > 0 && result.patrol.demographics !== undefined) {
+        const patrolDemo = new Map(result.patrol.demographics);
+        const drained = drainDemographics(
+          patrolDemo,
+          patrolDeaths,
+          rng.derive(`patrol-cas-${patrolId}`),
+        );
+        result.patrol.demographics = patrolDemo;
+        if (world.persons !== undefined && drained.size > 0) {
+          markPersonsDeadByDemographics(
+            world.persons,
+            world.personEquipment,
+            patrolId,
+            drained,
+            rng.derive(`patrol-pers-${patrolId}`),
+            today,
+          );
+        }
+      }
       if (survivingPatrol <= 0) {
         world.patrols.delete(patrolId);
       } else {
         world.patrols.set(patrolId, result.patrol);
       }
 
-      // Update camp.
-      const survivingCamp = Math.max(0, camp.banditCount - campDeaths);
-      if (survivingCamp <= 0) {
-        world.banditCamps.delete(pb.with.campId);
-      } else {
-        world.banditCamps.set(pb.with.campId, { ...camp, banditCount: survivingCamp });
+      // Update camp: drain banditDemographics + Person registry too.
+      if (campDeaths > 0) {
+        const drainedCamp = applyBanditCasualties(
+          camp,
+          Math.min(campDeaths, camp.banditCount),
+          rng.derive(`camp-cas-${String(pb.with.campId)}`),
+        );
+        if (world.persons !== undefined && drainedCamp.removed.size > 0) {
+          markPersonsDeadByDemographics(
+            world.persons,
+            world.personEquipment,
+            String(pb.with.campId),
+            drainedCamp.removed,
+            rng.derive(`camp-pers-${String(pb.with.campId)}`),
+            today,
+          );
+        }
+        if (drainedCamp.camp.banditCount <= 0) {
+          world.banditCamps.delete(pb.with.campId);
+        } else {
+          world.banditCamps.set(pb.with.campId, drainedCamp.camp);
+        }
       }
 
       // Emit news carriers — for patrol vs camp, the WITNESSES who carry

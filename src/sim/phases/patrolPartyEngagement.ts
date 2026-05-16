@@ -16,11 +16,14 @@
  */
 
 import {
+  applyBanditCasualties,
   campAsCombatUnit,
   type BanditCamp,
 } from '../bandit/camp.js';
 import { partyAsCombatUnit, type BanditParty } from '../bandit/party.js';
 import { resolveBattle } from '../conflict/battle.js';
+import { drainDemographics } from '../population/demographics.js';
+import { markPersonsDeadByDemographics } from '../people/registry.js';
 import type { Rng } from '../rng.js';
 import type { BanditCampId, Day } from '../types.js';
 import { hexDistance } from '../world/hex.js';
@@ -83,6 +86,25 @@ export const patrolPartyEngagementPhase = (
 
     const survivingPatrol = Math.max(0, patrol.unit.count - patrolDeaths);
     patrol.unit = { ...patrol.unit, count: survivingPatrol };
+    if (patrolDeaths > 0 && patrol.demographics !== undefined) {
+      const patrolDemo = new Map(patrol.demographics);
+      const drained = drainDemographics(
+        patrolDemo,
+        patrolDeaths,
+        rng.derive(`patrol-cas-${patrolId}`),
+      );
+      patrol.demographics = patrolDemo;
+      if (world.persons !== undefined && drained.size > 0) {
+        markPersonsDeadByDemographics(
+          world.persons,
+          world.personEquipment,
+          patrolId,
+          drained,
+          rng.derive(`patrol-pers-${patrolId}`),
+          today,
+        );
+      }
+    }
     if (survivingPatrol <= 0) {
       world.patrols.delete(patrolId);
     } else {
@@ -91,16 +113,47 @@ export const patrolPartyEngagementPhase = (
     }
 
     if (best.target.kind === 'party') {
+      const partyTake = Math.min(best.target.party.banditCount, defDeaths);
       best.target.party.banditCount = Math.max(0, best.target.party.banditCount - defDeaths);
+      if (partyTake > 0 && best.target.party.banditDemographics !== undefined) {
+        const partyDemo = new Map(best.target.party.banditDemographics);
+        const drained = drainDemographics(
+          partyDemo,
+          partyTake,
+          rng.derive(`party-cas-${String(best.target.party.id)}`),
+        );
+        best.target.party.banditDemographics = partyDemo;
+        if (world.persons !== undefined && drained.size > 0) {
+          markPersonsDeadByDemographics(
+            world.persons,
+            world.personEquipment,
+            String(best.target.party.id),
+            drained,
+            rng.derive(`party-pers-${String(best.target.party.id)}`),
+            today,
+          );
+        }
+      }
     } else if (world.banditCamps !== undefined) {
-      const survivingCamp = Math.max(0, best.target.camp.banditCount - defDeaths);
-      if (survivingCamp <= 0) {
+      const drainedCamp = applyBanditCasualties(
+        best.target.camp,
+        Math.min(defDeaths, best.target.camp.banditCount),
+        rng.derive(`camp-cas-${String(best.target.camp.id)}`),
+      );
+      if (world.persons !== undefined && drainedCamp.removed.size > 0) {
+        markPersonsDeadByDemographics(
+          world.persons,
+          world.personEquipment,
+          String(best.target.camp.id),
+          drainedCamp.removed,
+          rng.derive(`camp-pers-${String(best.target.camp.id)}`),
+          today,
+        );
+      }
+      if (drainedCamp.camp.banditCount <= 0) {
         world.banditCamps.delete(best.target.camp.id);
       } else {
-        world.banditCamps.set(best.target.camp.id, {
-          ...best.target.camp,
-          banditCount: survivingCamp,
-        });
+        world.banditCamps.set(best.target.camp.id, drainedCamp.camp);
       }
     }
 
