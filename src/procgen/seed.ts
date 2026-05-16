@@ -62,6 +62,7 @@ import {
   characterId,
   factionId,
   jobId,
+  personId,
   resourceId,
   settlementId,
   type ActorId,
@@ -72,8 +73,13 @@ import {
   type Day,
   type FactionId,
   type JobId,
+  type PersonId,
+  type ResourceId,
   type SettlementId,
 } from '../sim/types.js';
+import { type Person, createPerson, emptyPersonRegistry, registerPerson } from '../sim/people/index.js';
+import { generateLatinPraenomen } from '../sim/politics/character.js';
+import { parseDemoKey } from '../sim/population/demographics.js';
 import { jobsForBuilding } from '../sim/jobs/buildingJobs.js';
 import type { HexGrid } from '../sim/world/grid.js';
 import { hexDistance, hexEquals, hexKey, hexesWithinRange, type Hex } from '../sim/world/hex.js';
@@ -112,6 +118,23 @@ export interface WorldState {
   readonly newsCarriers?: Map<string, NewsCarrier>;
   /** Merchant guilds (per docs/15 §C17). Keyed by their Actor id. */
   readonly guilds?: Map<ActorId, Guild>;
+  /**
+   * Per docs/04 §"Person registry for moving units": named individuals
+   * who walk with a moving unit (caravan crew, patrol soldiers, bandit
+   * fighters, raid party members, migrants). Settled villagers stay
+   * aggregate; this Map only holds people who physically move. Optional
+   * for back-compat with snapshots that pre-date the registry.
+   */
+  readonly persons?: Map<PersonId, Person>;
+  /**
+   * Per-Person equipment slots. Each PersonId maps to a sparse
+   * `Map<ResourceId, count>` of the weapons / armor / shield the
+   * Person currently carries. Empty maps and absent entries are
+   * equivalent ("no kit"). Kept globally rather than nested on units
+   * so the registry can be serialized as a flat table and casualty
+   * loot can be reattached to the camp/patrol cleanly.
+   */
+  readonly personEquipment?: Map<PersonId, Map<ResourceId, number>>;
   readonly reputation: ReputationTable;
   /**
    * Diagnostic: the procgen sites that were used to seed this world, in the
@@ -1104,6 +1127,14 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
   const guilds = new Map<ActorId, Guild>();
   seedMerchantGuilds(ctx, opts.settlementSites, siteToSettlement, guilds);
 
+  // Phase 13: materialize Person records for every seeded moving unit.
+  // Per docs/04 §"Person registry for moving units": each caravan crew
+  // member, patrol soldier, and bandit fighter is a named individual
+  // in the central registry. Settled villagers stay aggregate.
+  const persons = emptyPersonRegistry();
+  const personEquipment = new Map<PersonId, Map<ResourceId, number>>();
+  seedPersonsForUnits(ctx, persons, personEquipment, patrols, banditCamps, opts.seed);
+
   return {
     day: 0,
     grid: opts.grid,
@@ -1117,9 +1148,168 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
     banditParties: new Map<BanditPartyId, BanditParty>(),
     newsCarriers: new Map<string, NewsCarrier>(),
     guilds,
+    persons,
+    personEquipment,
     reputation: createReputationTable(),
     bySite: opts.settlementSites,
   };
+};
+
+/**
+ * Phase 13 — materialize a Person record per individual in every
+ * seeded moving unit. Each Person's sex/age comes from the unit's
+ * existing demographics map; names are generated via the same Latin
+ * name pool used by NamedCharacter.
+ *
+ * Bandit camp fighters get the camp's faction. Patrol soldiers get a
+ * derived faction id (governor / city). The newly-materialized records
+ * are written into `persons` and linked back via `unitId`. No
+ * equipment is issued at this stage — the equipment-issue path
+ * follows later when starter weapons are pulled from the owning
+ * actor's stockpile.
+ */
+const seedPersonsForUnits = (
+  ctx: BuildContext,
+  persons: Map<PersonId, Person>,
+  personEquipment: Map<PersonId, Map<ResourceId, number>>,
+  patrols: Map<string, PatrolType>,
+  banditCamps: Map<BanditCampId, BanditCamp>,
+  seed: string,
+): void => {
+  const nameRng = createRng(`seed-persons-${seed}`);
+  let counter = 0;
+  const newPersonId = (): PersonId => personId(`person-${String(counter++).padStart(6, '0')}`);
+
+  const issueKit = (id: PersonId, items: readonly ResourceId[]): void => {
+    const slot = new Map<ResourceId, number>();
+    for (const item of items) {
+      slot.set(item, (slot.get(item) ?? 0) + 1);
+    }
+    if (slot.size > 0) personEquipment.set(id, slot);
+  };
+
+  const draw = (
+    role: 'soldier' | 'bandit' | 'bandit_hanger_on',
+    demographics: ReadonlyMap<string, number> | undefined,
+    unitId: string,
+    faction: FactionId,
+    klass: 'plebeian' | 'slave' | 'freedman' | 'foreigner' | 'patrician',
+    weaponsScore: number,
+    armorScore: number,
+  ): void => {
+    if (demographics === undefined) return;
+    for (const [key, count] of demographics) {
+      if (!Number.isInteger(count) || count <= 0) continue;
+      const { sex, age: ageBand } = parseDemoKey(key);
+      // Pick a representative age within the band (cohort midpoint).
+      const bandMid = midpointOfAgeBand(ageBand);
+      for (let i = 0; i < count; i++) {
+        const name = `${generateLatinPraenomen(nameRng, sex)} ${generateLatinNomen(nameRng)}`;
+        const id = newPersonId();
+        const person = createPerson({
+          id,
+          name,
+          age: bandMid,
+          sex,
+          class: klass,
+          faction,
+          role,
+          bornOnDay: 0,
+          unitId,
+        });
+        registerPerson(persons, person);
+        // Issue kit deterministically from the unit's weapons/armor
+        // scalars and the role. Per docs/03 §"Weapon-archetype
+        // substitution policy": better-equipped units get the
+        // preferred melee + a defense bundle; under-equipped
+        // bandits/hangers-on carry only what their scalar implies.
+        if (role === 'bandit_hanger_on') {
+          // Hangers-on are not fighters; no kit.
+          continue;
+        }
+        const kit: ResourceId[] = [];
+        if (weaponsScore >= 0.7) {
+          // Full-kit soldier.
+          kit.push(resourceId('goods.gladius'));
+          kit.push(resourceId('goods.pilum'));
+        } else if (weaponsScore >= 0.4) {
+          kit.push(resourceId('goods.hasta'));
+        } else if (weaponsScore >= 0.1) {
+          kit.push(resourceId('goods.dagger'));
+        }
+        if (armorScore >= 0.6) {
+          kit.push(resourceId('goods.helmet'));
+          kit.push(resourceId('goods.body_armor'));
+          kit.push(resourceId('goods.shield'));
+        } else if (armorScore >= 0.3) {
+          kit.push(resourceId('goods.helmet'));
+          kit.push(resourceId('goods.shield'));
+        } else if (armorScore >= 0.1) {
+          kit.push(resourceId('goods.shield'));
+        }
+        issueKit(id, kit);
+      }
+    }
+  };
+
+  for (const [campId, camp] of banditCamps) {
+    // Bandit camps don't have a clean "class" field for fighters; treat
+    // them as freedmen since they've left settled society. Hangers-on
+    // inherit the same. Faction comes from camp's owner actor lookup —
+    // we use the camp owner faction if discoverable, else camp id.
+    const banditFaction = factionForActor(ctx, camp.ownerActor) ?? factionId(`faction:${String(campId)}`);
+    draw(
+      'bandit',
+      camp.banditDemographics,
+      String(campId),
+      banditFaction,
+      'freedman',
+      camp.weaponsPerBandit,
+      camp.armorPerBandit,
+    );
+    draw(
+      'bandit_hanger_on',
+      camp.hangersOnDemographics,
+      String(campId),
+      banditFaction,
+      'freedman',
+      0,
+      0,
+    );
+  }
+
+  for (const [id, patrol] of patrols) {
+    const patrolFaction =
+      factionForActor(ctx, patrol.ownerActor) ?? factionId(`faction:${String(patrol.ownerActor)}`);
+    draw(
+      'soldier',
+      patrol.demographics,
+      id,
+      patrolFaction,
+      'plebeian',
+      patrol.unit.weapons,
+      patrol.unit.armor,
+    );
+  }
+};
+
+const factionForActor = (ctx: BuildContext, actor: ActorId): FactionId | undefined => {
+  for (const [fid, f] of ctx.factions) {
+    if (f.actor === actor) return fid;
+  }
+  return undefined;
+};
+
+const midpointOfAgeBand = (band: string): number => {
+  // Bands look like '0-4', '5-9', ..., '80+'. Use the midpoint as the
+  // representative age for materialized Persons.
+  if (band === '80+') return 82;
+  const dash = band.indexOf('-');
+  if (dash === -1) return 30;
+  const lo = Number(band.slice(0, dash));
+  const hi = Number(band.slice(dash + 1));
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return 30;
+  return Math.round((lo + hi) / 2);
 };
 
 /**

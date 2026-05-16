@@ -33,6 +33,64 @@ Notable individuals are modeled separately as **named characters**
 (see [11 — Politics & Ownership](11-politics-and-ownership.md) and
 [13 — Reputation & Relationships](13-reputation-and-relationships.md)).
 
+### Person registry for moving units (locked)
+
+Settled villagers stay aggregate, but **everyone in a moving unit
+has a stored identity**: caravan crew, patrol soldiers, bandit camp
+fighters and hangers-on, bandit raid parties, and migration columns.
+Each such individual is a `Person` record in the world's central
+`persons: Map<PersonId, Person>` registry.
+
+A `Person` carries:
+
+- `id`, `name` (Latin praenomen + nomen),
+- `age`, `sex`, `class`, `faction`,
+- `role` (drover / merchant / guard / soldier / bandit /
+  bandit_hanger_on / migrant / civilian),
+- `status` (`alive` | `wounded` | `dead` | `captured` | `missing`),
+- `health` 0..1,
+- `bornOnDay`, optional `diedOnDay`,
+- optional `unitId` back-reference to the moving unit they belong to,
+- optional `namedCharacterId` linking up to a politically notable
+  `NamedCharacter` (a patrician merchant leading a caravan, a
+  warlord-grade bandit_leader, etc.).
+
+Equipment is **unit-level** (the unit owns a `UnitInventory:
+Map<ResourceId, int>` of issued weapons / armor / shields) plus a
+**per-person slot map** (`personEquip: Map<PersonId,
+Map<ResourceId, 0|1>>`) recording which specific kit each person
+currently carries. This sidesteps materializing 50k tiny equipment
+maps while still letting the battle resolver name specific
+casualties and ask what they were carrying.
+
+### What the registry is NOT used for
+
+- **No per-day iteration.** Persons are touched only at events:
+  recruitment, equipment issue/return, casualty resolution, and the
+  once-per-year aging pass. The daily tick loops do not walk the
+  registry.
+- **Settled villagers stay aggregate.** Births, deaths, and aging in
+  the settled `PopulationPool` do NOT materialize/retire Person
+  records. The pool's bucket counts remain the load-bearing source of
+  truth for the settled population's labor and consumption.
+- **No upgrade path to settled villager identity.** When a moving
+  unit disbands and the survivors rejoin a settlement's pool, the
+  matching Person records are marked `status='missing'` (they leave
+  the moving-unit world) rather than persisted forever.
+
+### Composition with NamedCharacter
+
+`NamedCharacter` (docs/11) keeps its existing shape (id, name, age,
+sex, class, faction, role, location, status, traits). Where such a
+character physically walks with a moving unit, the Person record
+that represents them in the unit's roster has
+`namedCharacterId` pointing at the NamedCharacter. Reputation and
+political traits stay on the NamedCharacter; equipment and
+moving-unit status live on the Person. This is composition, not
+unification — most Persons are not NamedCharacters and most
+NamedCharacters (the governor, patrician matriarchs, headmen who
+stay home) are not Persons.
+
 ## Vital rates (Roman-era reference)
 
 First-pass numbers tuned to historical Roman demographic
