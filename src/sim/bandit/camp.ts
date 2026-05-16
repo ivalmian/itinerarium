@@ -21,7 +21,11 @@
  */
 
 import type { CombatUnit, Posture } from '../conflict/battle.js';
-import { drainDemographics, type Demographics } from '../population/demographics.js';
+import {
+  drainDemographics,
+  mergeDemographics,
+  type Demographics,
+} from '../population/demographics.js';
 import type { Rng } from '../rng.js';
 import type {
   ActorId,
@@ -168,15 +172,42 @@ export const campSize = (camp: BanditCamp): CampSize => {
   return 'insurgency';
 };
 
-/** Recruitment delta: returns a new camp with `newBandits` more bandits. */
-export const recruit = (camp: BanditCamp, newBandits: number): BanditCamp => {
+/**
+ * Recruitment delta: returns a new camp with `newBandits` more bandits.
+ *
+ * If `recruitedDemographics` is supplied AND the camp already carries
+ * `banditDemographics`, the two are merged so the recruited cohort's
+ * sex/age distribution is preserved alongside the existing roster.
+ * The total of `recruitedDemographics` should equal `newBandits` — the
+ * caller is responsible for drawing the demographics from the source
+ * settlement's pool (see `drawDemographicsFromPool`).
+ *
+ * Per docs/12 §"Bandit demographics": recruitment is no longer count-only.
+ * Bandits joining a camp come from named villages and city poor; their
+ * sex/age skew (`ROLE_BIASES.bandit`) feeds into the camp's demographics
+ * so casualty draws later remove people who could have plausibly been
+ * recruited there.
+ */
+export const recruit = (
+  camp: BanditCamp,
+  newBandits: number,
+  recruitedDemographics?: Demographics,
+): BanditCamp => {
   if (!Number.isInteger(newBandits) || newBandits < 0) {
     throw new Error(`newBandits must be a non-negative integer, got ${newBandits}`);
   }
-  return {
+  if (newBandits === 0) return camp;
+  const next: BanditCamp = {
     ...camp,
     banditCount: camp.banditCount + newBandits,
   };
+  // Only fold demographics in when the camp already had one (otherwise
+  // we'd be inventing partial roster info that was previously absent).
+  if (camp.banditDemographics !== undefined && recruitedDemographics !== undefined) {
+    const merged = mergeDemographics(camp.banditDemographics, recruitedDemographics);
+    return { ...next, banditDemographics: merged };
+  }
+  return next;
 };
 
 /**

@@ -58,6 +58,11 @@ import {
   type Actor,
 } from '../politics/actor.js';
 import { createCharacter, generateFullName } from '../politics/character.js';
+import {
+  drawDemographicsFromPool,
+  mergeDemographics,
+  ROLE_BIASES,
+} from '../population/demographics.js';
 import { createFaction } from '../politics/faction.js';
 import {
   createNewsCarrier,
@@ -864,11 +869,20 @@ const mergePartyIntoCamp = (camp: BanditCamp, party: BanditParty): BanditCamp =>
   for (const [r, q] of party.cargo) {
     mergedLoot.set(r, (mergedLoot.get(r) ?? 0) + q);
   }
+  // Per docs/12: a returning party's banditDemographics merge back into
+  // the camp roster so casualty/aging accounting stays coherent. If
+  // either side lacks demographics the merge no-ops; existing fixtures
+  // without demographics continue to work unchanged.
+  const banditDemographics =
+    camp.banditDemographics !== undefined && party.banditDemographics !== undefined
+      ? mergeDemographics(camp.banditDemographics, party.banditDemographics)
+      : camp.banditDemographics;
   return {
     ...camp,
     banditCount: camp.banditCount + party.banditCount,
     loot: mergedLoot,
     treasury: camp.treasury + party.treasury,
+    ...(banditDemographics !== undefined ? { banditDemographics } : {}),
   };
 };
 
@@ -1281,7 +1295,18 @@ const recruitFromIdle = (
     drainAdultsFromSettlement(settlement, actuallyTake);
     const camp = world.banditCamps.get(nearest.id);
     if (camp === undefined) continue;
-    world.banditCamps.set(nearest.id, recruit(camp, actuallyTake));
+    // Per docs/12 §"Bandit demographics": draw the recruit cohort's
+    // sex/age skew from the source settlement's working-age pool with
+    // the bandit bias (heavily male, fighting-age 15-44). The merged
+    // demographics let casualty draws and battle witness records cite
+    // realistic recruit profiles instead of synthetic averages.
+    const recruitDemographics = drawDemographicsFromPool(
+      settlement.population,
+      actuallyTake,
+      ROLE_BIASES.bandit,
+      rng.derive(`bandit-recruit-${String(settlement.id)}-${String(nearest.id)}`),
+    );
+    world.banditCamps.set(nearest.id, recruit(camp, actuallyTake, recruitDemographics));
     events.push({
       type: 'bandit_recruited',
       camp: nearest.id,

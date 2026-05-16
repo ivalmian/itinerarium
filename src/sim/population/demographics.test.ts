@@ -7,6 +7,7 @@ import {
   demoKey,
   drainDemographics,
   drawDemographicsFromPool,
+  mergeDemographics,
   parseDemoKey,
   ROLE_BIASES,
   totalDemographics,
@@ -69,6 +70,38 @@ describe('cloneDemographics', () => {
     const c = cloneDemographics(d);
     expect(c.size).toBe(1);
     expect(c.get(demoKey('male', '25-29'))).toBe(3);
+  });
+});
+
+describe('mergeDemographics', () => {
+  it('sums overlapping buckets and includes new ones', () => {
+    const a = new Map([
+      [demoKey('male', '25-29'), 4],
+      [demoKey('female', '30-34'), 1],
+    ]);
+    const b = new Map([
+      [demoKey('male', '25-29'), 2],
+      [demoKey('male', '15-19'), 3],
+    ]);
+    const out = mergeDemographics(a, b);
+    expect(out.get(demoKey('male', '25-29'))).toBe(6);
+    expect(out.get(demoKey('female', '30-34'))).toBe(1);
+    expect(out.get(demoKey('male', '15-19'))).toBe(3);
+  });
+
+  it('treats either side as undefined gracefully', () => {
+    const a = new Map([[demoKey('male', '20-24'), 5]]);
+    expect(mergeDemographics(undefined, a).get(demoKey('male', '20-24'))).toBe(5);
+    expect(mergeDemographics(a, undefined).get(demoKey('male', '20-24'))).toBe(5);
+    expect(mergeDemographics(undefined, undefined).size).toBe(0);
+  });
+
+  it('does not mutate the inputs', () => {
+    const a = new Map([[demoKey('male', '25-29'), 4]]);
+    const b = new Map([[demoKey('male', '25-29'), 2]]);
+    mergeDemographics(a, b);
+    expect(a.get(demoKey('male', '25-29'))).toBe(4);
+    expect(b.get(demoKey('male', '25-29'))).toBe(2);
   });
 });
 

@@ -95,9 +95,17 @@ Sourcing rule (procgen + recruitment):
     weight), with strong weight on children (5-14) and a sliver
     of the elderly. Reflects the historical mix of camp
     dependents.
-- Recruitment drives (the `recruit_drive` action) add fighters;
-  the demographics extension to that path is a follow-up — the
-  current `recruit()` helper doesn't draw new demographics.
+- **Recruitment is demographic-aware**:  `recruit(camp, newBandits,
+  recruitedDemographics?)` in `src/sim/bandit/camp.ts` merges the
+  recruit cohort into the camp's `banditDemographics`. The per-day
+  pressure-pool recruitment loop in `phases/bandit.ts` draws the
+  cohort from the source settlement's pool with `ROLE_BIASES.bandit`
+  before calling `recruit()`, so the camp's roster keeps a realistic
+  fighting-age-male skew as it grows. The `recruit_drive` action's
+  amplified intake flows through the same path.
+- **Returning raid parties** merge their `banditDemographics` back
+  into the home camp on arrival, so the camp roster stays coherent
+  across mission cycles.
 
 Casualty rule (battle):
 
