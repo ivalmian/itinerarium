@@ -35,8 +35,24 @@
 import { resolveBattle } from '../conflict/battle.js';
 import { tickPatrol } from '../conflict/patrol.js';
 import { drainDemographics } from '../population/demographics.js';
-import { markPersonsDeadByDemographics } from '../people/registry.js';
+import { markPersonsDeadByDemographics, personIdsInUnit } from '../people/registry.js';
+import { averageCombatScoresForUnit } from '../people/equipment.js';
+import type { CombatUnit } from '../conflict/battle.js';
 import { applyBanditCasualties, type BanditCamp } from '../bandit/camp.js';
+
+const applyRegistryScoresToCombatUnit = (
+  world: WorldState,
+  unitId: string,
+  unit: CombatUnit,
+): CombatUnit => {
+  if (world.persons === undefined) return unit;
+  const scores = averageCombatScoresForUnit(
+    personIdsInUnit(world.persons, unitId),
+    world.personEquipment,
+  );
+  if (scores === null) return unit;
+  return { ...unit, weapons: scores.weapons, armor: scores.armor };
+};
 import {
   advanceTowardHex,
   PATROL_DETECTION_HEXES,
@@ -307,7 +323,16 @@ export const patrolPhase = (
       const camp = world.banditCamps.get(pb.with.campId);
       if (camp === undefined) continue; // already destroyed earlier this tick
 
-      const battle = resolveBattle(result.patrol.unit, pb.defenderUnit, {
+      // Per docs/12: override patrol + camp weapons/armor from the
+      // Person registry when populated, so combat reflects each
+      // soldier's / bandit's actual kit rather than the unit scalar.
+      const patrolUnit = applyRegistryScoresToCombatUnit(world, patrolId, result.patrol.unit);
+      const campUnit = applyRegistryScoresToCombatUnit(
+        world,
+        String(pb.with.campId),
+        pb.defenderUnit,
+      );
+      const battle = resolveBattle(patrolUnit, campUnit, {
         ambush: false,
         rng: subRng.derive(`battle-${pb.with.campId}`),
       });

@@ -63,6 +63,13 @@ export interface RaidInputs {
    * stockpile insertion order — meaningless but deterministic).
    */
   readonly valueOfResource?: (id: ResourceId) => number;
+  /**
+   * Optional weapons/armor scores derived from the world's Person registry
+   * + per-Person equipment per docs/12 §"Unit stats". When supplied,
+   * override the camp's static scalar fields so combat reflects the kit
+   * each bandit actually carries.
+   */
+  readonly attackerScoreOverride?: { readonly weapons: number; readonly armor: number };
   readonly rng: Rng;
 }
 
@@ -245,7 +252,7 @@ export const resolveRaid = (inputs: RaidInputs): RaidResult => {
   // Bandits raiding a settlement are explicitly the attacker side. Their
   // posture is `attacking`; ambush applies when there's no wall to warn.
   const attackerUnit: CombatUnit = {
-    ...campAsCombatUnit(inputs.attacker, 'attacking'),
+    ...campAsCombatUnit(inputs.attacker, 'attacking', inputs.attackerScoreOverride),
     id: `bandits:${String(inputs.attacker.id)}`,
   };
 

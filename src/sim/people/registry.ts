@@ -46,6 +46,22 @@ export const allAlive = (
 };
 
 /**
+ * Collect the ids of every alive Person whose `unitId` matches.
+ * Linear scan over the registry; intended for casualty + battle-math
+ * paths that touch a single unit a few times per tick, not for hot
+ * per-day work.
+ */
+export const personIdsInUnit = (registry: PersonRegistry, unitId: string): readonly PersonId[] => {
+  const out: PersonId[] = [];
+  for (const [id, p] of registry) {
+    if (p.unitId !== unitId) continue;
+    if (!isAlive(p)) continue;
+    out.push(id);
+  }
+  return out;
+};
+
+/**
  * Map an integer age to its 5-year cohort band (per docs/04 + cohort.ts).
  * Pure helper; exported for casualty resolution where we need to look
  * up Persons by their birth-band even though Person.age is an int.

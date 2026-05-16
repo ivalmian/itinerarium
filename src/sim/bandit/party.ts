@@ -211,12 +211,13 @@ export const partyAtHome = (party: BanditParty): boolean =>
 export const partyAsCombatUnit = (
   party: BanditParty,
   posture: Posture = 'attacking',
+  scoreOverride?: { readonly weapons: number; readonly armor: number },
 ): CombatUnit => {
   return {
     id: String(party.id),
     count: Math.max(1, Math.floor(party.banditCount)),
-    weapons: party.weaponsPerBandit,
-    armor: party.armorPerBandit,
+    weapons: scoreOverride?.weapons ?? party.weaponsPerBandit,
+    armor: scoreOverride?.armor ?? party.armorPerBandit,
     health: party.averageHealth,
     posture,
     training: 0.25,

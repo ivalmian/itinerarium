@@ -112,6 +112,103 @@ export const DEFENSE_SLOTS: readonly ResourceId[] = [
 ];
 
 /**
+ * Per-archetype effective strength factors per docs/12 §"Unit stats".
+ * The melee/ranged contributions enter the unit's weapons score; the
+ * defense contributions enter the armor score.
+ */
+export const WEAPON_EFFECTIVE_STRENGTH: ReadonlyMap<ResourceId, number> = new Map<ResourceId, number>([
+  ['goods.gladius' as ResourceId, 1.0],
+  ['goods.hasta' as ResourceId, 0.85],
+  ['goods.pilum' as ResourceId, 0.7],
+  ['goods.dagger' as ResourceId, 0.5],
+  ['goods.bow' as ResourceId, 0.9],
+  ['goods.sling' as ResourceId, 0.6],
+]);
+
+export const ARMOR_CONTRIBUTION: ReadonlyMap<ResourceId, number> = new Map<ResourceId, number>([
+  ['goods.helmet' as ResourceId, 0.3],
+  ['goods.body_armor' as ResourceId, 0.5],
+  ['goods.shield' as ResourceId, 0.2],
+]);
+
+const MELEE_KEYS: ReadonlySet<ResourceId> = new Set([
+  'goods.gladius' as ResourceId,
+  'goods.hasta' as ResourceId,
+  'goods.dagger' as ResourceId,
+]);
+
+const RANGED_KEYS: ReadonlySet<ResourceId> = new Set([
+  'goods.bow' as ResourceId,
+  'goods.sling' as ResourceId,
+  'goods.pilum' as ResourceId,
+]);
+
+/**
+ * Per-Person combat score derived from a single Person's equipment
+ * slot map. Per docs/12:
+ *
+ *   personWeaponsScore = (bestMelee + bestRanged) / 2
+ *   personArmorScore   = helmetContrib + body_armorContrib + shieldContrib
+ *
+ * Returns 0 for absent slots. Both scores are clamped to [0, 1].
+ */
+export const combatScoresForPerson = (
+  slots: ReadonlyMap<ResourceId, number> | undefined,
+): { readonly weapons: number; readonly armor: number } => {
+  if (slots === undefined || slots.size === 0) return { weapons: 0, armor: 0 };
+  let bestMelee = 0;
+  let bestRanged = 0;
+  let armorSum = 0;
+  for (const [r, qty] of slots) {
+    if (qty <= 0) continue;
+    const strength = WEAPON_EFFECTIVE_STRENGTH.get(r);
+    if (strength !== undefined) {
+      if (MELEE_KEYS.has(r)) {
+        if (strength > bestMelee) bestMelee = strength;
+      } else if (RANGED_KEYS.has(r)) {
+        if (strength > bestRanged) bestRanged = strength;
+      }
+    }
+    const armorContrib = ARMOR_CONTRIBUTION.get(r);
+    if (armorContrib !== undefined) {
+      armorSum += armorContrib;
+    }
+  }
+  const weapons = Math.min(1, (bestMelee + bestRanged) / 2);
+  const armor = Math.min(1, armorSum);
+  return { weapons, armor };
+};
+
+/**
+ * Average combat scores over a unit's PersonIds. Per docs/12:
+ *
+ *   unit.weapons = mean over alive combatants of personWeaponsScore
+ *   unit.armor   = mean over alive combatants of personArmorScore
+ *
+ * Returns null when the unit has no Persons in the registry — callers
+ * should then fall back to the unit's static 0..1 scalars. (This keeps
+ * existing fixtures + units with no materialized Persons working.)
+ */
+export const averageCombatScoresForUnit = (
+  personIds: Iterable<PersonId>,
+  equipment: ReadonlyMap<PersonId, ReadonlyMap<ResourceId, number>> | undefined,
+): { readonly weapons: number; readonly armor: number } | null => {
+  if (equipment === undefined) return null;
+  let sumW = 0;
+  let sumA = 0;
+  let n = 0;
+  for (const id of personIds) {
+    const slots = equipment.get(id);
+    const s = combatScoresForPerson(slots);
+    sumW += s.weapons;
+    sumA += s.armor;
+    n += 1;
+  }
+  if (n === 0) return null;
+  return { weapons: sumW / n, armor: sumA / n };
+};
+
+/**
  * Issue a standard soldier kit to `personId` from `inv`: best
  * available melee + best available ranged + one each of helmet,
  * body_armor, shield (if stock permits). Returns the map of what was

@@ -54,6 +54,15 @@ export interface AmbushInputs {
    * collapses to weight/kg only. Same hook shape as raid.ts's loot picker.
    */
   readonly valueOfResource?: (id: ResourceId) => number;
+  /**
+   * Optional weapons/armor scores derived from the world's Person registry
+   * + per-Person equipment per docs/12 §"Unit stats". When supplied,
+   * override the static unit scalars so combat reflects the actual
+   * issued kit rather than the procgen aggregate. Omitted = fall back
+   * to the camp/caravan's `weaponsPerBandit` / scalar fields.
+   */
+  readonly attackerScoreOverride?: { readonly weapons: number; readonly armor: number };
+  readonly defenderScoreOverride?: { readonly weapons: number; readonly armor: number };
   readonly rng: Rng;
 }
 
@@ -139,7 +148,10 @@ const foldCrew = (acc: DefenderRollUp, m: CrewMember): void => {
   acc.weightedArmor += m.count * m.armor;
 };
 
-const buildCaravanDefender = (caravan: Caravan): CombatUnit => {
+const buildCaravanDefender = (
+  caravan: Caravan,
+  scoreOverride?: { readonly weapons: number; readonly armor: number },
+): CombatUnit => {
   const acc: DefenderRollUp = {
     count: 0,
     weightedTraining: 0,
@@ -155,8 +167,8 @@ const buildCaravanDefender = (caravan: Caravan): CombatUnit => {
       posture: 'defending',
       count: 1,
       training: 0,
-      weapons: 0,
-      armor: 0,
+      weapons: scoreOverride?.weapons ?? 0,
+      armor: scoreOverride?.armor ?? 0,
       health: Math.max(0.05, caravan.health),
       terrainBonus: 0,
     });
@@ -166,8 +178,8 @@ const buildCaravanDefender = (caravan: Caravan): CombatUnit => {
     posture: 'defending',
     count: acc.count,
     training: acc.weightedTraining / acc.count,
-    weapons: acc.weightedWeapons / acc.count,
-    armor: acc.weightedArmor / acc.count,
+    weapons: scoreOverride?.weapons ?? acc.weightedWeapons / acc.count,
+    armor: scoreOverride?.armor ?? acc.weightedArmor / acc.count,
     health: Math.max(0.05, caravan.health),
     terrainBonus: 0,
   });
@@ -232,7 +244,7 @@ const totalAnimalCount = (c: Caravan): number => {
 export const resolveAmbush = (inputs: AmbushInputs): AmbushResult => {
   // 1. Build the bandit attacker unit. Apply terrain ambush bonus to the
   //    attacker (caravans don't have walls; the surprise is the cover).
-  const baseUnit = campAsCombatUnit(inputs.attacker, 'attacking');
+  const baseUnit = campAsCombatUnit(inputs.attacker, 'attacking', inputs.attackerScoreOverride);
   const terrainBonus = TERRAIN_AMBUSH_BONUS[inputs.ambushHexTerrain];
   const attackerUnit: CombatUnit = campaignerUnit({
     id: `bandits:${String(inputs.attacker.id)}`,
@@ -246,7 +258,7 @@ export const resolveAmbush = (inputs: AmbushInputs): AmbushResult => {
   });
 
   // 2. Caravan defender.
-  const defenderUnit = buildCaravanDefender(inputs.target);
+  const defenderUnit = buildCaravanDefender(inputs.target, inputs.defenderScoreOverride);
 
   // 3. Battle. Ambush flag set when the terrain offers real cover (any
   //    bonus above the open-ground baseline triggers free first round).
