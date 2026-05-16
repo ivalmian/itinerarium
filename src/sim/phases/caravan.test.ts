@@ -463,14 +463,16 @@ import {
       const settlement = w.settlements.get(settlementId('settle-1'))!;
       const seller = w.actors.get(actorId('city-corp-1'))!;
       setStock(seller, resourceId('livestock.equines'), 1);
-      settlement.market.lastClearingPrice.set(resourceId('livestock.equines'), 100);
+      // 5× scaled per realism pass 8 (equines clearing price, family
+      // working capital).
+      settlement.market.lastClearingPrice.set(resourceId('livestock.equines'), 500);
       const sellerTreasuryBefore = seller.treasury;
       const family = createActor({
         id: familyId,
         kind: 'patrician_family',
         name: 'Market Replacement Family',
         homeSettlement: settlement.id,
-        treasury: 10_000,
+        treasury: 50_000,
       });
       setStock(family, resourceId('food.grain'), 100);
       w.actors.set(familyId, family);

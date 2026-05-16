@@ -56,8 +56,11 @@ import {
 
       expect(shortage).toBeDefined();
       const price = settlement?.market.lastClearingPrice.get(resourceId('food.grain')) ?? 0;
-      expect(price).toBeGreaterThan(10);
-      expect(price).toBeLessThanOrEqual(18);
+      // 5× scaled per realism pass 8: ceiling 18 → 90 (the scarcity
+      // ceiling is derived from the off-map reference price which is
+      // now 7.5 instead of 1.5; the multiplier remains the same).
+      expect(price).toBeGreaterThan(50);
+      expect(price).toBeLessThanOrEqual(90);
     });
 
     it('uses a finite local-only scarcity ceiling instead of pinning missing wood at the universal cap', () => {
@@ -217,7 +220,8 @@ import {
 
       tick({ world: w, rng: createRng('caravan-ration-fallback-price') });
 
-      expect(settlement.market.lastClearingPrice.get(cheese)).toBe(5);
+      // 5× scaled per realism pass 8 (cheese fallback ration price 25, was 5).
+      expect(settlement.market.lastClearingPrice.get(cheese)).toBe(25);
       expect(settlement.market.recentOutflows.get(cheese)).toBeGreaterThan(0);
     });
 

@@ -392,7 +392,8 @@ const ensureMerchantHouseOwner = (
     kind: 'off_map_house',
     name: houseName,
     homeSettlement: homeCity.id,
-    treasury: rng.int(1000, 5000),
+    // 5× scaled per realism pass 8.
+    treasury: rng.int(5000, 25000),
   });
   world.actors.set(aId, actor);
   ensureSettlementStockpileOwner(homeCity, actor.id);
