@@ -21,6 +21,7 @@ import type { NewsCarrier } from '../../src/sim/reputation/news.js';
 import { hexDistance } from '../../src/sim/world/hex.js';
 import type { ViewerState } from '../state/viewerState.js';
 import { popupKv, popupSection } from './popup.js';
+import { appendUnitPersonnelSection } from './personnelSection.js';
 import { findFactionByActor } from './factionScreen.js';
 import { createFactionLink } from './factionLink.js';
 import {
@@ -138,6 +139,10 @@ const renderPatrolOverview = (
     row.appendChild(createFactionLink(state, faction.id, faction.name));
     section.appendChild(row);
   }
+
+  // Named personnel — list each named soldier + their kit (docs/04).
+  // Patrols register Persons by patrol id (string key) at procgen.
+  appendUnitPersonnelSection(section, world, p.id);
 
   return section;
 };

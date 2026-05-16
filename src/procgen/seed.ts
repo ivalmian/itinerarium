@@ -402,17 +402,22 @@ const seedPopulation = (settlement: Settlement, total: number): void => {
 const GRAIN_KG_PER_DAY = 0.4; // docs/04 §"Consumption per adult per day"
 const KG_PER_MODIUS = 6.7; // see resources/catalog.ts food.grain
 // 180-day reserve. Per docs/15 §C5 we aim for 30 ultimately, but C6
-// 30 days of grain reserve. The full v1.5 §C5 target. Reachable now
-// that C4 (dynamic investment) builds new buildings mid-burn,
-// C6 (worker reallocation) shifts roles toward bottlenecks,
-// C10 (storage capacity discipline) prevents stockpile sprawl,
-// C16 (civil unrest cascade) caps prices via edicts before runaway,
-// C17 (merchant guilds) coordinates trade flows, and C18 (goal
-// stacks) gives caravans persistent multi-leg intents.
-const GRAIN_DAYS_OF_RESERVE = 30;
+// Initial reserves per docs/15 §C5 + the realism-pass-9 rebalance:
+// every basic consumable is capped at **at most 1 year of consumption
+// per settlement**, with most categories well below that. The
+// city-corp / village / hamlet seeders all hit this same set of
+// constants so the cap holds in every settlement tier.
+//
+// Grain reserve halved from the v1.5 30-day target to 14 days because
+// the burn-in showed city corps starting unreasonably stocked at the
+// 5×-scaled price level (the 30-day grain heap looked like decades of
+// civic wealth to the price layer).
+const GRAIN_DAYS_OF_RESERVE = 14;
 const WOOD_DAYS_OF_RESERVE = 7;
 const WOOD_CORDS_PER_ADULT_PER_DAY = 0.001;
 const STARTER_TOOLS_PER_CAPITA = 0.2;
+/** Hard upper bound applied to every starter consumable grant: 365 days. */
+const MAX_INITIAL_RESERVE_DAYS = 365;
 
 const grainModiiForPopulation = (totalPop: number, days: number): number => {
   const kg = totalPop * GRAIN_KG_PER_DAY * days;
@@ -440,20 +445,24 @@ const grantStockpile = (
 const grantStarterMarketInventory = (actor: Actor, settlement: Settlement, scale = 1): void => {
   const pop = settlement.population.total();
   if (pop <= 0 || scale <= 0) return;
-  // Durable and semi-durable market inventories represent last season's
-  // warehouses, household stores, and workshop shelves. Day 0 starts in
-  // spring; wine and oil especially cannot be zero until autumn without
-  // creating an artificial scarcity cap unrelated to production economics.
+  // Per realism pass 9: starter market inventories are roughly halved
+  // vs. the pre-pass baseline because cities began the burn-in with
+  // multi-month wine/oil/cloth heaps that suppressed downstream
+  // production economics. Each entry is `pop × per-capita-daily-need
+  // × days × scale`; `days` are clamped to MAX_INITIAL_RESERVE_DAYS so
+  // no consumable starts above 1 year of supply in any settlement
+  // (the user's explicit cap).
+  const clampDays = (d: number): number => Math.min(MAX_INITIAL_RESERVE_DAYS, Math.max(0, d));
   const grants: ReadonlyArray<readonly [string, number]> = [
-    ['food.wine', pop * 0.02 * 45 * scale],
-    ['food.olive_oil', pop * 0.005 * 60 * scale],
-    ['food.cheese', pop * 0.01 * 30 * scale],
-    ['food.salted_fish', pop * 0.01 * 20 * scale],
-    ['food.salted_meat', pop * 0.01 * 20 * scale],
-    ['goods.cloth', pop * 0.0014 * 180 * scale],
-    ['goods.clothing', pop * 0.0014 * 90 * scale],
-    ['goods.furniture', pop * 0.0001 * 180 * scale],
-    ['material.pottery', pop * 0.001 * 120 * scale],
+    ['food.wine', pop * 0.02 * clampDays(20) * scale],
+    ['food.olive_oil', pop * 0.005 * clampDays(30) * scale],
+    ['food.cheese', pop * 0.01 * clampDays(14) * scale],
+    ['food.salted_fish', pop * 0.01 * clampDays(10) * scale],
+    ['food.salted_meat', pop * 0.01 * clampDays(10) * scale],
+    ['goods.cloth', pop * 0.0014 * clampDays(60) * scale],
+    ['goods.clothing', pop * 0.0014 * clampDays(45) * scale],
+    ['goods.furniture', pop * 0.0001 * clampDays(60) * scale],
+    ['material.pottery', pop * 0.001 * clampDays(45) * scale],
   ];
   for (const [resource, qty] of grants) grantStockpile(actor, settlement.id, resource, qty);
 };
@@ -662,7 +671,11 @@ const seedCityCorporation = (
   grantStockpile(actor, settlement.id, 'material.wood', woodCordsForPopulation(pop, 20));
   grantStockpile(actor, settlement.id, 'material.amphora', Math.max(20, Math.floor(pop / 5)));
   grantStockpile(actor, settlement.id, 'goods.tools', toolsForPopulation(pop, 50));
-  grantStarterMarketInventory(actor, settlement, 1.25);
+  // Per realism pass 9: city corp no longer gets a 1.25× scale on
+  // starter market inventory — every city tier seeds at the baseline
+  // scale so the urban warehouses don't begin the burn-in flush with
+  // multi-month surpluses.
+  grantStarterMarketInventory(actor, settlement, 1.0);
   return actor;
 };
 

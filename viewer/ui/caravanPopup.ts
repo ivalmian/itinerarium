@@ -29,6 +29,7 @@ import type { ViewerHistory } from '../state/history.js';
 import { setSelection, type ViewerState } from '../state/viewerState.js';
 import { createSparkline, fmtCompact } from './sparkline.js';
 import { popupEmpty, popupKv, popupSection } from './popup.js';
+import { appendUnitPersonnelSection } from './personnelSection.js';
 import { createFactionLink } from './factionLink.js';
 import { findFactionByActor } from './factionScreen.js';
 import {
@@ -62,7 +63,7 @@ export const renderCaravanPopup = (opts: CaravanPopupOpts): CaravanPopupContent 
   root.appendChild(renderHeader(world, c, state));
   root.appendChild(renderRouteSection(world, c, state, history));
   root.appendChild(renderCargoSection(world, c));
-  root.appendChild(renderCrewSection(c));
+  root.appendChild(renderCrewSection(c, world));
   root.appendChild(renderHistorySection(c, history));
   const transactions = renderTransactionsSection(world, history, c.id, state);
   if (transactions !== null) root.appendChild(transactions);
@@ -446,7 +447,7 @@ const renderCargoSection = (world: WorldState, c: Caravan): HTMLElement => {
 
 // --- Crew & animals --------------------------------------------------------
 
-const renderCrewSection = (c: Caravan): HTMLElement => {
+const renderCrewSection = (c: Caravan, world: WorldState): HTMLElement => {
   const section = popupSection('Crew & transport');
 
   // Crew table.
@@ -479,6 +480,10 @@ const renderCrewSection = (c: Caravan): HTMLElement => {
     tbl.appendChild(tb);
     section.appendChild(tbl);
   }
+
+  // Named personnel (Person registry, docs/04). One row per named
+  // individual walking with this caravan, with their kit.
+  appendUnitPersonnelSection(section, world, String(c.id));
 
   // Animals.
   const animalEntries = Object.entries(c.animals).filter(([, n]) => (n ?? 0) > 0);
