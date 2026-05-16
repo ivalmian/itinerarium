@@ -559,16 +559,27 @@ const DEFAULT_PRODUCTION_COST_RATIO = 0.8;
  * has collapsed and MC is currently unpriced. Values are deliberately small
  * relative to normal scarcity/import ceilings.
  */
+/**
+ * Per-category salvage floors (coin / kg). These are the lowest
+ * structural ask a rational seller accepts when MC is unpriced.
+ *
+ * Scaled 5× from the pre-realism-pass baseline so the integer-coin
+ * quote rule (docs/08 §"Integer-coin prices") clears chains above
+ * the 1-coin floor more often. Sub-1 staples (grain at historical
+ * ~0.05 coin/kg) still land on the 1-coin floor after the scale +
+ * integer round, but refined and manufactured chains now keep some
+ * structural price gradient instead of collapsing into a flat 1.
+ */
 const RESERVATION_FLOOR_COIN_PER_KG = Object.freeze({
-  food: 0.05,
-  material_tier0: 0.005,
-  material_refined: 0.02,
-  livestock: 0.01,
-  mineral: 0.02,
-  metal: 0.2,
-  goods: 0.5,
-  exotic: 1,
-  people: 0.5,
+  food: 0.25,
+  material_tier0: 0.025,
+  material_refined: 0.1,
+  livestock: 0.05,
+  mineral: 0.1,
+  metal: 1,
+  goods: 2.5,
+  exotic: 5,
+  people: 2.5,
   service: 0,
 } as const);
 
@@ -641,7 +652,16 @@ const INSTITUTIONAL_PROCUREMENT_BY_BUILDING: ReadonlyMap<
   [
     'forum_market',
     [
-      { resource: 'food.grain' as ResourceId, quantityPerCapacity: 0.2, maxPriceMultiplier: 5 },
+      // Rural→urban staple flow (realism pass 8): cities buy grain as a
+      // civic reserve well above local clearing so villages have a
+      // structurally premium counter-party. With quantityPerCapacity
+      // bumped 10× and maxPriceMultiplier 12× the forum's bid sits
+      // high enough on the price ladder that the local-trade pass
+      // sweeps grain in from neighbouring villages within transport
+      // cost — exactly the "city pays farmer a premium" mechanic.
+      { resource: 'food.grain' as ResourceId, quantityPerCapacity: 2.0, maxPriceMultiplier: 12 },
+      { resource: 'food.legumes' as ResourceId, quantityPerCapacity: 0.4, maxPriceMultiplier: 8 },
+      { resource: 'food.cheese' as ResourceId, quantityPerCapacity: 0.2, maxPriceMultiplier: 6 },
       { resource: 'goods.tools' as ResourceId, quantityPerCapacity: 0.02, maxPriceMultiplier: 3 },
       { resource: 'goods.cloth' as ResourceId, quantityPerCapacity: 0.02, maxPriceMultiplier: 3 },
     ],

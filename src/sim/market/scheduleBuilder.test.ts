@@ -1365,7 +1365,11 @@ describe('buildSettlementSchedules — owner kind drives urgency', () => {
     if (!pair) throw new Error('missing grain schedule');
     const source = pair.supply.sources.find((src) => src.ownerActor === PLEBEIAN);
     if (!source) throw new Error('missing plebeian supply source');
-    expect(source.reservationPrice).toBe(1);
+    // 5× scaled (realism pass 8): salvage floor for food went from
+    // 0.05 to 0.25 coin/kg, so the quoted-integer floor for a 6.7
+    // kg/modius grain unit becomes ceil(0.25 × 6.7 / 1) = 2 coin
+    // (still well above the collapsed 0.001-coin price memory).
+    expect(source.reservationPrice).toBe(2);
   });
 });
 
@@ -1388,11 +1392,14 @@ describe('buildSettlementSchedules — market making (docs/15 §C26)', () => {
     // The market-making source asks at 6 × 1.05 = 6.3, which quantizes
     // UP to 7 per docs/08 §"Integer-coin prices" (asks round up so a
     // seller never quotes below their real ask). Offers 5% of the
-    // 1000-unit stockpile = 50 units.
+    // 1000-unit stockpile = 50 units. Match the MM source by its
+    // id prefix so the regular owner-supply quote at a coincident
+    // integer price doesn't shadow it.
     const mmSupply = pair.supply.sources.find(
-      (src) => src.ownerActor === PATRICIAN && src.reservationPrice === 7,
+      (src) => src.ownerActor === PATRICIAN && src.id.startsWith('mm-supply:'),
     );
-    if (!mmSupply) throw new Error('expected MM ask at integer 7 (ceil of 6.3)');
+    if (!mmSupply) throw new Error('expected MM ask source');
+    expect(mmSupply.reservationPrice).toBe(7);
     expect(mmSupply.availableToSell).toBeCloseTo(50);
   });
 

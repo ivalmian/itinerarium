@@ -118,26 +118,32 @@ describe('DEFAULT_GLOBAL_PRICES', () => {
 });
 
 describe('estimateExportMargin (per-unit)', () => {
+  // Local-price fixtures scaled 5× per realism pass 8 to match the new
+  // off-map global price level (DEFAULT_GLOBAL_PRICES). The qualitative
+  // assertions (bulk staples lose, silver+luxury win, cloth marginal)
+  // are unchanged.
   it('bulk grain has strongly negative margin even with a 100% local-price spread', () => {
-    const localPrices = new Map<ResourceId, number>([[grain, 1]]);
+    const localPrices = new Map<ResourceId, number>([[grain, 5]]);
     const m = estimateExportMargin(grain, 100, localPrices);
     expect(m).toBeLessThan(0);
   });
 
   it('silver has positive margin over a typical export distance', () => {
-    const localPrices = new Map<ResourceId, number>([[silver, 500]]);
+    const localPrices = new Map<ResourceId, number>([[silver, 2500]]);
     const m = estimateExportMargin(silver, 100, localPrices);
     expect(m).toBeGreaterThan(0);
   });
 
   it('luxury textiles have positive margin', () => {
-    const localPrices = new Map<ResourceId, number>([[luxuryTextiles, 30]]);
+    const localPrices = new Map<ResourceId, number>([[luxuryTextiles, 150]]);
     const m = estimateExportMargin(luxuryTextiles, 100, localPrices);
     expect(m).toBeGreaterThan(0);
   });
 
   it('plain cloth — bulky for its value — is not profitable', () => {
-    const localPrices = new Map<ResourceId, number>([[cloth, 10]]);
+    // Local price close to global (60 × 5 / 5 = 60 in new scale; the
+    // tight spread keeps cloth unprofitable to export).
+    const localPrices = new Map<ResourceId, number>([[cloth, 55]]);
     const m = estimateExportMargin(cloth, 100, localPrices);
     expect(m).toBeLessThan(0);
   });
@@ -436,9 +442,12 @@ describe('tickEdgeHubs — exports', () => {
       baseExportSpawnProbPerDay: 1.0,
       edgeHexes: [farEdge],
     });
+    // Local prices scaled 5× per realism pass 8 (grain global is now
+    // 7.5, cloth 60); the spread to off-map is still too tight per kg
+    // for bulk to beat the long-haul cost.
     const localPrices = new Map<ResourceId, number>([
-      [grain, 1],
-      [cloth, 8],
+      [grain, 5],
+      [cloth, 50],
     ]);
     const available = new Map<ResourceId, Quantity>([
       [grain, 100000],
@@ -508,9 +517,11 @@ describe('tickEdgeHubs — exports', () => {
       baseExportSpawnProbPerDay: 1.0,
       edgeHexes: [nearEdge],
     });
+    // Local prices scaled 5× per realism pass 8 (oil global 750, wine
+    // 1000); local price near the global keeps the export filter shut.
     const localPrices = new Map<ResourceId, number>([
-      [oliveOil, 145],
-      [wine, 195],
+      [oliveOil, 725],
+      [wine, 975],
     ]);
     const available = new Map<ResourceId, Quantity>([
       [oliveOil, 200],

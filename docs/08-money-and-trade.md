@@ -519,6 +519,58 @@ applied at the quote sites in `src/sim/market/supply.ts`,
 `src/sim/market/demand.ts`, `src/sim/market/clear.ts`, and at every
 price-observation write (`Caravan.priceBook`, guild ledgers).
 
+### Price level (locked)
+
+Salvage floors, off-map global landing prices, and procgen treasury
+seeds are scaled **5× the pre-realism-pass baseline**. Reasons:
+
+- Integer-coin quotes (above) introduced a 1-coin floor that, at the
+  earlier price level, collapsed most non-staple chains to a flat 1
+  and starved comfort/status markets. The 5× scale lifts refined and
+  manufactured chains above the floor so the bid-ask book keeps a
+  meaningful ladder.
+- Wages, MC, and recipe input costs are derived from current market
+  prices, so the same 5× lifts them automatically — the integer-coin
+  side effect on the staple subsistence chain (sub-1-coin bread)
+  remains, but every other chain has headroom.
+- Procgen treasury seeds (patrician 40k–120k, governor 100k–250k,
+  city corp 25k, plebeian households 150 coin/capita, merchant houses
+  5k–25k, etc.) move in lockstep so actors start with real
+  working capital at the new price level rather than running broke
+  from day 1.
+
+If a future tuning pass needs to break the staple chain off the 1-coin
+floor entirely (i.e. let bread quote at 1, 2, 3 coin rather than just
+1), the scale would need to push another 4–10×; the 5× lift is the
+"keep the gradient, accept the floor for staples" tradeoff.
+
+### Cities pay farmers a premium for grain (locked)
+
+The forum_market institutional procurement line bids on `food.grain`
+at **quantity = 2.0 modii per forum-capacity-unit** and a
+**maxPriceMultiplier of 12** above local clearing. With one forum per
+town/city, that's a structurally high civic bid for staple food.
+
+The effect, working through the existing local-trade pass:
+
+1. The forum's bid pulls the city's clearing price for grain well
+   above the rural village's clearing price.
+2. The local-trade pass (docs/06 §"Local trade between nearby
+   settlements") arbitrages the spread: a petty merchant takes grain
+   from the village's free_village / hamlet_household stockpile, walks
+   it to the city's market, and the buy-side actor (city corp / forum
+   owner) pays at the city's clearing price minus transport cost.
+3. Coin flows from city corp → village household. Grain flows the
+   other way. The spread closes to roughly the per-hex transport
+   cost (~0.005–0.02 coin/kg), but the village still nets a real
+   premium over its local clearing price.
+
+This makes "rural producers, urban consumers, integrated through trade"
+emerge from the price gradient instead of being scripted. It also
+keeps cities richer than villages on net (their tax inflows and
+institutional procurement budgets are larger), while compensating
+the rural population for feeding them.
+
 ### Mint output flows to treasury (locked)
 
 `mint_coin` is the only recipe whose output is **not** a stockpile

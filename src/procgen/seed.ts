@@ -531,7 +531,9 @@ const seedPatricianFamily = (
     // Earlier 2000-8000 led to treasury collapsing to ~0 within months
     // (wage payouts > grain-sale income) which froze status/comfort
     // markets across the province.
-    treasury: familyRng.int(8000, 24000),
+    // 5× scaled vs. pre-pass-7 baseline so patricians keep working
+    // capital under the inflated post-realism price level.
+    treasury: familyRng.int(40000, 120000),
   });
   // docs/15 §C24 + docs/11 §"Every faction has named characters":
   // a patrician family is "Patriarch + adult members", and ALL of them
@@ -603,7 +605,8 @@ const seedGovernor = (ctx: BuildContext, capital: Settlement, capitalName: strin
     kind: 'governor_office',
     name: `Provincial Governor's Office of ${capitalName}`,
     homeSettlement: capital.id,
-    treasury: govRng.int(20000, 50000),
+    // 5× scaled per realism pass 8.
+    treasury: govRng.int(100000, 250000),
   });
   const governor = createCharacter({
     id: cId,
@@ -639,7 +642,8 @@ const seedCityCorporation = (
     kind: 'city_corporation',
     name: `Corporation of ${settlementName}`,
     homeSettlement: settlement.id,
-    treasury: 5000,
+    // 5× scaled per realism pass 8.
+    treasury: 25000,
   });
   addActor(ctx, actor);
   settlement.stockpileOwners.push(aId);
@@ -673,9 +677,12 @@ const CLASS_HOUSEHOLD_SEED: ReadonlyArray<{
   readonly perCapita: number;
   readonly displayName: string;
 }> = [
-  { class: 'plebeian', kind: 'plebeian_household', perCapita: 30, displayName: 'Plebeians' },
-  { class: 'freedman', kind: 'freedman_household', perCapita: 15, displayName: 'Freedmen' },
-  { class: 'foreigner', kind: 'foreigner_household', perCapita: 50, displayName: 'Foreigners' },
+  // 5× scaled per-capita treasury seeding (realism pass 8) so common
+  // households keep a real comfort/status budget at the post-scale
+  // price level.
+  { class: 'plebeian', kind: 'plebeian_household', perCapita: 150, displayName: 'Plebeians' },
+  { class: 'freedman', kind: 'freedman_household', perCapita: 75, displayName: 'Freedmen' },
+  { class: 'foreigner', kind: 'foreigner_household', perCapita: 250, displayName: 'Foreigners' },
 ];
 
 /**
@@ -728,7 +735,7 @@ const seedFreeVillage = (
     kind: 'free_village',
     name: `Free Village of ${settlementName}`,
     homeSettlement: settlement.id,
-    treasury: villageRng.int(50, 300),
+    treasury: villageRng.int(250, 1500),
   });
   const elder = createCharacter({
     id: elderId,
@@ -788,7 +795,7 @@ const seedClientVillage = (ctx: BuildContext, settlement: Settlement, patron: Ac
     kind: 'free_village',
     name: `Client Village of ${settlement.name}`,
     homeSettlement: settlement.id,
-    treasury: villageRng.int(50, 300),
+    treasury: villageRng.int(250, 1500),
   });
   const headman = createCharacter({
     id: headmanId,
@@ -834,7 +841,7 @@ const seedHamlet = (ctx: BuildContext, settlement: Settlement, settlementName: s
     kind: 'hamlet_household',
     name: `Household of ${settlementName}`,
     homeSettlement: settlement.id,
-    treasury: hamletRng.int(10, 80),
+    treasury: hamletRng.int(50, 400),
   });
   const headman = createCharacter({
     id: headmanId,
@@ -1344,7 +1351,8 @@ const seedMerchantGuilds = (
       kind: 'merchant_guild',
       name: `Guild of Merchants of ${settlement.name}`,
       homeSettlement: settlement.id,
-      treasury: 500,
+      // 5× scaled per realism pass 8.
+      treasury: 2500,
     });
     addActor(ctx, guildActor);
 
@@ -1422,7 +1430,8 @@ const seedInitialBanditCamps = (
       id: aId,
       kind: 'bandit_camp',
       name: `${leaderName}'s band`,
-      treasury: rng.int(20, 100),
+      // 5× scaled per realism pass 8.
+      treasury: rng.int(100, 500),
     });
     const leader = createCharacter({
       id: leaderId,

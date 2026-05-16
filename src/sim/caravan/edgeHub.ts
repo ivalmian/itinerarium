@@ -129,51 +129,45 @@ const addImportOperatingTreasury = (caravan: Caravan): void => {
  * when local surplus depresses prices enough — the same margin
  * filter as everything else.
  */
+// Off-map landed prices. 5× scaled vs. the pre-realism-pass baseline
+// (realism pass 8) so the integer-coin quote rule + scaled local
+// salvage floors line up: the same gradient between cheap bulk goods
+// and high-value luxuries, but with enough headroom over the 1-coin
+// floor that staple chains keep a price ladder.
 export const DEFAULT_GLOBAL_PRICES: ReadonlyMap<ResourceId, number> = new Map<ResourceId, number>([
   // Bulk — ordinary trade
-  [resourceId('food.grain'), 1.5],
-  // Strategic staple: essential, geographically bottlenecked, and commonly
-  // long-haul traded when local salt pans/mines cannot cover demand.
-  [resourceId('mineral.salt'), 8],
-  // Amphora-packed: heavy per unit but command long-haul prices
-  // when surplus depresses the local market (docs/08 §"luxuries").
-  [resourceId('food.olive_oil'), 150],
-  [resourceId('food.wine'), 200],
-  [resourceId('food.cheese'), 5],
+  [resourceId('food.grain'), 7.5],
+  [resourceId('mineral.salt'), 40],
+  [resourceId('food.olive_oil'), 750],
+  [resourceId('food.wine'), 1000],
+  [resourceId('food.cheese'), 25],
   // Manufactured ordinary
-  [resourceId('goods.cloth'), 12],
-  // Strategic refined input. Iron bars are heavy enough that long-haul
-  // import only clears under real scarcity, but shortages should be solvable
-  // by actual caravans rather than leaving smithies permanently capped.
-  [resourceId('metal.iron'), 12],
-  [resourceId('goods.tools'), 25],
-  // Weapon archetypes per docs/03 §"Weapon-archetype substitution
-  // policy". Off-map landed prices reflect the value-to-weight ratio
-  // of each item; mass-produced gear (gladius, helmet) lands cheaper
-  // than rarer specialty weapons (body_armor, bow).
-  [resourceId('goods.gladius'), 50],
-  [resourceId('goods.hasta'), 30],
-  [resourceId('goods.pilum'), 35],
-  [resourceId('goods.dagger'), 20],
-  [resourceId('goods.bow'), 55],
-  [resourceId('goods.arrow'), 4],
-  [resourceId('goods.sling'), 8],
-  [resourceId('goods.sling_bullet'), 1],
-  [resourceId('goods.helmet'), 60],
-  [resourceId('goods.body_armor'), 200],
-  [resourceId('goods.shield'), 45],
+  [resourceId('goods.cloth'), 60],
+  [resourceId('metal.iron'), 60],
+  [resourceId('goods.tools'), 125],
+  // Weapon archetypes per docs/03 §"Weapon-archetype substitution policy".
+  [resourceId('goods.gladius'), 250],
+  [resourceId('goods.hasta'), 150],
+  [resourceId('goods.pilum'), 175],
+  [resourceId('goods.dagger'), 100],
+  [resourceId('goods.bow'), 275],
+  [resourceId('goods.arrow'), 20],
+  [resourceId('goods.sling'), 40],
+  [resourceId('goods.sling_bullet'), 5],
+  [resourceId('goods.helmet'), 300],
+  [resourceId('goods.body_armor'), 1000],
+  [resourceId('goods.shield'), 225],
   // Status / luxury
-  [resourceId('goods.luxury_textiles'), 100],
-  [resourceId('metal.silver'), 700],
-  [resourceId('metal.gold'), 8000],
-  // Exotics (imports priced as what they fetch in-province; imports buy
-  // these from off-map at lower prices and land them at this number).
-  [resourceId('exotic.spices'), 80],
-  [resourceId('exotic.silk'), 200],
-  [resourceId('exotic.incense'), 60],
-  [resourceId('exotic.dyes'), 120],
+  [resourceId('goods.luxury_textiles'), 500],
+  [resourceId('metal.silver'), 3500],
+  [resourceId('metal.gold'), 40000],
+  // Exotics
+  [resourceId('exotic.spices'), 400],
+  [resourceId('exotic.silk'), 1000],
+  [resourceId('exotic.incense'), 300],
+  [resourceId('exotic.dyes'), 600],
   // People as cargo
-  [resourceId('people.slave'), 600],
+  [resourceId('people.slave'), 3000],
 ]);
 
 export interface ImportPaletteEntry {
