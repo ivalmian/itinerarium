@@ -20,6 +20,7 @@
     "format:check": "prettier --check src",
     "wasm:build": "asc assembly/pathfinding.ts --runtime stub -O --noAssert -o src/wasm/pathfinding.kernel.wasm && node scripts/embed-pathfinding-wasm.mjs",
     "bench:pathfinding": "tsx scripts/bench-pathfinding.ts",
+    "audit": "tsx scripts/audit-resource-graph.ts",
     "burnin": "tsx src/cli/burnin.ts",
     "build": "vite build",
     "dev": "vite"
