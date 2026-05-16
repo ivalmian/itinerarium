@@ -17,6 +17,7 @@
  */
 
 import { tickYearly } from '../population/vitalRates.js';
+import { tickAnnualAging } from '../people/registry.js';
 import { actorId as _actorId } from '../types.js';
 import { recomputeCatchment, shouldRecomputeCatchment } from '../world/settlement.js';
 import type { Settlement } from '../world/settlement.js';
@@ -63,6 +64,16 @@ export const annualPhase = (
     // Reset famine pressure each year so a one-bad-harvest year
     // doesn't permanently haunt the settlement.
     faminePressure.set(settlement, { consecutiveShortageDays: 0, lastShortageDay: -1 });
+  }
+  // Per docs/04 §"Person registry for moving units": age every alive
+  // Person by one year and apply baseline Roman-era mortality. The
+  // registry is event-driven the rest of the year; this is the one
+  // pass that touches every record.
+  if (world.persons !== undefined && world.persons.size > 0) {
+    const deaths = tickAnnualAging(world.persons, today + 1, rng.derive('persons-aging'));
+    if (deaths > 0) {
+      events.push({ type: 'persons_aged', deaths });
+    }
   }
   // Dynamic catchment recompute (docs/05).
   for (const settlement of world.settlements.values()) {

@@ -37,6 +37,7 @@ import { createRng, type Rng } from '../sim/rng.js';
 import {
   actorId,
   caravanId,
+  personId,
   resourceId,
   type ActorId,
   type CaravanId,
@@ -44,6 +45,12 @@ import {
   type ResourceId,
   type SettlementId,
 } from '../sim/types.js';
+import { createPerson, registerPerson, type Person } from '../sim/people/index.js';
+import {
+  generateLatinPraenomen,
+  generateLatinNomen,
+} from '../sim/politics/character.js';
+import { parseDemoKey } from '../sim/population/demographics.js';
 import { createActor, type Actor } from '../sim/politics/actor.js';
 import { MAX_ACTIVE_WORLD_CARAVANS } from '../sim/caravan/limits.js';
 import {
@@ -484,7 +491,138 @@ export const seedCaravans = (opts: SeedCaravansOpts): void => {
     const caravan = buildOneCaravan(rng.derive(`build-${i}`), world, owner, idx);
     if (caravan === undefined) continue;
     world.caravans.set(caravan.id, caravan);
+    // Per docs/04 §"Person registry for moving units": materialize a
+    // Person record for every crew member, drawing names + ages from
+    // the crew's demographics map. Each guard gets a kit issued per
+    // docs/03 §"Weapon-archetype substitution policy".
+    materializePersonsForCaravan(
+      world,
+      caravan,
+      owner.actor,
+      rng.derive(`crew-persons-${i}`),
+    );
     caravansByOwner.set(ownerKey, (caravansByOwner.get(ownerKey) ?? 0) + 1);
     idx += 1;
   }
 };
+
+let _personCounter = 0;
+
+const materializePersonsForCaravan = (
+  world: WorldState,
+  caravan: Caravan,
+  ownerActor: Actor,
+  rng: Rng,
+): void => {
+  if (world.persons === undefined || world.personEquipment === undefined) return;
+  const factionForOwner = findFactionForActor(world, ownerActor.id);
+  for (const member of caravan.crew) {
+    if (member.demographics === undefined) continue;
+    for (const [key, count] of member.demographics) {
+      if (!Number.isInteger(count) || count <= 0) continue;
+      const { sex, age: ageBand } = parseDemoKey(key);
+      const ageMid = ageBandMidpoint(ageBand);
+      for (let i = 0; i < count; i++) {
+        const id = personId(`person-c-${String(_personCounter++).padStart(6, '0')}`);
+        const person = createPerson({
+          id,
+          name: `${generateLatinPraenomen(rng, sex)} ${generateLatinNomen(rng)}`,
+          age: ageMid,
+          sex,
+          class: crewMemberClass(member.kind),
+          faction: factionForOwner,
+          role: crewKindToPersonRole(member.kind),
+          bornOnDay: 0,
+          unitId: String(caravan.id),
+        });
+        registerPerson(world.persons, person);
+        // Equip per role + the crew's weapons/armor scalar.
+        const kit = derivedKitForCrew(member.kind, member.weapons, member.armor);
+        if (kit.length > 0) {
+          const slot = new Map<ResourceId, number>();
+          for (const item of kit) slot.set(item, (slot.get(item) ?? 0) + 1);
+          world.personEquipment.set(id, slot);
+        }
+      }
+    }
+  }
+};
+
+const findFactionForActor = (world: WorldState, actor: ActorId) => {
+  for (const [fid, f] of world.factions) {
+    if (f.actor === actor) return fid;
+  }
+  // Synthesize a stable id when the owner has no faction (e.g., an
+  // off-map merchant house). Persons still need *some* faction tag so
+  // future reputation queries don't crash.
+  return `faction:${String(actor)}` as Person['faction'];
+};
+
+const crewMemberClass = (kind: CrewKind): Person['class'] => {
+  // Merchants & guards are typically free citizens; drovers can be
+  // freedmen but plebeian is the default class for caravan crew. We
+  // don't yet specialize per-crew-member; this is a coarse default.
+  if (kind === 'merchant') return 'plebeian';
+  if (kind === 'caravan_guard' || kind === 'soldier') return 'plebeian';
+  return 'plebeian';
+};
+
+const crewKindToPersonRole = (kind: CrewKind): Person['role'] => {
+  switch (kind) {
+    case 'merchant':
+      return 'merchant';
+    case 'drover':
+      return 'drover';
+    case 'caravan_guard':
+      return 'caravan_guard';
+    case 'soldier':
+      return 'soldier';
+  }
+};
+
+const derivedKitForCrew = (
+  kind: CrewKind,
+  weaponsScore: number,
+  armorScore: number,
+): readonly ResourceId[] => {
+  // Merchants and drovers carry a sidearm at best; only guards/soldiers
+  // get a real kit. Substitution priority follows docs/03.
+  const kit: ResourceId[] = [];
+  if (kind === 'merchant' || kind === 'drover') {
+    if (weaponsScore >= 0.1) kit.push(resourceId('goods.dagger'));
+    return kit;
+  }
+  // Guard / soldier
+  if (weaponsScore >= 0.7) {
+    kit.push(resourceId('goods.gladius'));
+    kit.push(resourceId('goods.pilum'));
+  } else if (weaponsScore >= 0.4) {
+    kit.push(resourceId('goods.hasta'));
+  } else if (weaponsScore >= 0.1) {
+    kit.push(resourceId('goods.dagger'));
+  }
+  if (armorScore >= 0.6) {
+    kit.push(resourceId('goods.helmet'));
+    kit.push(resourceId('goods.body_armor'));
+    kit.push(resourceId('goods.shield'));
+  } else if (armorScore >= 0.3) {
+    kit.push(resourceId('goods.helmet'));
+    kit.push(resourceId('goods.shield'));
+  } else if (armorScore >= 0.1) {
+    kit.push(resourceId('goods.shield'));
+  }
+  return kit;
+};
+
+const ageBandMidpoint = (band: string): number => {
+  if (band === '80+') return 82;
+  const dash = band.indexOf('-');
+  if (dash === -1) return 30;
+  const lo = Number(band.slice(0, dash));
+  const hi = Number(band.slice(dash + 1));
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return 30;
+  return Math.round((lo + hi) / 2);
+};
+
+// Suppress unused-import warning if PersonId isn't referenced directly.
+void personId;

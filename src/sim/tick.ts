@@ -275,6 +275,16 @@ export type TickEvent =
       readonly released: number;
     }
   | {
+      /**
+       * Per docs/04 §"Person registry for moving units": the annual
+       * aging pass aged every alive Person by one year and applied
+       * baseline mortality. `deaths` is the count of Persons that
+       * transitioned to `dead` during the pass.
+       */
+      readonly type: 'persons_aged';
+      readonly deaths: number;
+    }
+  | {
       readonly type: 'settlement_abandoned';
       readonly settlement: SettlementId;
     }
