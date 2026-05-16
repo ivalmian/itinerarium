@@ -251,7 +251,20 @@ export const applyBanditCasualties = (
 /** Bandit baseline training per docs/12 §"Unit stats" (~0.4 with ± per camp). */
 const BANDIT_BASE_TRAINING = 0.4;
 
-export const campAsCombatUnit = (camp: BanditCamp, posture: Posture): CombatUnit => {
+/**
+ * Build a CombatUnit view of a camp.
+ *
+ * `scoreOverride` lets callers (with access to the world's Person
+ * registry + personEquipment) supply weapons/armor scores derived
+ * from the actual issued kit per docs/12 §"Unit stats". When omitted,
+ * the camp's static `weaponsPerBandit` / `armorPerBandit` scalars are
+ * used — keeps existing fixtures and tests working unchanged.
+ */
+export const campAsCombatUnit = (
+  camp: BanditCamp,
+  posture: Posture,
+  scoreOverride?: { readonly weapons: number; readonly armor: number },
+): CombatUnit => {
   if (camp.banditCount <= 0) {
     throw new Error(`Camp ${String(camp.id)} has no bandits to field`);
   }
@@ -262,8 +275,8 @@ export const campAsCombatUnit = (camp: BanditCamp, posture: Posture): CombatUnit
     id: `bandit:${String(camp.id)}`,
     count: camp.banditCount,
     training,
-    weapons: camp.weaponsPerBandit,
-    armor: camp.armorPerBandit,
+    weapons: scoreOverride?.weapons ?? camp.weaponsPerBandit,
+    armor: scoreOverride?.armor ?? camp.armorPerBandit,
     health: camp.averageHealth,
     posture,
     terrainBonus: 0,

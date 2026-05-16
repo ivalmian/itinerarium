@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { personId, resourceId } from '../types.js';
 import {
+  averageCombatScoresForUnit,
+  combatScoresForPerson,
   emptyPersonEquip,
   emptyUnitInventory,
   issueOne,
@@ -100,6 +102,73 @@ describe('issueStandardKit', () => {
     const issued = issueStandardKit(inv, equip, personId('p1'));
     expect(issued.get(GLADIUS)).toBe(1);
     expect(issued.size).toBe(1);
+  });
+});
+
+describe('combatScoresForPerson (docs/12 §"Unit stats")', () => {
+  it('returns 0 for absent or empty equipment', () => {
+    expect(combatScoresForPerson(undefined)).toEqual({ weapons: 0, armor: 0 });
+    expect(combatScoresForPerson(new Map())).toEqual({ weapons: 0, armor: 0 });
+  });
+
+  it('picks the best melee + ranged contribution and clamps to [0, 1]', () => {
+    // Full kit: gladius (1.0 melee), bow (0.9 ranged), helmet+body+shield (1.0 armor).
+    const slots = new Map([
+      [GLADIUS, 1],
+      [BOW, 1],
+      [HELMET, 1],
+      [BODY_ARMOR, 1],
+      [SHIELD, 1],
+    ]);
+    const { weapons, armor } = combatScoresForPerson(slots);
+    // weapons = (1.0 + 0.9) / 2 = 0.95
+    expect(weapons).toBeCloseTo(0.95, 5);
+    // armor = 0.3 + 0.5 + 0.2 = 1.0
+    expect(armor).toBe(1);
+  });
+
+  it('takes the BEST melee when multiple are carried (gladius beats hasta)', () => {
+    const slots = new Map([
+      [GLADIUS, 1],
+      [HASTA, 1],
+    ]);
+    // No ranged → ranged contribution 0. weapons = (1.0 + 0) / 2 = 0.5.
+    expect(combatScoresForPerson(slots).weapons).toBeCloseTo(0.5, 5);
+  });
+
+  it('a dagger-only soldier scores 0.25 weapons (0.5 melee, no ranged)', () => {
+    const slots = new Map([[resourceId('goods.dagger'), 1]]);
+    expect(combatScoresForPerson(slots).weapons).toBeCloseTo(0.25, 5);
+    expect(combatScoresForPerson(slots).armor).toBe(0);
+  });
+});
+
+describe('averageCombatScoresForUnit', () => {
+  it('returns null when equipment is undefined', () => {
+    expect(averageCombatScoresForUnit([personId('p')], undefined)).toBeNull();
+  });
+
+  it('returns null when the unit has no Persons', () => {
+    expect(averageCombatScoresForUnit([], emptyPersonEquip())).toBeNull();
+  });
+
+  it('averages per-Person scores across the unit', () => {
+    const equip = emptyPersonEquip();
+    // Soldier A: full gladius + helmet+armor+shield → weapons 0.5, armor 1.0
+    equip.set(personId('a'), new Map([
+      [GLADIUS, 1],
+      [HELMET, 1],
+      [BODY_ARMOR, 1],
+      [SHIELD, 1],
+    ]));
+    // Soldier B: dagger only → weapons 0.25, armor 0
+    equip.set(personId('b'), new Map([[resourceId('goods.dagger'), 1]]));
+    const scores = averageCombatScoresForUnit([personId('a'), personId('b')], equip);
+    // Mean weapons = (0.5 + 0.25) / 2 = 0.375
+    // Mean armor   = (1.0 + 0)   / 2 = 0.5
+    expect(scores).not.toBeNull();
+    expect(scores!.weapons).toBeCloseTo(0.375, 5);
+    expect(scores!.armor).toBeCloseTo(0.5, 5);
   });
 });
 

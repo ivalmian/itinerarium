@@ -65,7 +65,8 @@ import {
   mergeDemographics,
   ROLE_BIASES,
 } from '../population/demographics.js';
-import { markPersonsDeadByDemographics } from '../people/registry.js';
+import { markPersonsDeadByDemographics, personIdsInUnit } from '../people/registry.js';
+import { averageCombatScoresForUnit } from '../people/equipment.js';
 import { createFaction } from '../politics/faction.js';
 import {
   createNewsCarrier,
@@ -607,6 +608,17 @@ const executeSettlementRaid = (
     militiaCount,
     wallLevel,
     settlementStockpile: stockpile,
+    // Per docs/12 §"Unit stats": derive the attacker's weapons/armor
+    // from the actual kit each bandit carries when the Person registry
+    // is populated; otherwise fall back to camp.weaponsPerBandit.
+    ...(() => {
+      if (world.persons === undefined) return {};
+      const scores = averageCombatScoresForUnit(
+        personIdsInUnit(world.persons, String(camp.id)),
+        world.personEquipment,
+      );
+      return scores !== null ? { attackerScoreOverride: scores } : {};
+    })(),
     rng: rng.derive('raid'),
   });
 
@@ -1010,10 +1022,29 @@ const resolvePartyMissionAtTarget = (
         return;
       }
       const synth = partyAsSyntheticCamp(party);
+      // Per docs/12: derive both attacker (party) and defender (caravan)
+      // weapons/armor from the Person registry + equipment when present,
+      // so combat reflects who is actually carrying what.
+      const attackerScoreOverride =
+        world.persons !== undefined
+          ? averageCombatScoresForUnit(
+              personIdsInUnit(world.persons, String(party.id)),
+              world.personEquipment,
+            ) ?? undefined
+          : undefined;
+      const defenderScoreOverride =
+        world.persons !== undefined
+          ? averageCombatScoresForUnit(
+              personIdsInUnit(world.persons, String(targetCaravan.id)),
+              world.personEquipment,
+            ) ?? undefined
+          : undefined;
       const result = resolveAmbush({
         attacker: synth,
         target: targetCaravan,
         ambushHexTerrain: tile.terrain,
+        ...(attackerScoreOverride !== undefined ? { attackerScoreOverride } : {}),
+        ...(defenderScoreOverride !== undefined ? { defenderScoreOverride } : {}),
         rng: rng.derive('ambush'),
       });
       // Apply caravan casualties: use the canonical helper so

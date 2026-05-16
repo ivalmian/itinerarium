@@ -20,15 +20,20 @@ export {
   allAlive,
   ageToBand,
   markPersonsDeadByDemographics,
+  personIdsInUnit,
   tickAnnualAging,
 } from './registry.js';
 
 export {
   type UnitInventory,
   type PersonEquip,
+  ARMOR_CONTRIBUTION,
   DEFENSE_SLOTS,
   MELEE_PRIORITY,
   RANGED_PRIORITY,
+  WEAPON_EFFECTIVE_STRENGTH,
+  averageCombatScoresForUnit,
+  combatScoresForPerson,
   emptyUnitInventory,
   emptyPersonEquip,
   issueOne,
