@@ -49,6 +49,7 @@ import {
   type SettlementId,
 } from '../types.js';
 import {
+  buildRecipeWageContext,
   payProductionWagesForWorkerDaysByClass,
   wageAffordableCapacityForRecipe,
   wagePriceSignalForSettlement,
@@ -126,6 +127,11 @@ export const productionPhase = (
             buildings,
           );
           if (inventoryCapacity <= 0) continue;
+          const recipeWageContext = buildRecipeWageContext(
+            recipe,
+            wagePriceSignal,
+            wagePerWorkerDay,
+          );
           const wageAffordableCapacity = wageAffordableCapacityForRecipe(
             world,
             settlement,
@@ -203,13 +209,13 @@ export const productionPhase = (
               fraction,
               ownerActor.kind,
             );
-            payProductionWagesForWorkerDaysByClass(
+            const wageEconomics = payProductionWagesForWorkerDaysByClass(
               world,
               settlement,
               ownerActor,
               consumed.paidWorkerDaysByClass,
               wagePriceSignal,
-              wagePerWorkerDay,
+              recipeWageContext,
             );
             // Decrement building capacity for the day.
             b.capacity = Math.max(0, b.capacity - result.buildingCapacityUsed);
@@ -219,6 +225,29 @@ export const productionPhase = (
               settlement: settlement.id,
               recipe: recipe.id,
               fraction: result.ranAtFraction,
+            });
+            // Per docs/14 §"Per-recipe economics CSV": surface the
+            // output value, input value, wage paid, and the residual
+            // owner take so burn-in instruments can audit where the
+            // surplus is going (worker vs owner per class per recipe).
+            const outputValue = recipeOutputValueAtPrices(recipe, fraction, wagePriceSignal);
+            const inputValue = recipeInputValueAtPrices(recipe, fraction, wagePriceSignal);
+            const wagePaidTotal =
+              wageEconomics.wagePaidCoinTotal + wageEconomics.wagePaidInKindValueTotal;
+            events.push({
+              type: 'recipe_economics',
+              settlement: settlement.id,
+              recipe: recipe.id,
+              owner: ownerActor.id,
+              outputValue,
+              inputValue,
+              wagePaidCoin: wageEconomics.wagePaidCoinTotal,
+              wagePaidInKindValue: wageEconomics.wagePaidInKindValueTotal,
+              wagePaidTotal,
+              ownerTake: outputValue - inputValue - wagePaidTotal,
+              paidWorkerDays: wageEconomics.paidWorkerDaysTotal,
+              subsistenceWagePerDay: wageEconomics.subsistenceWagePerDay,
+              marginalProductPerWorkerDay: wageEconomics.marginalProductPerWorkerDay,
             });
           }
         }
@@ -574,6 +603,38 @@ const productionOrderForSettlement = (
     return a.topo - b.topo;
   });
   return ranked.map((entry) => entry.recipe);
+};
+
+/**
+ * Sum the value (at current local prices) of one fractional recipe
+ * run's outputs. Used to emit the recipe_economics event so burn-in
+ * can audit owner-vs-worker surplus split per recipe.
+ */
+const recipeOutputValueAtPrices = (
+  recipe: RecipeDef,
+  fraction: number,
+  prices: ReadonlyMap<ResourceId, number>,
+): number => {
+  let value = 0;
+  for (const [r, qPerRun] of recipe.outputs) {
+    if (isServiceResource(r)) continue;
+    const p = prices.get(r) ?? 0;
+    if (p > 0) value += qPerRun * fraction * p;
+  }
+  return value;
+};
+
+const recipeInputValueAtPrices = (
+  recipe: RecipeDef,
+  fraction: number,
+  prices: ReadonlyMap<ResourceId, number>,
+): number => {
+  let value = 0;
+  for (const [r, qPerRun] of recipe.inputs) {
+    const p = prices.get(r) ?? 0;
+    if (p > 0) value += qPerRun * fraction * p;
+  }
+  return value;
 };
 
 const DEFAULT_PRODUCTION_OUTPUT_STOCK_TARGET_DAYS = 30;

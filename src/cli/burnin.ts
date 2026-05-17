@@ -47,7 +47,10 @@ interface ParsedFlags {
   instruments: readonly Instrument[];
 }
 
-const SUPPORTED_INSTRUMENTS = ['time-series'] as const satisfies readonly Instrument[];
+const SUPPORTED_INSTRUMENTS = [
+  'time-series',
+  'recipe-economics',
+] as const satisfies readonly Instrument[];
 
 const parseInstruments = (raw: string): readonly Instrument[] => {
   const parts = raw

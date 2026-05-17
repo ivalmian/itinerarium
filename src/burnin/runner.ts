@@ -48,6 +48,10 @@ import {
   createTimeSeriesInstrument,
   type TimeSeriesInstrument,
 } from './instruments/timeSeriesCsv.js';
+import {
+  createRecipeEconomicsInstrument,
+  type RecipeEconomicsInstrument,
+} from './instruments/recipeEconomicsCsv.js';
 import type { Day } from '../sim/types.js';
 
 // --- Public types -----------------------------------------------------------
@@ -64,8 +68,16 @@ export type SnapshotFrequency = 'never' | 'month' | 'year';
  *   `outDir/settlement-<id>-resource-<r>.csv` file per pair. Generates
  *   thousands of files on a realistic burn-in — intended for manual debug
  *   invocations only, NOT the watchdog.
+ *
+ * - `recipe-economics`: per-(day, settlement, recipe, owner) CSV with
+ *   output/input value, wage paid, owner take, paid worker-days, and
+ *   the recipe's marginal product per worker-day. Surfaces the
+ *   owner-vs-worker surplus split and family/settlement-level
+ *   production dynamics per docs/08 §"Marginal-product wages" and
+ *   docs/14 §"Per-recipe economics CSV". Single output file
+ *   `outDir/recipe-economics.csv`.
  */
-export type Instrument = 'time-series';
+export type Instrument = 'time-series' | 'recipe-economics';
 
 export interface BurnInOpts {
   readonly seed: string;
@@ -221,6 +233,13 @@ export const runBurnIn = async (opts: BurnInOpts): Promise<BurnInReport> => {
         : {}),
     });
   }
+  let recipeEconomicsInstrument: RecipeEconomicsInstrument | null = null;
+  if (instruments.includes('recipe-economics')) {
+    recipeEconomicsInstrument = createRecipeEconomicsInstrument({ outDir: opts.outDir });
+  }
+  // Recipe-economics needs TickEvents; collect them only when the
+  // instrument is on so the watchdog's hot path stays event-free.
+  const collectEvents = recipeEconomicsInstrument !== null;
 
   const summaryAtStart: BurnInSummary = {
     totalSettlementsAtStart: world.settlements.size,
@@ -268,7 +287,7 @@ export const runBurnIn = async (opts: BurnInOpts): Promise<BurnInReport> => {
     // Burn-in invariants currently inspect world state, not full tick event
     // payloads. Keep tick's internal labor-event path but skip returned
     // diagnostic event arrays on this hot path.
-    const result = tick({ world, rng, collectEvents: false });
+    const result = tick({ world, rng, collectEvents });
     world = result.world;
 
     // Accumulate event-derived stats.
@@ -326,6 +345,9 @@ export const runBurnIn = async (opts: BurnInOpts): Promise<BurnInReport> => {
     if (timeSeriesInstrument !== null) {
       timeSeriesInstrument.tick(world, checkDay as Day);
     }
+    if (recipeEconomicsInstrument !== null) {
+      recipeEconomicsInstrument.tick(world, checkDay as Day, result.events);
+    }
 
     // Yield to the event loop occasionally so very long runs don't stall it.
     if ((dayCount + 1) % yieldEvery === 0) {
@@ -375,6 +397,9 @@ export const runBurnIn = async (opts: BurnInOpts): Promise<BurnInReport> => {
     await writeFile(reportPath, JSON.stringify(report, null, 2), 'utf8');
   }
 
+  if (recipeEconomicsInstrument !== null) {
+    await recipeEconomicsInstrument.flush();
+  }
   if (timeSeriesInstrument !== null) {
     await timeSeriesInstrument.flush();
   }

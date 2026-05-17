@@ -108,6 +108,11 @@ export const constructionPhase = (
         }
       }
       if (owner !== undefined && (masonApplied > 0 || carpenterApplied > 0)) {
+        // Construction wages pay the subsistence basket floor only —
+        // there's no per-day marginal product to share (the building's
+        // future output stream is too speculative to price at the
+        // worker's wage). Class shares × mp=0 collapses to subsistence
+        // for free classes, slaves still 0.
         payProductionWages(
           world,
           settlement,
@@ -118,7 +123,7 @@ export const constructionPhase = (
             [CARPENTER_JOB, carpenterApplied],
           ]),
           wagePriceSignal,
-          wagePerWorkerDay,
+          { subsistenceWagePerDay: wagePerWorkerDay, marginalProductPerWorkerDay: 0 },
         );
       }
       if (pb.workerDaysRemaining <= 0) completed.push(i);
