@@ -447,20 +447,25 @@ export const noOrphanedHexRefs: Invariant = ({ world }) => {
 };
 
 /**
- * For every settlement, every resource with a recent outflow must have an
- * entry in lastClearingPrice. Pure recent inflow can be production output
- * (a mine produced iron ore; a farm harvested grain) and does not imply a
- * market trade happened yet. Outflow means goods left the local owner pool
- * through market consumption, local trade, tax, or caravan loading; that
- * should have a price signal.
+ * For every settlement, every resource that **left the local owner pool
+ * via a market mechanism** (export, caravan, tax, fence) must have an
+ * entry in lastClearingPrice — those are real trades and should leave
+ * a price signal. Pure consumption outflow (a tannery owner consumes
+ * its own hides in `tan_leather`) is owner-internal and does NOT need
+ * a price signal because no exchange occurred.
+ *
+ * `recentOutflows = recentExports + recentConsumption`; subtract the
+ * consumption-only portion before checking for a missing price.
  */
 export const marketClearedAtAllSettlements: Invariant = ({ world }) => {
   const out: InvariantViolation[] = [];
   for (const settlement of world.settlements.values()) {
     const m = settlement.market;
     const traded = new Set<string>();
-    for (const [resource, qty] of m.recentOutflows) {
-      if (qty > 0) traded.add(String(resource));
+    for (const [resource, totalOutflow] of m.recentOutflows) {
+      const consumed = m.recentConsumption.get(resource) ?? 0;
+      const tradeOutflow = totalOutflow - consumed;
+      if (tradeOutflow > 0) traded.add(String(resource));
     }
     for (const resource of traded) {
       let found = false;
