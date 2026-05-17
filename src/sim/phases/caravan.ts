@@ -165,7 +165,9 @@ const caravanSellableQuantity = (c: Caravan, resource: ResourceId, qty: number):
 
 const caravanHasMarketCargo = (c: Caravan): boolean => {
   for (const [resource, qty] of c.cargo) {
-    if (caravanSellableQuantity(c, resource, qty) > 1e-9) return true;
+    // Whole-unit trade boundary (docs/08): sub-1-unit residues aren't
+    // sellable, so they don't count as market cargo either.
+    if (caravanSellableQuantity(c, resource, qty) >= 1) return true;
   }
   return false;
 };
@@ -393,7 +395,9 @@ const sellCaravanCargoAtLocalMarkets = (
 ): void => {
   for (const [resource, currentQty] of Array.from(caravan.cargo.entries())) {
     const sellableQty = caravanSellableQuantity(caravan, resource, currentQty);
-    if (sellableQty <= 1e-9) continue;
+    // Whole-unit trade boundary per docs/08 §"Whole-unit transactions":
+    // sub-1-unit residues are below the smallest tradable quantity.
+    if (sellableQty < 1) continue;
     const buyer = bestLocalBuyer(world, settlements, caravan, resource);
     if (buyer === null) continue;
     const maxByTreasury = buyer.actor.treasury / buyer.price;
@@ -407,7 +411,8 @@ const sellCaravanCargoAtLocalMarkets = (
     if (qty <= 0) continue;
     const coin = qty * buyer.price;
     const remaining = currentQty - qty;
-    if (remaining > 1e-9) caravan.cargo.set(resource, remaining);
+    // Whole-unit cargo: residue under 1 unit is unsellable — drop it.
+    if (remaining >= 1) caravan.cargo.set(resource, remaining);
     else caravan.cargo.delete(resource);
     caravan.treasury += coin;
     buyer.actor.treasury -= coin;
@@ -415,6 +420,12 @@ const sellCaravanCargoAtLocalMarkets = (
     else increaseStockpile(buyer.actor, buyer.settlement.id, resource, qty);
     // Caravan sold cargo to the settlement: import for the settlement.
     recordImport(buyer.settlement, resource, qty);
+    // Per docs/08 §"Transaction observability": write the trade's
+    // execution price so the settlement's price ladder reflects every
+    // participant, not just yesterday's CDA. buyer.price is integer
+    // coin per docs/08 §"Integer-coin prices" (it came from the
+    // residual book ladder or lastClearingPrice).
+    recordClearingPrice(buyer.settlement, resource, buyer.price);
     events.push({
       type: 'caravan_traded',
       caravan: caravan.id,
@@ -441,8 +452,10 @@ const buyPlannedCargoAtLocalMarkets = (
     const quotes = localSellerQuotes(world, settlements, resource);
     let remainingTarget = targetQty;
     for (const seller of quotes) {
-      if (remainingTarget <= 1e-9) break;
+      // Whole-unit trade boundary: stop when sub-1-unit remains to buy.
+      if (remainingTarget < 1) break;
       const capacityRemainingKg = caravanTradeCargoCapacityRemainingKg(caravan);
+      // Kg residue is naturally fractional; treat near-zero as zero.
       if (capacityRemainingKg <= 1e-9) break;
       const maxByCapacity = weightKg > 0 ? capacityRemainingKg / weightKg : remainingTarget;
       const sameOwner = seller.actor.id === caravan.ownerActor;
@@ -462,6 +475,9 @@ const buyPlannedCargoAtLocalMarkets = (
       }
       // Caravan picked up cargo from this settlement: export.
       recordExport(seller.settlement, resource, qty);
+      // Per docs/08 §"Transaction observability": record the trade's
+      // execution price even though it wasn't a CDA crossing.
+      if (!sameOwner) recordClearingPrice(seller.settlement, resource, seller.price);
       remainingTarget -= qty;
       boughtUnits += qty;
       events.push({
@@ -597,12 +613,13 @@ const estimateLocalRationPurchaseKg = (
   let remainingCapacityKg = Math.max(0, totalCarryKg(caravan) - totalCargoWeightKg(caravan));
   let remainingTreasury = Math.max(0, treasuryBudget);
   for (const quote of quotes) {
-    if (remainingCapacityKg <= 1e-9) break;
+    if (remainingCapacityKg <= 1e-9) break; // kg residue, float
     const sameOwner = quote.seller.actor.id === caravan.ownerActor;
     const maxByCapacity = remainingCapacityKg / quote.weightKgPerUnit;
     const maxByTreasury = sameOwner ? quote.seller.stock : remainingTreasury / quote.seller.price;
     const qty = Math.min(quote.seller.stock, maxByCapacity, maxByTreasury);
-    if (qty <= 1e-9) continue;
+    // Whole-unit trade boundary (docs/08): sub-1-unit quotes don't fire.
+    if (qty < 1) continue;
     const kg = qty * quote.weightKgPerUnit;
     purchasableKg += kg;
     remainingCapacityKg -= kg;
@@ -632,10 +649,10 @@ const remitStandingCaravanProfitAtHome = (
     caravanMissingRationReserveKg(caravan),
   );
   const surplus = caravan.treasury - reserveCoin;
-  if (surplus <= 1e-9) return 0;
+  if (surplus <= 0) return 0; // integer coin per docs/08
 
-  const coin = surplus * MERCHANT_CARAVAN_HOME_REMITTANCE_RATE;
-  if (coin <= 1e-9) return 0;
+  const coin = Math.floor(surplus * MERCHANT_CARAVAN_HOME_REMITTANCE_RATE);
+  if (coin <= 0) return 0;
   caravan.treasury -= coin;
   owner.treasury += coin;
   events.push({
@@ -770,9 +787,10 @@ const consignOffMapImportCargo = (
   let consigned = 0;
   for (const [resource, currentQty] of Array.from(caravan.cargo.entries())) {
     const qty = caravanSellableQuantity(caravan, resource, currentQty);
-    if (qty <= 1e-9) continue;
+    // Whole-unit transaction (docs/08): sub-1-unit cargo isn't consignable.
+    if (qty < 1) continue;
     const remaining = currentQty - qty;
-    if (remaining > 1e-9) caravan.cargo.set(resource, remaining);
+    if (remaining >= 1) caravan.cargo.set(resource, remaining);
     else caravan.cargo.delete(resource);
     increaseStockpile(factor.actor, factor.settlement.id, resource, qty);
     // Off-map factor consignment lands at this settlement: import.
@@ -880,16 +898,19 @@ const buyOwnerAssemblyStockAtLocalMarket = (
   targetQty: number,
 ): number => {
   let remaining = Math.max(0, targetQty - getStockAt(buyer, settlement.id, resource));
-  if (remaining <= 1e-9) return 0;
+  // Whole-unit trade boundary (docs/08): sub-1-unit assembly buys are
+  // not orderable. Buyer treasury is integer-coin per docs/08
+  // §"Integer-coin prices".
+  if (remaining < 1) return 0;
   let bought = 0;
   for (const seller of localSellerQuotes(world, [settlement], resource)) {
-    if (remaining <= 1e-9) break;
+    if (remaining < 1) break;
     if (seller.actor.id === buyer.id) continue;
     const spendable = Math.max(0, buyer.treasury - MERCHANT_CARAVAN_MIN_OPERATING_TREASURY);
-    if (spendable <= 1e-9) break;
+    if (spendable <= 0) break;
     const maxByTreasury = spendable / seller.price;
     const qty = Math.min(remaining, seller.stock, maxByTreasury);
-    if (qty <= 1e-9) continue;
+    if (qty < 1) continue;
     const coin = qty * seller.price;
     decreaseStockpile(seller.actor, seller.settlement.id, resource, qty);
     increaseStockpile(buyer, settlement.id, resource, qty);
@@ -1741,7 +1762,7 @@ export const caravanReplanPhase = (
           ? 0
           : buyPlannedCargoAtLocalMarkets(world, c, localBucket, plan.cargoToCarry, events);
       const rationDays = caravanRationDays(c);
-      if (boughtUnits <= 1e-9 && !caravanHasMarketCargo(c)) {
+      if (boughtUnits < 1 && !caravanHasMarketCargo(c)) {
         const rngHere = rng.derive(`${String(cId)}-fallback`);
         const fallback = fallbackScoutCandidate(
           c.position,

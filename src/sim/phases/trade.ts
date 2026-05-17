@@ -38,7 +38,8 @@ import {
   serviceMarketResources,
   type SettlementDemandSourceBuilder,
 } from '../market/scheduleBuilder.js';
-import { wholeUnitsForTransaction } from '../market/wholeUnits.js';
+import { integerCoinClearing, wholeUnitsForTransaction } from '../market/wholeUnits.js';
+import { edictPriceCapFor } from './civilUnrest.js';
 import { DEFAULT_GLOBAL_PRICES } from '../caravan/edgeHub.js';
 import { actorStockEntriesAt, getStockAt, type Actor } from '../politics/actor.js';
 import { getResource } from '../resources/catalog.js';
@@ -495,9 +496,15 @@ export const tradePhase = (
         deleteClearingPriceIfNoRecordedOutflow(settlement, resId);
         continue;
       }
-      const result = clearMarket(pair.demand, pair.supply, {
-        maxPrice: marketMaxPriceForResource(resId, pair.supply.sources, seededPrices),
-      });
+      // Per docs/08 §"Edict price cap is a real CDA constraint": when
+      // a governor edict is active on this (settlement, resource),
+      // pass the cap as the CDA's maxPrice. The CDA clears at the cap
+      // (or lower) and emits real unmet-demand telemetry that drives
+      // the mob-looting escalation in civilUnrestPhase.
+      const baseCap = marketMaxPriceForResource(resId, pair.supply.sources, seededPrices);
+      const edictCap = edictPriceCapFor(settlement.id, resId);
+      const maxPrice = edictCap !== null ? Math.min(baseCap, edictCap) : baseCap;
+      const result = clearMarket(pair.demand, pair.supply, { maxPrice });
       // Record the residual bid-ask book regardless of whether anything cleared
       // today. Caravans, viewer panels, and dormant-market diagnostics all read
       // from it.
@@ -1039,6 +1046,15 @@ const tryLocalTrade = (
   // Local trade between two settlements: seller exports, buyer imports.
   recordExport(seller, resId, qty);
   recordImport(buyer, resId, qty);
+  // Per docs/08 §"Transaction observability": the trade's actual
+  // per-unit price (integer-coin per docs/08 §"Integer-coin prices")
+  // is written into both settlements' price ladders so tomorrow's
+  // CDA + caravan AI react to today's real trade, not stale memory.
+  // Without this, the marketClearedAtAllSettlements invariant flags
+  // hundreds of "traded but no clearing price" warnings per year.
+  const tradePricePerUnit = integerCoinClearing(midPrice);
+  recordClearingPrice(seller, resId, tradePricePerUnit);
+  recordClearingPrice(buyer, resId, tradePricePerUnit);
   if (buyerIntent.disposition === 'consume') {
     // Buyer's intent was to consume on arrival — record consumption
     // (the goods went from one stockpile to immediate use).
