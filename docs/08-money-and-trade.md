@@ -337,6 +337,61 @@ with the market — they will sell, but only at prices the poor
 can't pay. Riots, edicts, mob looting follow as a _consequence_,
 not as scripted events.
 
+### Marginal-product wages with class surplus shares (locked, v1.6)
+
+A purely subsistence wage gave 100% of the recipe's productive surplus
+to the owner. That's the right model for **slave labor** (captive, no
+exit option, owner captures all surplus) but a poor fit for free
+workers, who in any real economy share in surplus through job-mobility
+threats. Roman free wages historically rose sharply after the Antonine
+Plague (165 AD) when labor went scarce — the flat-subsistence model
+would miss that.
+
+The wage per worker-day for a recipe is:
+
+```
+mp_per_worker_day  = (output_value − non_labor_input_value) / labor_days
+                     valued at current local prices
+
+wage(class)        = max(subsistence_basket, mp_per_worker_day × share[class])
+```
+
+Where `subsistence_basket` is the cheapest-substitute basket of
+calories + salt + fuel + clothing-wear at current local prices
+(unchanged from before), and `share[class]` reflects each labor
+class's bargaining power:
+
+| Class      | `share` | Rationale                                                |
+| ---------- | ------- | -------------------------------------------------------- |
+| slave      | 0       | Captive labor; owner-funded subsistence only. No cash wage. |
+| freedman   | 0.25    | Free legally but socially constrained by patron.          |
+| plebeian   | 0.35    | Free citizen; can switch employers across a province.     |
+| foreigner  | 0.45    | Most mobile labor (carries skills across cities).         |
+| patrician  | 0.5     | Rare wage-earning patrician (paid specialists like        |
+|            |         | physicians); high reservation wage.                       |
+
+The class share is multiplied by the recipe's per-worker-day marginal
+product. So:
+
+- A high-margin recipe (luxury textiles, wine, gladius) pays free
+  workers well above subsistence. The owner still keeps the larger
+  share but workers see real cash.
+- A subsistence-margin recipe (grain milling, hand-baking) pays at
+  the subsistence floor because `mp × share` ≤ subsistence.
+- A loss-making recipe (input value > output value) pays subsistence
+  too (the formula caps `mp_per_worker_day` at 0 from below).
+- Slaves are unaffected: their wage is identically 0 and their
+  owner pays consumption upkeep through the regular market.
+
+This naturally implements the post-plague wage-spike dynamic: when
+labor is scarce relative to demand, the marginal product of labor
+rises (each remaining worker is more valuable), and wages follow.
+
+**Owner take of the surplus** falls from 100% to roughly
+`1 − weighted_mean(share)` ≈ 60–70% on free-labor-heavy recipes,
+which is still a large structural advantage but no longer the
+extreme Marxian extraction the v1.5 model implied.
+
 ### Wage pricing
 
 Free recipe labor is paid at a local **reservation wage**. The wage is

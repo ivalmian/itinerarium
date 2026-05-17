@@ -148,6 +148,29 @@ export type TickEvent =
       readonly reason: string;
     }
   | {
+      /**
+       * Per docs/08 §"Marginal-product wages" + docs/14 §"Per-recipe
+       * economics CSV": emitted alongside recipe_ran so burn-in can
+       * attribute the surplus split per (settlement, recipe, owner).
+       * All money fields are coin at local prices on the day; output
+       * - input - wage = owner take (can be negative for loss-running
+       * recipes when prices momentarily invert).
+       */
+      readonly type: 'recipe_economics';
+      readonly settlement: SettlementId;
+      readonly recipe: RecipeId;
+      readonly owner: ActorId;
+      readonly outputValue: number;
+      readonly inputValue: number;
+      readonly wagePaidCoin: number;
+      readonly wagePaidInKindValue: number;
+      readonly wagePaidTotal: number;
+      readonly ownerTake: number;
+      readonly paidWorkerDays: number;
+      readonly subsistenceWagePerDay: number;
+      readonly marginalProductPerWorkerDay: number;
+    }
+  | {
       readonly type: 'cohort_deaths';
       readonly settlement: SettlementId;
       readonly deaths: number;

@@ -40,6 +40,101 @@ import { resourceId } from '../types.js';
 import type { Settlement } from './settlement.js';
 import type { WorldState } from '../../procgen/seed.js';
 
+/**
+ * Per docs/08 §"Marginal-product wages with class surplus shares":
+ * each labor class captures a fraction of the recipe's marginal
+ * product of labor when that's above subsistence. Slaves are 0
+ * (captive labor, owner captures all surplus); the more mobile a
+ * class is, the higher the share.
+ */
+export const SURPLUS_SHARE_BY_CLASS: Readonly<
+  Record<'slave' | 'freedman' | 'plebeian' | 'foreigner' | 'patrician', number>
+> = {
+  slave: 0,
+  freedman: 0.25,
+  plebeian: 0.35,
+  foreigner: 0.45,
+  patrician: 0.5,
+};
+
+/**
+ * The recipe's per-worker-day marginal product, valued at current
+ * local prices:
+ *
+ *   (sum_outputs(qty × price) − sum_inputs(qty × price)) / labor_days
+ *
+ * Clamped to ≥ 0 (a loss-making recipe doesn't pay negative wages —
+ * its workers still get at least the subsistence floor).
+ */
+export const marginalProductPerWorkerDay = (
+  recipe: RecipeDef,
+  prices: ReadonlyMap<ResourceId, number>,
+): number => {
+  let laborDays = 0;
+  for (const days of recipe.labor.values()) laborDays += days;
+  if (laborDays <= 0) return 0;
+  let outputValue = 0;
+  for (const [r, q] of recipe.outputs) {
+    const p = prices.get(r) ?? 0;
+    if (p > 0) outputValue += q * p;
+  }
+  let inputValue = 0;
+  for (const [r, q] of recipe.inputs) {
+    const p = prices.get(r) ?? 0;
+    if (p > 0) inputValue += q * p;
+  }
+  const mp = (outputValue - inputValue) / laborDays;
+  return Math.max(0, mp);
+};
+
+/**
+ * The wage a single class gets per worker-day, per docs/08
+ * §"Marginal-product wages":
+ *
+ *   wage(class) = max(subsistence, mp_per_worker_day × share[class])
+ *
+ * Quoted as an integer ≥ 1 coin per docs/08 §"Integer-coin prices"
+ * (the per-day price of labor is itself a per-unit price). Ceilinged
+ * rather than rounded so worker take-home never falls below the
+ * fractional subsistence-basket computation: a sub-1-coin basket cost
+ * still pays the worker 1 coin/day.
+ *
+ * Slaves return 0 (no cash wage; their owner funds subsistence
+ * through the consumption market instead).
+ */
+export const wagePerWorkerDayForClass = (
+  klass: CharacterClass,
+  subsistenceWagePerDay: number,
+  marginalProductOfLabor: number,
+): number => {
+  if (klass === 'slave') return 0;
+  const share = SURPLUS_SHARE_BY_CLASS[klass] ?? 0;
+  const productiveWage = Math.max(0, marginalProductOfLabor) * share;
+  const raw = Math.max(subsistenceWagePerDay, productiveWage);
+  if (!Number.isFinite(raw) || raw <= 0) return 0;
+  return Math.max(1, Math.ceil(raw));
+};
+
+/**
+ * Conservative upper-bound wage used to gate recipe affordability
+ * before the class mix is known. Uses the largest class share (patrician
+ * 0.5) so the affordability check never authorizes a run the owner
+ * can't actually pay for once the labor pool resolves.
+ */
+const CONSERVATIVE_AFFORDABILITY_SHARE = 0.5;
+
+export const conservativeWagePerWorkerDay = (
+  subsistenceWagePerDay: number,
+  marginalProductOfLabor: number,
+): number => {
+  const raw = Math.max(
+    subsistenceWagePerDay,
+    Math.max(0, marginalProductOfLabor) * CONSERVATIVE_AFFORDABILITY_SHARE,
+  );
+  if (!Number.isFinite(raw) || raw <= 0) return 1;
+  return Math.max(1, Math.ceil(raw));
+};
+
 const WAGE_RECIPIENT_KIND_PRIORITY_BY_CLASS: Readonly<
   Record<'plebeian' | 'freedman' | 'foreigner' | 'patrician', readonly Actor['kind'][]>
 > = {
@@ -154,6 +249,27 @@ const hasAnyWageRecipient = (world: WorldState, settlement: Settlement, payer: A
   return false;
 };
 
+/**
+ * Recipe-level wage context. Captures the local subsistence basket
+ * cost AND the recipe's marginal product per worker-day, so the wage
+ * payer can compute per-class wages = max(subsistence, mp × share).
+ *
+ * Per docs/08 §"Marginal-product wages with class surplus shares".
+ */
+export interface RecipeWageContext {
+  readonly subsistenceWagePerDay: number;
+  readonly marginalProductPerWorkerDay: number;
+}
+
+export const buildRecipeWageContext = (
+  recipe: RecipeDef,
+  prices: ReadonlyMap<ResourceId, number>,
+  subsistenceWagePerDay: number,
+): RecipeWageContext => ({
+  subsistenceWagePerDay,
+  marginalProductPerWorkerDay: marginalProductPerWorkerDay(recipe, prices),
+});
+
 export const wageAffordableCapacityForRecipe = (
   world: WorldState,
   settlement: Settlement,
@@ -161,9 +277,9 @@ export const wageAffordableCapacityForRecipe = (
   laborClassContext: LaborClassContext,
   payer: Actor,
   prices: ReadonlyMap<ResourceId, number>,
-  wagePerDay: number,
+  subsistenceWagePerDay: number,
 ): number => {
-  if (wagePerDay <= 0) return Infinity;
+  if (subsistenceWagePerDay <= 0) return Infinity;
   const paidWorkerDaysPerRun = wageEarningWorkerDaysForLaborForOwner(
     laborClassContext,
     recipe.labor,
@@ -171,8 +287,37 @@ export const wageAffordableCapacityForRecipe = (
   );
   if (paidWorkerDaysPerRun <= 0) return Infinity;
   if (!hasAnyWageRecipient(world, settlement, payer)) return Infinity;
+  // Conservative cap: assume the highest class-share applies so the
+  // owner doesn't authorize more runs than they can pay for once the
+  // class mix is resolved.
+  const mp = marginalProductPerWorkerDay(recipe, prices);
+  const expectedWage = conservativeWagePerWorkerDay(subsistenceWagePerDay, mp);
+  if (expectedWage <= 0) return Infinity;
   const liquidBudget = payer.treasury + inKindWageBudget(payer, settlement.id, prices);
-  return Math.max(0, liquidBudget / (paidWorkerDaysPerRun * wagePerDay));
+  return Math.max(0, liquidBudget / (paidWorkerDaysPerRun * expectedWage));
+};
+
+/**
+ * Aggregate economics for one recipe run's wage payment. Surfaced so
+ * burn-in instruments can attribute output/input/wage/owner-take per
+ * recipe per settlement (docs/14 §"Per-recipe economics CSV").
+ */
+export interface RecipeRunEconomics {
+  readonly subsistenceWagePerDay: number;
+  readonly marginalProductPerWorkerDay: number;
+  readonly wagePaidCoinTotal: number;
+  readonly wagePaidInKindValueTotal: number;
+  readonly paidWorkerDaysTotal: number;
+  readonly perClassWageBill: ReadonlyMap<CharacterClass, number>;
+}
+
+const ZERO_ECONOMICS: RecipeRunEconomics = {
+  subsistenceWagePerDay: 0,
+  marginalProductPerWorkerDay: 0,
+  wagePaidCoinTotal: 0,
+  wagePaidInKindValueTotal: 0,
+  paidWorkerDaysTotal: 0,
+  perClassWageBill: new Map(),
 };
 
 export const payProductionWages = (
@@ -182,21 +327,32 @@ export const payProductionWages = (
   payer: Actor,
   laborUsed: ReadonlyMap<JobId, number>,
   prices: ReadonlyMap<ResourceId, number>,
-  wagePerDay: number,
-): void => {
+  wageContext: RecipeWageContext,
+): RecipeRunEconomics => {
   const byClass = wageEarningWorkerDaysByClassForLaborForOwner(
     laborClassContext,
     laborUsed,
     payer.kind,
   );
-  payProductionWagesForWorkerDaysByClass(world, settlement, payer, byClass, prices, wagePerDay);
+  return payProductionWagesForWorkerDaysByClass(
+    world,
+    settlement,
+    payer,
+    byClass,
+    prices,
+    wageContext,
+  );
 };
 
 /**
- * Per docs/15 §C21: pay the wage bill for a recipe run, splitting the
- * total across per-class household recipients in proportion to which
- * classes did the work. Each class's wage portion follows the same
- * coin-then-in-kind cascade as before.
+ * Per docs/15 §C21 + docs/08 §"Marginal-product wages": pay the wage
+ * bill for a recipe run. Each class's wage rate is computed as
+ * `max(subsistence, mp_per_worker_day × share[class])`, and the
+ * coin → in-kind cascade pays from the owner's treasury then their
+ * staple stockpile.
+ *
+ * Returns aggregate economics for the run so burn-in instruments can
+ * attribute output/input/wage/owner-take per recipe per settlement.
  */
 export const payProductionWagesForWorkerDaysByClass = (
   world: WorldState,
@@ -204,13 +360,25 @@ export const payProductionWagesForWorkerDaysByClass = (
   payer: Actor,
   workerDaysByClass: ReadonlyMap<CharacterClass, number>,
   prices: ReadonlyMap<ResourceId, number>,
-  wagePerDay: number,
-): void => {
-  if (workerDaysByClass.size === 0) return;
-  if (wagePerDay <= 0) return;
+  wageContext: RecipeWageContext,
+): RecipeRunEconomics => {
+  if (workerDaysByClass.size === 0) return ZERO_ECONOMICS;
+  if (wageContext.subsistenceWagePerDay <= 0 && wageContext.marginalProductPerWorkerDay <= 0) {
+    return ZERO_ECONOMICS;
+  }
+  let wagePaidCoinTotal = 0;
+  let wagePaidInKindValueTotal = 0;
+  let paidWorkerDaysTotal = 0;
+  const perClassWageBill = new Map<CharacterClass, number>();
   for (const [klass, workerDays] of workerDaysByClass) {
     if (workerDays <= 0) continue;
     if (klass === 'slave') continue; // no cash wages for slave labor
+    const wagePerDay = wagePerWorkerDayForClass(
+      klass,
+      wageContext.subsistenceWagePerDay,
+      wageContext.marginalProductPerWorkerDay,
+    );
+    if (wagePerDay <= 0) continue;
     const recipient = selectWageRecipientForClass(
       world,
       settlement,
@@ -218,16 +386,37 @@ export const payProductionWagesForWorkerDaysByClass = (
       klass as 'plebeian' | 'freedman' | 'foreigner' | 'patrician',
     );
     if (recipient === undefined || recipient.id === payer.id) continue;
-    const wageBill = workerDays * wagePerDay;
+    // Round the wage bill to integer coin per docs/08 §"Integer-coin
+    // prices": no fractional coin ever moves between treasuries. The
+    // recipe-fraction × wage-per-day might be 0.4 × 5 = 2 coin (clean)
+    // or 0.4 × 3 = 1.2 → 1 coin. Workers get whole coin; rounding
+    // residue stays with the owner. This is the integer-coin discipline
+    // applied uniformly at every transfer site.
+    const wageBill = Math.round(workerDays * wagePerDay);
+    if (wageBill <= 0) continue;
+    perClassWageBill.set(klass, wageBill);
+    paidWorkerDaysTotal += workerDays;
     let remaining = wageBill;
     const paidCoin = Math.min(remaining, payer.treasury);
     if (paidCoin > 0) {
       payer.treasury -= paidCoin;
       recipient.treasury += paidCoin;
       remaining -= paidCoin;
+      wagePaidCoinTotal += paidCoin;
     }
-    if (remaining > 1e-9) payInKindWages(payer, recipient, settlement.id, remaining, prices);
+    if (remaining > 0) {
+      const inKindPaid = payInKindWages(payer, recipient, settlement.id, remaining, prices);
+      wagePaidInKindValueTotal += inKindPaid;
+    }
   }
+  return {
+    subsistenceWagePerDay: wageContext.subsistenceWagePerDay,
+    marginalProductPerWorkerDay: wageContext.marginalProductPerWorkerDay,
+    wagePaidCoinTotal,
+    wagePaidInKindValueTotal,
+    paidWorkerDaysTotal,
+    perClassWageBill,
+  };
 };
 
 const WAGE_IN_KIND_RESOURCES: readonly ResourceId[] = [
@@ -250,24 +439,40 @@ const inKindWageBudget = (
   return value;
 };
 
+/**
+ * Minimum fractional staple quantity considered worth transferring as
+ * in-kind wages. In-kind staples (grain in modii, flour in sacks,
+ * bread in loaves) accumulate fractionally in stockpiles — half a
+ * modius of grain is a real quantity — so we keep a fractional ε for
+ * this site rather than rounding to whole units. The integer-coin
+ * rule governs the COIN side of wages (above); this is the food side.
+ */
+const STAPLE_FRACTIONAL_EPS = 1e-9;
+
 const payInKindWages = (
   payer: Actor,
   recipient: Actor,
   settlement: SettlementId,
   targetValue: number,
   prices: ReadonlyMap<ResourceId, number>,
-): void => {
+): number => {
   let remainingValue = targetValue;
+  let valuePaid = 0;
   for (const resource of WAGE_IN_KIND_RESOURCES) {
-    if (remainingValue <= 1e-9) break;
+    if (remainingValue <= 0) break;
     const price = prices.get(resource) ?? 0;
     if (price <= 0) continue;
     const stock = getStockAt(payer, settlement, resource);
-    if (stock <= 0) continue;
+    if (stock <= STAPLE_FRACTIONAL_EPS) continue;
     const units = Math.min(stock, remainingValue / price);
-    if (units <= 1e-9) continue;
+    if (units <= STAPLE_FRACTIONAL_EPS) continue;
     removeStockAt(payer, settlement, resource, units as Quantity);
     addStockAt(recipient, settlement, resource, units as Quantity);
-    remainingValue -= units * price;
+    const transferred = units * price;
+    // Track the actual coin-value transferred; downstream telemetry
+    // sums coin + in-kind value to surface total worker take-home.
+    remainingValue -= transferred;
+    valuePaid += transferred;
   }
+  return valuePaid;
 };
