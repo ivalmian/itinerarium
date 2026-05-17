@@ -36,7 +36,7 @@ export interface RecipeEconomicsInstrumentOpts {
   readonly maxRows?: number;
 }
 
-export const DEFAULT_MAX_ROWS = 250_000;
+export const DEFAULT_MAX_ROWS = 5_000_000;
 
 interface AggKey {
   readonly day: Day;

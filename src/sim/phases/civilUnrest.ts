@@ -24,8 +24,7 @@
 
 import { getStockAt, removeStockAt } from '../politics/actor.js';
 import { DEFAULT_GLOBAL_PRICES } from '../caravan/edgeHub.js';
-import { recordClearingPrice } from '../world/settlement.js';
-import { resourceId, type Day, type SettlementId } from '../types.js';
+import { resourceId, type Day, type ResourceId, type SettlementId } from '../types.js';
 import type { WorldState } from '../../procgen/seed.js';
 import type { TickEvent } from '../tick.js';
 
@@ -45,12 +44,45 @@ interface UnrestState {
   readonly priceSpikeStreak: Map<string, number>;
   readonly riotDays: Map<SettlementId, number>;
   readonly edictDays: Map<SettlementId, number>;
+  /**
+   * Per docs/08 §"Edict price cap is a real CDA constraint": active
+   * price caps keyed by `${settlement}|${resource}`. Queried by
+   * tradePhase and passed as `maxPrice` to `clearMarket` so the CDA
+   * itself enforces the cap (and surfaces real unmet demand at it).
+   */
+  readonly activeEdictCaps: Map<string, number>;
 }
 
 const unrest: UnrestState = {
   priceSpikeStreak: new Map(),
   riotDays: new Map(),
   edictDays: new Map(),
+  activeEdictCaps: new Map(),
+};
+
+const edictKey = (settlement: SettlementId, resource: ResourceId): string =>
+  `${String(settlement)}|${String(resource)}`;
+
+/**
+ * Returns the active price ceiling (integer coin / unit) on `resource`
+ * at `settlement` if any edict is currently in force; otherwise null.
+ * Called by `tradePhase` to pass `maxPrice` into `clearMarket`.
+ */
+export const edictPriceCapFor = (
+  settlement: SettlementId,
+  resource: ResourceId,
+): number | null => unrest.activeEdictCaps.get(edictKey(settlement, resource)) ?? null;
+
+/**
+ * Test-only: reset edict state between unrelated runs. The normal
+ * tick loop is module-stable; this just makes per-test isolation
+ * possible without restarting the process.
+ */
+export const __resetCivilUnrestState = (): void => {
+  unrest.priceSpikeStreak.clear();
+  unrest.riotDays.clear();
+  unrest.edictDays.clear();
+  unrest.activeEdictCaps.clear();
 };
 
 export const civilUnrestPhase = (
@@ -95,15 +127,19 @@ export const civilUnrestPhase = (
       // Trigger edict after enough riot days.
       if (!inEdict && days >= EDICT_TRIGGER_AFTER_RIOT_DAYS) {
         unrest.edictDays.set(settlement.id, 0);
+        // Per docs/08 §"Edict price cap is a real CDA constraint":
+        // register the cap so tradePhase passes it to clearMarket as
+        // a `maxPrice`. The CDA will clear at the cap, and unmet
+        // demand at the cap reflects the genuine shortfall under
+        // the political constraint (feeds the looting trigger).
+        const cap = Math.max(1, Math.ceil(baseline * EDICT_PRICE_CAP_MULT));
+        unrest.activeEdictCaps.set(edictKey(settlement.id, grainResource), cap);
         events.push({
           type: 'edict_issued',
           settlement: settlement.id,
           resource: grainResource,
-          priceCap: baseline * EDICT_PRICE_CAP_MULT,
+          priceCap: cap,
         });
-        // Force-cap the recorded clearing price (next-tick demand
-        // sources will see the lower price and not bid as high).
-        recordClearingPrice(settlement, grainResource, baseline * EDICT_PRICE_CAP_MULT);
       }
     }
 
@@ -139,6 +175,7 @@ export const civilUnrestPhase = (
     if (price < baseline * RIOT_PRICE_MULT && streak === 0) {
       unrest.riotDays.delete(settlement.id);
       unrest.edictDays.delete(settlement.id);
+      unrest.activeEdictCaps.delete(edictKey(settlement.id, grainResource));
     }
   }
 };

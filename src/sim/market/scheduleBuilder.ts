@@ -549,7 +549,14 @@ const producerOutputStockTargetDays = (resource: ResourceId): number =>
 const SELLER_INVENTORY_TARGET_DAYS = 30;
 /** Keep a nonzero opportunity premium even under extreme overstock. */
 const MAX_INVENTORY_PRESSURE_DISCOUNT = 0.9;
-/** Numerical dust: budgets below this are not spendable economic demand. */
+/**
+ * Numerical dust filter. A treasury this small is float-arithmetic
+ * residue, not real money. The integer-coin discipline (docs/08
+ * §"Integer-coin prices") is enforced at the *bid quote* layer via
+ * `integerCoinBid` — sub-1-coin bid WTPs floor up to 1 coin or zero
+ * out cleanly. THIS constant is just the "is anything here at all"
+ * gate, and stays at numerical-dust scale.
+ */
 const MIN_EFFECTIVE_MARKET_BUDGET = 1e-6;
 /** Reservation = ratio × recentLocalPrice when no productionCost is supplied. */
 const DEFAULT_PRODUCTION_COST_RATIO = 0.8;
@@ -1310,7 +1317,15 @@ const institutionalSources = (
       if (wantQuantity <= 0) continue;
       const threshold = referencePrice * line.maxPriceMultiplier;
       if (threshold <= 0) continue;
-      const budget = budgetCapForActor(context, building.ownerActor, wantQuantity * threshold);
+      // Institutional procurement always carries at least 1 coin of
+      // structural demand per docs/08 §"Integer-coin prices": a
+      // barracks needing 0.008 shields/day at 100-coin threshold
+      // sums to 0.8 coin/day of nominal demand, which would round
+      // down to 0 under direct integer-coin filtering. Civic
+      // procurement is a long-running standing order — bump it to
+      // the 1-coin floor so the bid persists in the book.
+      const rawBudget = Math.max(1, wantQuantity * threshold);
+      const budget = budgetCapForActor(context, building.ownerActor, rawBudget);
       if (budget <= 0) continue;
       out.push(
         statusDemandDirect(

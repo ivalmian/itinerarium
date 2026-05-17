@@ -626,6 +626,44 @@ keeps cities richer than villages on net (their tax inflows and
 institutional procurement budgets are larger), while compensating
 the rural population for feeding them.
 
+### Transaction observability — every trade writes the price ladder (locked)
+
+The CDA at each settlement is the canonical clearing engine, but
+several transaction paths execute *outside* it (caravan arrival,
+off-map import/export, local-trade petty merchant, bandit fence).
+Per docs/08 §"Bid-ask book" the residual price ladder is supposed
+to reflect every participant — that fails if a caravan unloads
+1000 amphorae of wine at the city forum and no price record updates.
+
+The discipline is: **every transaction site that moves goods writes
+the trade's execution price into `lastClearingPrice` for the
+relevant settlement(s)**, even when the trade itself didn't go
+through the CDA. Specifically:
+
+- Local-trade petty merchant — writes the integer midprice to both
+  settlements (the seller settlement and the buyer settlement).
+- Caravan trade-on-arrival — writes the trade's per-unit price into
+  the settlement's clearing-price map for each resource sold/bought.
+- Off-map import / export caravan — same; an import landing at city
+  price P writes P into that resource's price ladder.
+- Bandit fence — quotes 80% of going market price (the 20% spread
+  is the fence's fee) and writes the trade's actual price.
+
+This eliminates the historical observability gap where the local-
+trade outflow invariant would catch a resource being traded without
+a recorded price. It also lets tomorrow's CDA + caravan AI react to
+today's real trade prices, not stale memory.
+
+### Edict price cap is a real CDA constraint (locked)
+
+When a riot drives the governor to issue a grain price-cap edict,
+the previous implementation overwrote `lastClearingPrice` to a fake
+value — no actual trade cleared at that price. Now the edict's cap
+is passed as a `maxPrice` constraint to `clearMarket`: the CDA
+clears at the cap (or lower) and **unmet demand at the cap reflects
+the genuine shortfall**, which feeds back into the mob-looting
+escalation. Both the price and the shortfall are honest signals.
+
 ### Mint output flows to treasury (locked)
 
 `mint_coin` is the only recipe whose output is **not** a stockpile

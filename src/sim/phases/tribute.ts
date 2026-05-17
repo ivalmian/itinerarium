@@ -55,8 +55,11 @@ export const tributePhase = (world: WorldState, events: TickEvent[]): void => {
 
     const spendable = Math.max(0, steward.treasury - TRIBUTE_OPERATING_FLOOR);
     if (spendable <= 0) continue;
-    const tribute = spendable * TRIBUTE_FRACTION;
-    if (tribute <= 1e-6) continue;
+    // Whole-coin tribute per docs/08 §"Integer-coin prices": no
+    // fractional coin moves between treasuries. Round to nearest
+    // integer; below-1-coin tributes don't fire.
+    const tribute = Math.floor(spendable * TRIBUTE_FRACTION);
+    if (tribute <= 0) continue;
 
     steward.treasury -= tribute;
     patron.treasury += tribute;

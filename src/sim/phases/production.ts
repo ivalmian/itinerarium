@@ -397,6 +397,13 @@ const consumeLaborFromPoolsForOwner = (
   ownerKind: Actor['kind'],
 ): ConsumedLaborByClass => {
   let paidWorkerDays = 0;
+  // Worker-days are fractional by design (a recipe at 0.4 fraction
+  // consumes 0.4 × required worker-days). FRACTIONAL_LABOR_EPS guards
+  // against float subtraction residue creating a phantom 1e-15
+  // "remaining" entry that loops forever. NOT the same as the
+  // integer-coin or whole-unit boundaries above; this is internal
+  // accounting only.
+  const FRACTIONAL_LABOR_EPS = 1e-9;
   const paidWorkerDaysByClass = new Map<CharacterClass, number>();
   for (const [job, requiredPerRun] of laborPerRun) {
     let remaining = requiredPerRun * fraction;
@@ -404,13 +411,13 @@ const consumeLaborFromPoolsForOwner = (
     const byClass = pools.get(job);
     if (byClass === undefined) continue;
     for (const klass of LABOR_CONSUMPTION_CLASS_ORDER) {
-      if (remaining <= 1e-9) break;
+      if (remaining <= FRACTIONAL_LABOR_EPS) break;
       if (!ownerCanUseLaborClass(klass, ownerKind)) continue;
       const available = byClass.get(klass) ?? 0;
       if (available <= 0) continue;
       const used = Math.min(available, remaining);
       const next = available - used;
-      if (next > 1e-9) byClass.set(klass, next);
+      if (next > FRACTIONAL_LABOR_EPS) byClass.set(klass, next);
       else byClass.delete(klass);
       if (isWageEarningLaborClass(klass)) {
         paidWorkerDays += used;
@@ -521,7 +528,9 @@ const depleteMineDeposit = (
   const deposit = tile?.deposit;
   if (tile === undefined || deposit === undefined || deposit.resource !== minedResource) return;
   const remaining = deposit.remaining - outputQty;
-  if (remaining <= 1e-9) {
+  // Deposit remaining is fractional (kg of ore extracted gradually).
+  // Below 1 unit, treat as depleted; the deposit is gone.
+  if (remaining < 1) {
     delete tile.deposit;
   } else {
     tile.deposit = { resource: minedResource, remaining };

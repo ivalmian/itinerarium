@@ -92,7 +92,7 @@ import {
 } from '../types.js';
 import { faminePressure } from '../world/faminePressure.js';
 import { hexDistance, hexEquals, hexKey, type Hex } from '../world/hex.js';
-import type { Settlement } from '../world/settlement.js';
+import { recordClearingPrice, type Settlement } from '../world/settlement.js';
 import { settlementAnchorIndexForWorld } from '../world/settlementIndex.js';
 import { adultPopulation } from '../world/subsistence.js';
 import type { WorldState } from '../../procgen/seed.js';
@@ -775,7 +775,15 @@ const applyCivilianDeaths = (settlement: Settlement, count: number): number => {
   return killed;
 };
 
-const FENCE_PRICE_FRACTION = 0.6;
+/**
+ * Per docs/08 §"Transaction observability" + the realism-pass 11
+ * design: the fence is a regular market participant who quotes
+ * **80%** of going market price (the 20% spread is the fence's
+ * service fee, not a flat 40% confiscation as the pre-realism model
+ * had). The fenced goods clear at the integer per-unit price; the
+ * 20% spread covers the fence's risk + opportunity cost.
+ */
+const FENCE_PRICE_FRACTION = 0.8;
 
 const executeFenceTransaction = (
   world: WorldState,
@@ -808,13 +816,16 @@ const executeFenceTransaction = (
   if (fence === undefined) return;
 
   // Compute total coin value of camp loot using local clearing prices
-  // (fall back to 1 coin/unit when no price observed).
+  // (fall back to 1 coin/unit when no price observed). Fence price is
+  // 80% of market (20% fence fee) per docs/08 §"Transaction
+  // observability"; integer-coin-floored to keep the price ladder
+  // honest (docs/08 §"Integer-coin prices").
   let totalCoin = 0;
   const transferable: { res: ResourceId; qty: number; price: number }[] = [];
   for (const [res, qty] of camp.loot) {
     if (qty <= 0) continue;
     const lastPrice = through.market.lastClearingPrice.get(res) ?? 1;
-    const fencePrice = lastPrice * FENCE_PRICE_FRACTION;
+    const fencePrice = Math.max(1, Math.floor(lastPrice * FENCE_PRICE_FRACTION));
     const value = qty * fencePrice;
     if (value <= 0) continue;
     transferable.push({ res, qty, price: fencePrice });
@@ -834,6 +845,11 @@ const executeFenceTransaction = (
     if (newCampQty > 1e-9) camp.loot.set(t.res, newCampQty);
     else camp.loot.delete(t.res);
     addStockAt(fence, through.id, t.res, moveQty);
+    // Per docs/08 §"Transaction observability": the fence trade is a
+    // real participant. Record its execution price so the price
+    // ladder reflects the discounted-but-real demand for stolen goods
+    // moving through this city.
+    recordClearingPrice(through, t.res, t.price);
   }
   fence.treasury -= coinPaid;
   camp.treasury += coinPaid;
