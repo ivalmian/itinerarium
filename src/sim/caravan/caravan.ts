@@ -19,7 +19,15 @@ import { drainDemographics, type Demographics } from '../population/demographics
 import { getResource } from '../resources/index.js';
 import type { Rng } from '../rng.js';
 import type { Day } from '../types.js';
-import type { ActorId, CaravanId, Coin, Position, Quantity, ResourceId } from '../types.js';
+import type {
+  ActorId,
+  CaravanId,
+  Coin,
+  Position,
+  Quantity,
+  ResourceId,
+  SettlementId,
+} from '../types.js';
 import type { Goal } from './goal.js';
 import { isPassable, type RoadGrade, type Season, type Terrain } from '../world/terrain.js';
 
@@ -193,6 +201,26 @@ export interface Caravan {
    * 0%-margin trades, draining their owner's treasury on rations.
    */
   noProfitableRouteDays?: number;
+  /**
+   * v1.6 off-map sojourn (docs/06 §"The 20-tick off-map sojourn",
+   * docs/10 decision 40). When set, this caravan is invisible on the
+   * map for `offMapUntil - today` more ticks — it has crossed the world
+   * edge into the abstract off-map global market and is conducting
+   * trade there. During the sojourn it skips movement, ambush exposure,
+   * and trade phases; wages + fodder still consume from its operating
+   * treasury / cargo as a real ongoing cost of the trip. On the day
+   * `today === offMapUntil` the sojourn ends, the caravan re-emerges
+   * at its current `position` (still the edge hex), and resumes
+   * normal lifecycle (typically routing back to `originSettlement`).
+   */
+  offMapUntil?: Day;
+  /**
+   * Where this caravan was dispatched FROM. Used to route it home
+   * after the 20-tick off-map sojourn ends. Most caravans never set
+   * this; it's set by export-venture dispatch when the caravan is
+   * created at an on-map settlement and bound for an edge hex.
+   */
+  originSettlement?: SettlementId;
 }
 
 export interface CreateCaravanInput {
@@ -204,6 +232,8 @@ export interface CreateCaravanInput {
   readonly vehicles: Partial<Record<VehicleKind, number>>;
   readonly destination?: Position | null;
   readonly treasury?: Coin;
+  /** Where the caravan was dispatched from (for the return trip home). */
+  readonly originSettlement?: SettlementId;
 }
 
 const validateAnimals = (animals: Partial<Record<AnimalKind, number>>): void => {
@@ -262,6 +292,9 @@ export const createCaravan = (input: CreateCaravanInput): Caravan => {
     mpRemainingToday: 0,
     priceBook: new Map(),
     health: 1,
+    ...(input.originSettlement !== undefined
+      ? { originSettlement: input.originSettlement }
+      : {}),
   };
 };
 

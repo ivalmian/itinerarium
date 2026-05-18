@@ -230,6 +230,10 @@ interface SerializedCaravan {
     readonly [string, ReadonlyArray<readonly [string, SerializedPriceObservation]>]
   >;
   readonly health: number;
+  /** v1.6 off-map sojourn (docs/06 §"The 20-tick off-map sojourn"). */
+  readonly offMapUntil?: number;
+  /** v1.6 dispatch origin for the return trip home. */
+  readonly originSettlement?: string;
 }
 
 interface SerializedReputationEntry {
@@ -726,6 +730,10 @@ const serializeCaravan = (c: Caravan): SerializedCaravan => {
     mpRemainingToday: c.mpRemainingToday,
     priceBook,
     health: c.health,
+    ...(c.offMapUntil !== undefined ? { offMapUntil: c.offMapUntil } : {}),
+    ...(c.originSettlement !== undefined
+      ? { originSettlement: String(c.originSettlement) }
+      : {}),
   };
 };
 
@@ -739,9 +747,13 @@ const deserializeCaravan = (c: SerializedCaravan): Caravan => {
     vehicles: { ...c.vehicles },
     destination: c.destination === null ? null : deserHex(c.destination),
     treasury: c.treasury,
+    ...(c.originSettlement !== undefined
+      ? { originSettlement: settlementId(c.originSettlement) }
+      : {}),
   });
   caravan.mpRemainingToday = c.mpRemainingToday;
   caravan.health = c.health;
+  if (c.offMapUntil !== undefined) caravan.offMapUntil = c.offMapUntil as Day;
   for (const [r, n] of c.cargo) caravan.cargo.set(resourceId(r), n);
   for (const [res, inner] of c.priceBook) {
     const innerMap = new Map<string, PriceObservation>();

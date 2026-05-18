@@ -670,26 +670,30 @@ const increaseCaravanCargo = (caravan: Caravan, resource: ResourceId, qty: Quant
   caravan.cargo.set(resource, (caravan.cargo.get(resource) ?? 0) + qty);
 };
 
+/** Per docs/10 decision 40: 20-tick invisible off-map sojourn. */
+const OFF_MAP_SOJOURN_DAYS = 20;
+
 const completeOffMapExportIfArrived = (
   world: WorldState,
-  caravanId: CaravanId,
+  _caravanId: CaravanId,
   caravan: Caravan,
   edgeHexKeys: ReadonlySet<string>,
+  today: Day,
   events: TickEvent[],
 ): boolean => {
   if (String(caravan.id).startsWith('tax-')) return false;
   if (caravan.destination === null) return false;
   if (!hexEquals(caravan.position, caravan.destination)) return false;
   if (!edgeHexKeys.has(hexKey(caravan.position))) return false;
+  // If the caravan is already mid-sojourn (re-emerged in a prior tick),
+  // this is not a fresh arrival — handled by the off-map sojourn phase.
+  if (caravan.offMapUntil !== undefined) return false;
   let exportedAny = false;
   for (const [resource, rawQty] of Array.from(caravan.cargo.entries())) {
     const price = DEFAULT_GLOBAL_PRICES.get(resource);
     if (price === undefined || price <= 0 || rawQty <= 0) continue;
     // Whole-unit transaction (docs/08): off-map export crosses
-    // ownership at the world's edge, so round to integer. Any
-    // fractional residual stays in cargo for the next tick (the
-    // caravan despawns when cargo.size === 0; a residual < 1 unit
-    // is effectively spoilage / spillage).
+    // ownership at the world's edge, so round to integer.
     const qty = wholeUnitsForTransaction(resource, rawQty);
     if (qty <= 0) {
       caravan.cargo.delete(resource);
@@ -697,8 +701,12 @@ const completeOffMapExportIfArrived = (
     }
     const coin = qty * price;
     const owner = world.actors.get(caravan.ownerActor);
-    if (owner !== undefined) owner.treasury += coin;
-    else caravan.treasury += coin;
+    // Per docs/10 decision 41: the global market pays into the caravan's
+    // operating treasury (the cash travels with the caravan during the
+    // sojourn, not magically into the owner's pocket). The owner gets
+    // the surplus on home arrival via the standard home-market remit.
+    caravan.treasury += coin;
+    void owner;
     caravan.cargo.delete(resource);
     exportedAny = true;
     events.push({
@@ -709,11 +717,18 @@ const completeOffMapExportIfArrived = (
       coin,
     });
   }
-  if (exportedAny && caravan.cargo.size === 0) {
-    world.caravans.delete(caravanId);
-    return true;
-  }
-  return false;
+  if (!exportedAny) return false;
+  // Per docs/06 §"The 20-tick off-map sojourn" + docs/10 decision 40:
+  // the caravan is now invisible on the map for OFF_MAP_SOJOURN_DAYS
+  // while it conducts trade beyond the world edge. It still consumes
+  // rations and wages during the sojourn. After the sojourn it re-
+  // emerges at the same edge hex and routes home to its origin.
+  caravan.offMapUntil = (today + OFF_MAP_SOJOURN_DAYS) as Day;
+  // Clear destination so the movement / planner phases don't try to
+  // re-execute the arrival. The sojourn phase re-sets destination to
+  // originSettlement on re-emergence.
+  caravan.destination = null;
+  return true;
 };
 
 const completeOffMapImportReturnIfArrived = (
@@ -1650,7 +1665,7 @@ export const caravanReplanPhase = (
 
   for (const [cId, c] of Array.from(world.caravans.entries())) {
     if (completeOffMapImportReturnIfArrived(world, cId, c, edgeHexKeys)) continue;
-    if (completeOffMapExportIfArrived(world, cId, c, edgeHexKeys, events)) continue;
+    if (completeOffMapExportIfArrived(world, cId, c, edgeHexKeys, today, events)) continue;
 
     // Per docs/15 §C18: if this caravan has a goalStack, advance it
     // BEFORE the legacy single-destination logic. When the top goal

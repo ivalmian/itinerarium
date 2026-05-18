@@ -648,6 +648,11 @@ const trySpawnExport = (
     crew: standardExportCrew(),
     animals: { mule: muleCount },
     vehicles: {},
+    // Per v1.6 docs/06 §"International ventures": export caravans round-
+    // trip - they walk to the edge hex, conduct the 20-tick off-map
+    // sojourn, and walk back to the dispatching settlement. Capture
+    // the origin so the post-sojourn re-routing can send them home.
+    originSettlement: source.settlementId,
   });
   caravan.cargo.set(choice.resource, qty);
   if (!fitCaravanLoadWithRations(caravan)) return null;
