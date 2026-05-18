@@ -259,7 +259,13 @@ import {
         capacity: 2,
         daysSinceMaintained: 0,
       });
-      settlement.market.lastClearingPrice.set(bread, 10);
+      // Bread priced well above the food.flour global ref (18) so the
+      // baker's derived-input bid for flour clears the seller's ask.
+      // Pre-v1.6 the test only needed bread=10 because flour had no
+      // global ref and the seller's fallback ask was minimal; now flour
+      // has a Pillar-8 global price, so the bread price has to justify
+      // the input cost.
+      settlement.market.lastClearingPrice.set(bread, 60);
 
       const seller = createActor({
         id: sellerId,
@@ -274,7 +280,7 @@ import {
         kind: 'city_corporation',
         name: 'Baker House',
         homeSettlement: sId,
-        treasury: 500,
+        treasury: 5000,
       });
 
       w.settlements.set(sId, settlement);

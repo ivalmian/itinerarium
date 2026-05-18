@@ -60,8 +60,8 @@ const seedCaravan = (
     ownerActor: owner.id,
     position: hex(pos.q, pos.r),
     crew: [
-      { kind: 'merchant', count: 1 },
-      { kind: 'drover', count: 1 },
+      { kind: 'merchant', count: 1, weapons: 0, armor: 0 },
+      { kind: 'drover', count: 1, weapons: 0, armor: 0 },
     ],
     animals: { mule: 1 },
     vehicles: {},

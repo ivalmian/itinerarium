@@ -134,32 +134,81 @@ const addImportOperatingTreasury = (caravan: Caravan): void => {
 // salvage floors line up: the same gradient between cheap bulk goods
 // and high-value luxuries, but with enough headroom over the 1-coin
 // floor that staple chains keep a price ladder.
+// Per docs/00 Pillar 8 and docs/10 decision 41 (v1.6): every tradable
+// catalog resource has a global reference price. Missing entries
+// previously caused the export pipeline to silently drop the resource —
+// cities accumulated multi-year stockpiles of salted_meat, salted_fish,
+// clothing, furniture, and pottery with no off-map outlet. The full
+// table below covers every food / material / mineral / metal / good /
+// exotic resource. Services and goods.coin are excluded by intent
+// (services don't ship; coin IS the unit of account).
+//
+// Values are 5×-scaled Roman-era reference prices (realism pass 8).
 export const DEFAULT_GLOBAL_PRICES: ReadonlyMap<ResourceId, number> = new Map<ResourceId, number>([
-  // Bulk — ordinary trade
+  // --- Food: raw produce, perishable -------------------------------------
   [resourceId('food.grain'), 7.5],
-  [resourceId('mineral.salt'), 40],
+  [resourceId('food.olives'), 25],
+  [resourceId('food.grapes'), 20],
+  [resourceId('food.fish'), 40],
+  [resourceId('food.game'), 50],
+  [resourceId('food.legumes'), 10],
+  [resourceId('food.milk'), 30],
+  // --- Food: processed / preserved ---------------------------------------
+  [resourceId('food.flour'), 18],
+  [resourceId('food.bread'), 12],
   [resourceId('food.olive_oil'), 750],
   [resourceId('food.wine'), 1000],
   [resourceId('food.cheese'), 25],
-  // Livestock capital goods (per docs/00 Pillar 8 — every good has a
-  // market). Equines, cattle, sheep, pigs are produced on rural
-  // pasture and bought by urban actors (caravan owners need equines,
-  // city kitchens buy cattle for slaughter, etc.). Without an off-map
-  // reference the scarcity ceiling pegs both seller and buyer
-  // settlements to the same maxPrice, killing the spread that local
-  // trade arbitrage needs. Values are 5×-scaled Roman pastoral prices.
+  [resourceId('food.salted_fish'), 60],
+  [resourceId('food.salted_meat'), 200],
+  // --- Livestock capital goods (Pillar 8) --------------------------------
+  // Equines / cattle / sheep / pigs are pasture output traded into urban
+  // demand (caravan owners need equines, city kitchens buy cattle for
+  // slaughter, etc.). Without a global ref both sides peg to the maxPrice
+  // ceiling, killing the spread local trade needs.
   [resourceId('livestock.equines'), 3000],
   [resourceId('livestock.cattle'), 1200],
   [resourceId('livestock.sheep'), 250],
   [resourceId('livestock.pigs'), 200],
-  // Carts are caravan capital. A new light cart fetches roughly the
-  // same as a small ox to acquire.
+  // --- Carts: caravan capital --------------------------------------------
   [resourceId('goods.cart'), 1500],
-  // Manufactured ordinary
-  [resourceId('goods.cloth'), 60],
+  // --- Raw materials & minerals ------------------------------------------
+  [resourceId('material.wood'), 60],   // 1 cord of green wood = 700 kg
+  [resourceId('material.stone'), 25],  // 1 quarry block = 1500 kg (cheap bulk)
+  [resourceId('material.clay'), 8],    // 1 unit = 100 kg riverbank clay
+  [resourceId('material.flax'), 40],
+  [resourceId('material.hides'), 120],
+  [resourceId('mineral.iron_ore'), 20],
+  [resourceId('mineral.copper_ore'), 65],
+  [resourceId('mineral.tin_ore'), 120],
+  [resourceId('mineral.lead_ore'), 25],
+  [resourceId('mineral.silver_ore'), 650],
+  [resourceId('mineral.gold_ore'), 4000],
+  [resourceId('mineral.salt'), 40],
+  // --- Intermediates -----------------------------------------------------
+  [resourceId('material.wool'), 50],
+  [resourceId('material.linen_fiber'), 60],
+  [resourceId('material.leather'), 140],
+  [resourceId('material.charcoal'), 60],   // 1 sack = 30 kg
+  [resourceId('material.lumber'), 150],    // 1 stack = 500 kg sawn timber
+  [resourceId('material.cut_stone'), 120], // 1 dressed block = 1500 kg
+  [resourceId('material.brick_tile'), 60], // 1 pallet = 200 kg
+  [resourceId('material.pottery'), 20],
+  [resourceId('material.amphora'), 40],
+  // --- Metals (refined) --------------------------------------------------
   [resourceId('metal.iron'), 60],
+  [resourceId('metal.copper'), 150],
+  [resourceId('metal.tin'), 300],
+  [resourceId('metal.bronze'), 200],
+  [resourceId('metal.lead'), 50],
+  [resourceId('metal.silver'), 3500],
+  [resourceId('metal.gold'), 40000],
+  // --- Manufactured ordinary ---------------------------------------------
+  [resourceId('goods.cloth'), 60],
+  [resourceId('goods.clothing'), 150],
   [resourceId('goods.tools'), 125],
-  // Weapon archetypes per docs/03 §"Weapon-archetype substitution policy".
+  [resourceId('goods.furniture'), 800],
+  // --- Weapon archetypes (docs/03) ---------------------------------------
   [resourceId('goods.gladius'), 250],
   [resourceId('goods.hasta'), 150],
   [resourceId('goods.pilum'), 175],
@@ -171,17 +220,16 @@ export const DEFAULT_GLOBAL_PRICES: ReadonlyMap<ResourceId, number> = new Map<Re
   [resourceId('goods.helmet'), 300],
   [resourceId('goods.body_armor'), 1000],
   [resourceId('goods.shield'), 225],
-  // Status / luxury
+  // --- Status / luxury ---------------------------------------------------
   [resourceId('goods.luxury_textiles'), 500],
-  [resourceId('metal.silver'), 3500],
-  [resourceId('metal.gold'), 40000],
-  // Exotics
+  // --- Exotics (off-map sources) -----------------------------------------
   [resourceId('exotic.spices'), 400],
   [resourceId('exotic.silk'), 1000],
   [resourceId('exotic.incense'), 300],
   [resourceId('exotic.dyes'), 600],
-  // People as cargo
+  // --- People as cargo ---------------------------------------------------
   [resourceId('people.slave'), 3000],
+  [resourceId('people.migrants'), 1500],
 ]);
 
 export interface ImportPaletteEntry {
@@ -576,11 +624,15 @@ const trySpawnExport = (
   if (choice === null) return null;
 
   const available = source.availableForExport.get(choice.resource) ?? 0;
-  // Cap export size at what one mule train of plausible size can carry —
-  // otherwise a city with mountains of silver would spawn caravans the
-  // size of small armies. Use a simple cap of 1.5 t cargo.
+  // Cap export size at what one large-caravan-class mule train + wagons
+  // can plausibly carry. Per docs/06 a heavy-wagon ox-team holds ~1.2 t
+  // and a full caravan with multiple wagons + 30+ mules can move several
+  // tonnes. A 6-tonne cap gives the export pipeline enough drain rate
+  // to handle bloat without making caravans the size of armies. Pre-
+  // v1.6 this was 1.5 t — too small to drain stockpiles measured in
+  // thousands of tonnes, so cities accumulated multi-year reserves.
   const def = getResource(choice.resource);
-  const maxKg = 1500;
+  const maxKg = 6000;
   const maxUnits = Math.max(1, Math.floor(maxKg / def.weightKgPerUnit));
   const qty = Math.min(available, maxUnits);
   if (qty <= 0) return null;
