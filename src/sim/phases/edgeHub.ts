@@ -26,6 +26,7 @@
  */
 
 import { createActor, removeStockAt } from '../politics/actor.js';
+import { getMarketObservation } from '../politics/knownPrices.js';
 import { MAX_ACTIVE_WORLD_CARAVANS } from '../caravan/limits.js';
 import {
   tickEdgeHubs,
@@ -211,17 +212,32 @@ export const edgeHubPhase = (
     // accurate (Roman senatorial trade was clan-level; guild ventures
     // were corporate). Each eligible owner with material stock at this
     // settlement becomes its own export source.
+    //
+    // v1.8 pass 35: dispatch decision uses the OWNER'S OWN knownPrices
+    // view of the settlement, not the settlement's true lastClearingPrice
+    // (per docs/06 §"Caravan information model"). For resident owners
+    // this is essentially the same data (daily presence sync keeps it
+    // fresh) but routing through the owner's map cleanly encodes the
+    // "no hidden hands" principle — the dispatch decision relies on
+    // information the actor would actually possess. If knownPrices for
+    // home is somehow missing, fall back to the settlement's quotes
+    // (which the actor would observe daily anyway).
     for (const oId of s.stockpileOwners) {
       const a = world.actors.get(oId);
       if (a === undefined) continue;
       if (a.kind !== 'patrician_family' && a.kind !== 'merchant_guild') continue;
       const slice = a.stockpile.get(s.id);
       if (slice === undefined || slice.size === 0) continue;
+      const obs = getMarketObservation(a, s.id, today);
+      const localPrices =
+        obs !== undefined
+          ? new Map(Array.from(obs.quotes, ([r, q]) => [r, q.bestAsk]))
+          : s.market.lastClearingPrice;
       cityExportSources.push({
         settlementId: s.id,
         hex: s.anchor,
         ownerActor: a.id,
-        localPrices: s.market.lastClearingPrice,
+        localPrices,
         availableForExport: slice,
       });
     }
