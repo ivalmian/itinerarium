@@ -503,8 +503,10 @@ export const recordImportUnchecked = (
   resource: ResourceId,
   qty: number,
 ): void => {
-  s.market.recentImports.set(resource, (s.market.recentImports.get(resource) ?? 0) + qty);
-  s.market.recentInflows.set(resource, (s.market.recentInflows.get(resource) ?? 0) + qty);
+  const intQty = Math.round(qty);
+  if (intQty <= 0) return;
+  s.market.recentImports.set(resource, (s.market.recentImports.get(resource) ?? 0) + intQty);
+  s.market.recentInflows.set(resource, (s.market.recentInflows.get(resource) ?? 0) + intQty);
 };
 
 export const recordImport = (s: Settlement, resource: ResourceId, qty: number): void => {
@@ -514,14 +516,18 @@ export const recordImport = (s: Settlement, resource: ResourceId, qty: number): 
 
 /** A trade pickup left this settlement (caravan buying cargo, seller side
  *  of a local-trade pair, fence outlet sale). Aggregated into
- *  `recentOutflows`. */
+ *  `recentOutflows`. v1.6 pass 27b: qty rounded to integer at deposit
+ *  to keep cumulative flow counters whole. EMA decay still produces
+ *  small fractions on read; snapshot serialization rounds for display. */
 export const recordExportUnchecked = (
   s: Settlement,
   resource: ResourceId,
   qty: number,
 ): void => {
-  s.market.recentExports.set(resource, (s.market.recentExports.get(resource) ?? 0) + qty);
-  s.market.recentOutflows.set(resource, (s.market.recentOutflows.get(resource) ?? 0) + qty);
+  const intQty = Math.round(qty);
+  if (intQty <= 0) return;
+  s.market.recentExports.set(resource, (s.market.recentExports.get(resource) ?? 0) + intQty);
+  s.market.recentOutflows.set(resource, (s.market.recentOutflows.get(resource) ?? 0) + intQty);
 };
 
 export const recordExport = (s: Settlement, resource: ResourceId, qty: number): void => {
@@ -536,8 +542,10 @@ export const recordProductionUnchecked = (
   resource: ResourceId,
   qty: number,
 ): void => {
-  s.market.recentProduction.set(resource, (s.market.recentProduction.get(resource) ?? 0) + qty);
-  s.market.recentInflows.set(resource, (s.market.recentInflows.get(resource) ?? 0) + qty);
+  const intQty = Math.round(qty);
+  if (intQty <= 0) return;
+  s.market.recentProduction.set(resource, (s.market.recentProduction.get(resource) ?? 0) + intQty);
+  s.market.recentInflows.set(resource, (s.market.recentInflows.get(resource) ?? 0) + intQty);
 };
 
 export const recordProduction = (s: Settlement, resource: ResourceId, qty: number): void => {
@@ -553,11 +561,13 @@ export const recordConsumptionUnchecked = (
   resource: ResourceId,
   qty: number,
 ): void => {
+  const intQty = Math.round(qty);
+  if (intQty <= 0) return;
   s.market.recentConsumption.set(
     resource,
-    (s.market.recentConsumption.get(resource) ?? 0) + qty,
+    (s.market.recentConsumption.get(resource) ?? 0) + intQty,
   );
-  s.market.recentOutflows.set(resource, (s.market.recentOutflows.get(resource) ?? 0) + qty);
+  s.market.recentOutflows.set(resource, (s.market.recentOutflows.get(resource) ?? 0) + intQty);
 };
 
 export const recordConsumption = (s: Settlement, resource: ResourceId, qty: number): void => {

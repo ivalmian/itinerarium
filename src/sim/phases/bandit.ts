@@ -50,7 +50,17 @@ import {
   BANDIT_PARTY_MOVEMENT_HEXES_PER_DAY,
   visibleThreatForParty,
 } from '../conflict/unitMovement.js';
-import { actorStockEntriesAt, addCoin, addStockAt, createActor, getStockAt, removeStockAt, subtractCoin, type Actor } from '../politics/actor.js';
+import {
+  actorStockEntriesAt,
+  addCoin,
+  addStockAt,
+  createActor,
+  getStockAt,
+  removeStockAt,
+  setCoin,
+  subtractCoin,
+  type Actor,
+} from '../politics/actor.js';
 import { createCharacter, generateFullName } from '../politics/character.js';
 import {
   drainDemographics,
@@ -1009,12 +1019,12 @@ const resolvePartyMissionAtTarget = (
       if (afterRaid !== undefined) {
         party.banditCount = afterRaid.banditCount;
         party.cargo = new Map(afterRaid.loot);
-        party.treasury = afterRaid.treasury;
+        setCoin(party, afterRaid.treasury);
       } else {
         // Synthetic camp was deleted (zero count) — the party was wiped.
         party.banditCount = 0;
         party.cargo = new Map();
-        party.treasury = 0;
+        setCoin(party, 0);
       }
       party.phase = 'returning';
       return;
@@ -1088,7 +1098,7 @@ const resolvePartyMissionAtTarget = (
         else targetCaravan.cargo.set(resId, newQty);
         party.cargo.set(resId, (party.cargo.get(resId) ?? 0) + qty);
       }
-      targetCaravan.treasury = Math.max(0, targetCaravan.treasury - result.coinTaken);
+      subtractCoin(targetCaravan, result.coinTaken);
       addCoin(party, result.coinTaken);
       // Apply party casualties. Drain banditDemographics in step with
       // banditCount and reflect into the global Person registry.
@@ -1169,7 +1179,7 @@ const resolvePartyMissionAtTarget = (
       );
       if (homeCampId !== null) world.banditCamps.set(homeCampId, realCampSnapshot);
       party.cargo = new Map(synth.loot);
-      party.treasury = synth.treasury;
+      setCoin(party, synth.treasury);
       party.phase = 'returning';
       return;
     }

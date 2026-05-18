@@ -115,6 +115,14 @@ export interface Actor {
    * `knownPrices.ts` for helpers and the 180-day staleness rule.
    */
   readonly knownPrices: KnownPrices;
+  /**
+   * v1.6 pass 27b: stockpile residue accumulator. `stockpile` only
+   * holds integer units; fractional production (e.g. raise_sheep
+   * outputs 0.005 herd-units/day) accumulates here per (settlement,
+   * resource) and tips into the integer stockpile when residue ≥ 1.
+   * Always in [0, 1). Same outer/inner keying as `stockpile`.
+   */
+  readonly stockpileResidue: Map<SettlementId, Map<ResourceId, number>>;
   /** Liquid coin. Mutable by design; ledger movements are at the call site. */
   treasury: Coin;
 }
@@ -137,8 +145,9 @@ export const createActor = (input: CreateActorInput): Actor => {
     name: input.name,
     ...(input.homeSettlement !== undefined ? { homeSettlement: input.homeSettlement } : {}),
     stockpile: new Map(),
+    stockpileResidue: new Map(),
     knownPrices: createKnownPrices(),
-    treasury: input.treasury ?? 0,
+    treasury: Math.max(0, Math.round(input.treasury ?? 0)),
   };
 };
 
@@ -183,13 +192,42 @@ export const intCoin = (n: number): number => {
 
 // --- Per-settlement stockpile accessors (docs/15 §C30) ---------------------
 
-/** Quantity an actor holds of `resource` at `settlement`. 0 if absent. */
+/**
+ * Quantity an actor holds of `resource` at `settlement`. Returns only
+ * INTEGER stockpile (trade-eligible). Fractional production residue
+ * sits in `stockpileResidue` and is not visible here; production
+ * code that needs the residue uses `getStockResidueAt`. Most code
+ * wants this integer-only view (trade quantities are whole units).
+ */
 export const getStockAt = (
   actor: Actor,
   settlement: SettlementId,
   resource: ResourceId,
 ): Quantity => {
   return actor.stockpile.get(settlement)?.get(resource) ?? 0;
+};
+
+/** Fractional residue (in [0,1)) accumulated for a (settlement, resource). */
+export const getStockResidueAt = (
+  actor: Actor,
+  settlement: SettlementId,
+  resource: ResourceId,
+): number => {
+  return actor.stockpileResidue.get(settlement)?.get(resource) ?? 0;
+};
+
+/**
+ * Effective stock = integer stockpile + fractional residue. Use in
+ * tests / diagnostics where fractional outputs are legitimately
+ * being verified. Trade / market code must NOT use this — only
+ * whole units are tradable.
+ */
+export const getEffectiveStockAt = (
+  actor: Actor,
+  settlement: SettlementId,
+  resource: ResourceId,
+): number => {
+  return getStockAt(actor, settlement, resource) + getStockResidueAt(actor, settlement, resource);
 };
 
 /**
@@ -247,7 +285,13 @@ export const addToStockpile = (
   addStockAt(actor, settlement, resource, qty);
 };
 
-/** Add to an actor's stockpile at `settlement`. Tolerates fractional qty. */
+/**
+ * Add to an actor's stockpile at `settlement`. The stockpile itself
+ * is always integer; fractional `qty` accumulates in
+ * `stockpileResidue` until it tips over an integer unit. See
+ * docs/08 §"Integer-coin prices" + user direction (v1.6 pass 27b):
+ * stockpile units are integers, period.
+ */
 export const addStockAt = (
   actor: Actor,
   settlement: SettlementId,
@@ -255,12 +299,31 @@ export const addStockAt = (
   qty: Quantity,
 ): void => {
   if (qty <= 0) return;
-  let slice = actor.stockpile.get(settlement);
-  if (slice === undefined) {
-    slice = new Map();
-    actor.stockpile.set(settlement, slice);
+  // Combine incoming qty with any standing fractional residue.
+  let residueSlice = actor.stockpileResidue.get(settlement);
+  const existingResidue = residueSlice?.get(resource) ?? 0;
+  const totalToCommit = qty + existingResidue;
+  const integerPart = Math.floor(totalToCommit);
+  const newResidue = totalToCommit - integerPart;
+  if (integerPart > 0) {
+    let slice = actor.stockpile.get(settlement);
+    if (slice === undefined) {
+      slice = new Map();
+      actor.stockpile.set(settlement, slice);
+    }
+    slice.set(resource, (slice.get(resource) ?? 0) + integerPart);
   }
-  slice.set(resource, (slice.get(resource) ?? 0) + qty);
+  if (newResidue > 0) {
+    if (residueSlice === undefined) {
+      residueSlice = new Map();
+      actor.stockpileResidue.set(settlement, residueSlice);
+    }
+    residueSlice.set(resource, newResidue);
+  } else if (residueSlice !== undefined && existingResidue > 0) {
+    // Residue cleanly consumed.
+    residueSlice.delete(resource);
+    if (residueSlice.size === 0) actor.stockpileResidue.delete(settlement);
+  }
 };
 
 /**
@@ -286,10 +349,11 @@ export const removeFromStockpile = (
 };
 
 /**
- * Remove up to `qty` from an actor's stockpile at `settlement`. Clamps
- * fractional-precision drift to zero; if the resulting slice is empty
- * the inner map is pruned, and if the settlement key has no resources
- * left the outer key is also pruned.
+ * Remove up to `qty` from an actor's stockpile at `settlement`.
+ * Stockpile is integer; fractional `qty` first consumes any
+ * standing residue, then takes integer units from the stockpile.
+ * If the result would go negative we clamp to 0 (the caller should
+ * use removeFromStockpile for strict "must have enough" guards).
  */
 export const removeStockAt = (
   actor: Actor,
@@ -299,13 +363,37 @@ export const removeStockAt = (
 ): void => {
   if (qty <= 0) return;
   const slice = actor.stockpile.get(settlement);
-  if (slice === undefined) return;
-  const current = slice.get(resource) ?? 0;
-  const remaining = current - qty;
-  if (remaining <= 1e-9) {
-    slice.delete(resource);
-    if (slice.size === 0) actor.stockpile.delete(settlement);
-  } else {
-    slice.set(resource, remaining);
+  const residueSlice = actor.stockpileResidue.get(settlement);
+  const existingInt = slice?.get(resource) ?? 0;
+  const existingResidue = residueSlice?.get(resource) ?? 0;
+  const totalAvailable = existingInt + existingResidue;
+  const totalAfter = Math.max(0, totalAvailable - qty);
+  // Split totalAfter back into integer + residue.
+  const newInt = Math.floor(totalAfter);
+  const newResidue = totalAfter - newInt;
+  // Update stockpile.
+  if (slice !== undefined) {
+    if (newInt > 0) slice.set(resource, newInt);
+    else {
+      slice.delete(resource);
+      if (slice.size === 0) actor.stockpile.delete(settlement);
+    }
+  } else if (newInt > 0) {
+    const fresh = new Map<ResourceId, number>();
+    fresh.set(resource, newInt);
+    actor.stockpile.set(settlement, fresh);
+  }
+  // Update residue.
+  if (newResidue > 0) {
+    if (residueSlice === undefined) {
+      const fresh = new Map<ResourceId, number>();
+      fresh.set(resource, newResidue);
+      actor.stockpileResidue.set(settlement, fresh);
+    } else {
+      residueSlice.set(resource, newResidue);
+    }
+  } else if (residueSlice !== undefined) {
+    residueSlice.delete(resource);
+    if (residueSlice.size === 0) actor.stockpileResidue.delete(settlement);
   }
 };

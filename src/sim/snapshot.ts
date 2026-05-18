@@ -66,10 +66,12 @@ import type { SettlementSite } from '../procgen/settlements.js';
 
 // --- Serialized shapes ------------------------------------------------------
 
+// v3 (v1.6 pass 27b): integer-only treasury + stockpile, with new
+//   Actor.stockpileResidue per-(settlement, resource) fractional
+//   accumulator. v2 snapshots rejected (no silent shim per CLAUDE.md).
 // v2 (v1.6 realism pass): Actor.knownPrices added per docs/06 §"Caravan
-// information model". Old v1 snapshots are intentionally rejected — no
-// silent-default shim per CLAUDE.md no-backwards-compat rule.
-const SCHEMA_VERSION = 2 as const;
+//   information model".
+const SCHEMA_VERSION = 3 as const;
 
 interface SerializedHex {
   readonly q: number;
@@ -167,6 +169,10 @@ interface SerializedActor {
    * as `[settlementId, [[resourceId, quantity], ...]][]`.
    */
   readonly stockpile: ReadonlyArray<readonly [string, ReadonlyArray<readonly [string, number]>]>;
+  /** v3: fractional residue accumulator (production carry-over). */
+  readonly stockpileResidue: ReadonlyArray<
+    readonly [string, ReadonlyArray<readonly [string, number]>]
+  >;
   /**
    * Per docs/06 §"Caravan information model": one MarketObservation per
    * settlement. Serialized as `[settlementId, { observedDay, quotes:
@@ -577,12 +583,19 @@ const serializeActor = (a: Actor): SerializedActor => {
     }
     knownPrices.push([String(sId), { observedDay: obs.observedDay, quotes }] as const);
   }
+  const stockpileResidue: Array<readonly [string, ReadonlyArray<readonly [string, number]>]> = [];
+  for (const [sId, slice] of a.stockpileResidue) {
+    const entries: Array<readonly [string, number]> = [];
+    for (const [r, q] of slice) entries.push([String(r), q] as const);
+    stockpileResidue.push([String(sId), entries] as const);
+  }
   return {
     id: String(a.id),
     kind: a.kind,
     name: a.name,
     ...(a.homeSettlement !== undefined ? { homeSettlement: String(a.homeSettlement) } : {}),
     stockpile,
+    stockpileResidue,
     knownPrices,
     treasury: a.treasury,
   };
@@ -601,6 +614,12 @@ const deserializeActor = (a: SerializedActor): Actor => {
     const slice = new Map<ResourceId, number>();
     for (const [r, n] of entries) slice.set(resourceId(r), n);
     if (slice.size > 0) actor.stockpile.set(sId, slice);
+  }
+  for (const [sIdStr, entries] of a.stockpileResidue) {
+    const sId = settlementId(sIdStr);
+    const slice = new Map<ResourceId, number>();
+    for (const [r, n] of entries) slice.set(resourceId(r), n);
+    if (slice.size > 0) actor.stockpileResidue.set(sId, slice);
   }
   for (const [sIdStr, ser] of a.knownPrices) {
     const sId = settlementId(sIdStr);

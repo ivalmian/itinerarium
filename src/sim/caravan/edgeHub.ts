@@ -112,8 +112,8 @@ const addImportOperatingTreasury = (caravan: Caravan): void => {
   // delivery, not profit. Without it, an import caravan that cannot sell
   // enough cargo immediately can starve even in a food-bearing market.
   caravan.treasury = Math.max(
-    caravan.treasury,
-    dailyCarriedFoodReserveKg(caravan) * IMPORT_OPERATING_TREASURY_DAYS,
+    Math.round(caravan.treasury),
+    Math.round(dailyCarriedFoodReserveKg(caravan) * IMPORT_OPERATING_TREASURY_DAYS),
   );
 };
 

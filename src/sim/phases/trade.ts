@@ -1059,8 +1059,8 @@ const tryLocalTrade = (
   if (buyerIntent.disposition === 'stockpile') {
     increaseStockpile(buyerActor, buyer.id, resId, qty);
   }
-  sellerActor.treasury = sellerActor.treasury + coinPaid;
-  buyerActor.treasury = buyerActor.treasury - coinPaid;
+  addCoin(sellerActor, coinPaid);
+  subtractCoin(buyerActor, coinPaid);
   // Local trade between two settlements: seller exports, buyer imports.
   recordExport(seller, resId, qty);
   recordImport(buyer, resId, qty);
