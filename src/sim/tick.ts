@@ -43,6 +43,11 @@ import { demographicsPhase } from './phases/demographics.js';
 import { demolitionPhase } from './phases/demolition.js';
 import { fiscalRedistributionPhase } from './phases/fiscalRedistribution.js';
 import { homePresenceSyncPhase } from './phases/homePresenceSync.js';
+import {
+  caravanArrivalSyncPhase,
+  caravanMeetingSyncPhase,
+  guildLedgerSyncPhase,
+} from './phases/priceSync.js';
 import { investmentPhase } from './phases/investment.js';
 import { movementPhase } from './phases/movement.js';
 import { edgeHubPhase } from './phases/edgeHub.js';
@@ -597,8 +602,20 @@ export const tick = (inputs: TickInputs): TickResult => {
   // settlement records a fresh MarketObservation into its knownPrices map
   // for that settlement (docs/06 §"All knowledge comes from syncs",
   // docs/10 decision 38). Not magic — literally "I live here, I see the
-  // forum prices today." Caravan/meeting/guild syncs land in Phase 23.
+  // forum prices today."
   homePresenceSyncPhase(world, today);
+
+  // --- Phase 4d: Mobile-unit price syncs ----------------------------------
+  // Caravan arrival: every caravan currently parked at a settlement anchor
+  // writes a fresh MarketObservation into its owner's knownPrices map.
+  // Caravan meeting: pairs of caravans co-located on the same hex merge
+  // their owners' maps (hostile actors refuse to share).
+  // Guild ledger: every guild member co-present at the guild's home —
+  // resident members or those with a caravan parked at home — mutual-
+  // merges with the guild's map (docs/13 §"News-carrier price piggyback").
+  caravanArrivalSyncPhase(world, today);
+  caravanMeetingSyncPhase(world);
+  guildLedgerSyncPhase(world);
 
   // --- Phase 4b: Consumption / famine pressure -----------------------------
   consumptionPhase(world, today, events, stats, subsistenceAccess);
