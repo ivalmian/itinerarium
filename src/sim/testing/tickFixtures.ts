@@ -20,6 +20,7 @@ import { createSettlement, type Settlement } from '../world/settlement.js';
 import {
   addStockAt,
   createActor,
+  getEffectiveStockAt,
   getStockAt,
   removeStockAt,
   type Actor,
@@ -67,6 +68,10 @@ export const setStock = (a: Actor, r: ResourceId, q: number): void => {
 
 export const getStock = (a: Actor, r: ResourceId): number =>
   getStockAt(a, stockSettlementFor(a), r);
+
+/** Effective stock for tests: integer stockpile + fractional residue. */
+export const getEffectiveStock = (a: Actor, r: ResourceId): number =>
+  getEffectiveStockAt(a, stockSettlementFor(a), r);
 
 export const makeTile = (terrain: HexTile['terrain'] = 'plains'): HexTile => ({
   terrain,

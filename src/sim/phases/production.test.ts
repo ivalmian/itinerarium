@@ -20,6 +20,7 @@ import {
   buildEmptyWorld,
   buildOneSettlementWorld,
   eventsOfType,
+  getEffectiveStock,
   getStock,
   makeTile,
   setStock,
@@ -95,7 +96,9 @@ import {
       ).toBe(true);
       expect(owner.treasury).toBeCloseTo(100, 6);
       expect(getStock(owner, coin) ?? 0).toBe(0);
-      expect(getStock(owner, silver)).toBeCloseTo(0.6, 6);
+      // v1.6 pass 27b: silver consumed 1 - 0.4 = 0.6 lives in residue
+      // (sub-1-unit fractional carry); effective stock includes it.
+      expect(getEffectiveStock(owner, silver)).toBeCloseTo(0.6, 6);
     });
 
     it('idles production when the owner already holds the output stock target', () => {
@@ -313,10 +316,11 @@ import {
           (e) => String(e.recipe) === 'mine_iron',
         ),
       ).toBe(true);
-      expect(owner !== undefined ? getStock(owner, resourceId('mineral.iron_ore')) : 0).toBeCloseTo(
-        5,
-        6,
-      );
+      // v1.6 pass 27b: fractional production residue is in stockpileResidue;
+      // tests checking exact output volume use the effective view.
+      expect(
+        owner !== undefined ? getEffectiveStock(owner, resourceId('mineral.iron_ore')) : 0,
+      ).toBeCloseTo(5, 6);
       expect(withDepositWorld.grid.get(hex(1, 0))?.deposit).toBeUndefined();
     });
 
