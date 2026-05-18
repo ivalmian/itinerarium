@@ -21,13 +21,13 @@ A caravan is a unit with:
 - **Treasury**: coin or barter goods.
 - **Knowledge**: prices observed at hexes recently visited (decays
   with time).
-- **Owner**: a named domestic actor (the player, a patrician
-  family, the governor's office, a procgen-seeded `caravan_owner`
-  warm-start, or a `free_village` / `hamlet_household` for short-
-  haul villager carts). Cargo belongs to the owner. **No on-map
-  caravan is owned by an off-map merchant house** — the
-  `off_map_house` actor kind is only the per-edge-gate synthetic
-  endpoint for inbound visits (docs/10 §45).
+- **Owner**: usually a named domestic actor (the player, a patrician
+  family, the governor's office, an optional `caravan_owner`, or a
+  `free_village` / `hamlet_household` for short-haul villager carts).
+  Cargo belongs to the owner. The exception is an edge-hub inbound
+  import caravan: it is owned while on-map by the per-edge-gate
+  synthetic `off_map_house` endpoint, which has no `homeSettlement`
+  and is deleted/sunk when the visit ends (docs/10 §45).
 - **Disease state**: healthy / exposed / infectious. See
   [04 — Population](04-population.md). An infectious caravan can
   start an outbreak in any settlement it visits.
@@ -81,8 +81,8 @@ Crew:
   standing merchants, tax shipments, and edge-hub convoys. When the road
   network is already saturated, new dispatches queue or wait instead of
   appearing as a discontinuous wave.
-- During burn-in, wealthy patrician families, caravan-owner actors,
-  and merchant houses may assemble replacement caravans when the
+- During burn-in, wealthy patrician families and optional
+  `caravan_owner` actors may assemble replacement caravans when the
   standing merchant fleet falls below the province target. This is
   paced (at most a couple per week), owner-capped, and funded by a
   real transfer from the owner's treasury into the caravan's operating
@@ -310,7 +310,7 @@ These are first-pass; numbers will move during burn-in:
 | `DIRT_DOWNGRADE_THRESHOLD`      | 20      | wear floor below which `dirt` → `none`                                              |
 | `MAX_ROAD_WEAR`                 | 200     | maximum stored wear on a non-Roman hex                                              |
 | `MAX_ROAD_WEAR_ADDED_PER_ENTRY` | 10      | maximum one moving unit adds to one hex in one day                                  |
-| `ROMAN_WEARS`                   | false   | Roman roads don't accrue wear or decay                                              |
+| `ROMAN_WEARS`                   | false   | Roman roads don't accrue trail wear; quarterly maintenance can still demote them     |
 
 A medium caravan (~10 mules, ~5 crew) puts down ~2.25 wear per
 hex crossed. So a single caravan transit helps, but does not build
@@ -349,19 +349,18 @@ ransom it).
 ## International ventures (locked, v1.6)
 
 Some goods come from beyond the mapped world. Some go to it. Both
-move on **real caravans dispatched by named actors in our cities**
-who decide each trip is worth the risk. The off-map destination is
-abstract (see [08 — Money & Trade](08-money-and-trade.md)) but every
-on-map step is fully simulated.
+move on **real caravans**, but the owner differs by direction. Exports
+are dispatched by named on-map patrician families and merchant guilds;
+imports are inbound edge-hub visits owned by per-edge-gate synthetic
+`off_map_house` actors. The off-map destination is abstract (see
+[08 — Money & Trade](08-money-and-trade.md)) but every on-map step is
+fully simulated.
 
-There is **no fixed dispatch cadence** for international caravans
-dispatched from on-map cities. **No off-map merchant has a permanent
-on-map base**: there is no "import house" with an on-map
-`homeSettlement`. (See §"Edge-hub inbound visits" below for the
-counterpart — the off-map global market does send merchants who
-visit our markets temporarily; those visits do not constitute
-permanent presence and are owned by per-edge-gate synthetic
-endpoints, not on-map actors.)
+The old sparse import-house spawn schedule is gone, but the current
+implementation still evaluates edge trade every day with high safety
+caps and stochastic spawn probabilities. **No off-map merchant has a
+permanent on-map base**: there is no "import house" with an on-map
+`homeSettlement`. (See §"Edge-hub inbound visits" below.)
 
 ### Who dispatches a venture
 
@@ -444,18 +443,20 @@ The edge hex itself is the global-market venue. The global market
 has effectively infinite buying and selling capacity at the
 [global reference price](08-money-and-trade.md#the-off-map-global-market-locked) —
 a caravan arriving at the edge hex can dump its entire cargo and
-fill its capacity from the global market without slippage. This
-replaces the older "fixed daily-spawn import/export cap" model
-entirely.
+fill its capacity from the global market without slippage. The market
+itself does not impose slippage; the code still keeps high daily and
+active-fleet safety caps around the edge-hub pipeline so it cannot
+exceed the global caravan budget.
 
 ### What restrains volume
 
-Without per-day spawn caps and without aggregate active-caravan
-ceilings on the edge-hub pipeline, what keeps trade volumes from
-exploding is the **3× transport-cost threshold + bounded actor
-information**:
+The code has high finite per-day and active-fleet caps on the edge-hub
+pipeline (`20` import spawns/day, `30` export spawns/day, `200` active
+imports, `300` active exports, plus the world caravan ceiling). These
+are safety rails, not the economic throttle. What keeps trade volumes
+from exploding is the **margin gate + bounded actor information**:
 
-- A patrician dispatcher in City A only knows the prices it has
+- A patrician or merchant-guild export dispatcher in City A only knows the prices it has
   seen via its own returning caravans + carrier-piggyback news. A
   destination that no caravan has reached recently has unknown
   remote prices — the actor cannot rationally dispatch a venture
@@ -467,12 +468,14 @@ information**:
   competes for the local return cargo at the destination affects
   the destination's local market). The 3× margin shrinks; further
   ventures wait.
-- Real treasury constraints. A patrician with 20,000 coin can't
-  dispatch 50 simultaneous ventures.
+- Real treasury and stockpile constraints. A patrician with 20,000
+  coin and limited cargo can't dispatch 50 simultaneous ventures;
+  an inbound off-map import only spawns when a target town/city has a
+  positive landed scarcity margin.
 
-These three together produce the right shape: profitable routes
-attract a few ventures, prices converge, dispatch slows. No global
-throttle.
+These together produce the right shape: profitable routes attract a
+few ventures, prices converge, dispatch slows. The high caps prevent
+runaway load but are not meant to determine normal trade volume.
 
 ### Player and international ventures
 
@@ -492,14 +495,14 @@ brought their wares to Italian markets, sold them, looked for
 something worth carrying home, and left.
 
 **No off-map merchant has a permanent on-map presence.** There is
-no `off_map_house` actor with an on-map `homeSettlement`. The only
-on-map actors that own caravans are domestic (`patrician_family`,
+no `off_map_house` actor with an on-map `homeSettlement`. Domestic
+caravans are owned by domestic actors (`patrician_family`,
 `caravan_owner`, `governor_office`, `free_village`,
-`hamlet_household`). The per-edge-gate synthetic actor (kind
-`off_map_house`, no home settlement) exists solely as the
-accounting endpoint for inbound visits — it owns the inbound
-caravan while it is on-map and is the sink for value that returns
-off-map.
+`hamlet_household`, or export-dispatching `merchant_guild`). The
+per-edge-gate synthetic actor (kind `off_map_house`, no home
+settlement) exists solely as the accounting endpoint for inbound
+visits — it owns the inbound caravan while it is on-map and is the
+sink for value that returns off-map.
 
 **Lifecycle of an inbound off-map caravan:**
 
@@ -539,11 +542,19 @@ destination city for coin, those goods stay in its cargo and ship
 back off-map at the end of the visit. The destination does not
 receive free inventory.
 
-**Owner kinds that may host standing merchant caravans**:
-`patrician_family`, `caravan_owner` (procgen-seeded warm-start
-houses with on-map home cities), `governor_office` (for tax + 
-imperial shipping). `off_map_house` is **never** a standing-
-merchant owner — only an edge-gate synthetic endpoint.
+**Owner kinds by caravan class in the implementation**:
+
+- Warm-start standing caravans: `patrician_family` and
+  `governor_office`.
+- Replacement standing merchant caravans: `patrician_family` and
+  `caravan_owner` if such an owner exists.
+- Outbound edge exports: `patrician_family` and `merchant_guild`.
+- Tax shipments: `governor_office`.
+- Villager carts: `free_village` / `hamlet_household`.
+- Inbound edge imports: synthetic `off_map_house` endpoint only.
+
+`off_map_house` is **never** a warm-start or replacement standing-
+merchant owner; it only owns temporary inbound edge-hub visits.
 
 ## Caravan information model (locked, v1.6)
 
@@ -806,26 +817,27 @@ Family caravans (run by a patrician family) have additional
 priorities: moving family goods to market, supplying the family
 town house, returning rents in kind from owned villages.
 
-**Villager caravans** (docs/15 §C31) are a separate sub-type
-dispatched by free-village stewards to the nearest city. Same
-planner logic, but smaller: 2-4 mules + 1 drover + 1 guard, no
-light cart, operating treasury 50-250 coin. The dispatch trigger
-covers the everyday Roman village ↔ city flow:
+**Villager caravans** (docs/15 §C31) are a separate low-capacity
+sub-type dispatched by `free_village` and `hamlet_household`
+stewards. Same planner logic, but smaller: 2-4 mules, optional
+donkey, 1 drover + 1 guard, no light cart, operating treasury
+50-250 coin. The dispatch trigger covers everyday village / hamlet
+market runs:
 
 - **surplus run** — village has any exportable inventory (food,
   fibre, wood, hides, livestock, cloth) above ~14 days of local
   use;
 - **import trip** — steward has accumulated ≥200 coin to buy
-  city-made goods (pottery / oil / wine / salt / iron tools)
-  the village can't make itself;
+  goods (pottery / oil / wine / salt / iron tools) the settlement
+  can't make itself;
 - **hard-times resupply** — village grain is under 7 days of
   subsistence AND the steward has any cash, so coin drains out
   to fund a buy-back run.
 
 The caravan's ID carries the `villager-` prefix so the viewer
-renders it with the dedicated handcart glyph. Per-village cap = 1
-active. Separate fleet target (~0.5 × village count) so they don't
-crowd the standing merchant fleet.
+renders it with the dedicated handcart glyph. Per-owner cap = 3
+active. Separate fleet target (~0.5 × village count, max 120) so
+they don't crowd the standing merchant fleet.
 
 Long-haul houses additionally use the global-market reference prices
 to evaluate export routes (see
@@ -882,9 +894,10 @@ serialized as part of the WorldState snapshot.
 
 ## Local trade between nearby settlements (locked, v1.6)
 
-Local trade is **not** a daily-pass abstraction. The old
-`localTradePhase` that teleported goods between settlement pairs
-based on spread calculation is **deleted**. Realism rule (per user
+Local trade beyond same-hex is **not** a daily-pass abstraction. The
+old `localTradePhase` behavior that teleported goods between distinct
+hexes based on spread calculation is **deleted**. The remaining
+implementation is same-hex only. Realism rule (per user
 direction): a villager walking a cart of grain to the next pagus is
 exposed to the **same ambush, weather, disease, and food-supply
 risks** as a 50-mule merchant train walking the same road. A grain
@@ -894,12 +907,11 @@ settlement trade flow goes through a **real caravan unit** with a
 position on the map, a goal stack, food consumption, ambush
 exposure, and a snapshot identity.
 
-The existing **villager caravan** subsystem (docs/15 §C31) — small
-handcart units rendered with the handcart glyph in the viewer — is
-the right vehicle for local trade. It already exists, has all the
-right machinery, and just needs to be extended to cover the
-village-to-village and village-to-town arcs that the old daily-pass
-abstraction used to handle.
+The existing **villager caravan** subsystem (docs/15 §C31) is the
+implemented low-capacity local-trade vehicle. Free-village and
+hamlet stewards spawn real caravans; the normal caravan planner then
+chooses routes from known prices / fallback scouting. There is no
+separate hidden daily-pass for adjacent settlements.
 
 ### Caravan size tiers (locked, v1.6)
 
@@ -909,15 +921,15 @@ size, dispatcher, and typical route length:
 
 | Tier | Cargo cap | Crew + animals | Typical dispatcher | Typical range |
 |------|-----------|----------------|---------------------|---------------|
-| **Handcart / basket** | ≤ 50 kg | 1 person, no animals | `hamlet_household`, `free_village`, individual peasant | 1–3 hex, ≤1 day |
-| **Villager cart** | ≤ 400 kg | 1 drover + 1 guard, 2–4 mules | `free_village` steward (docs/15 §C31), extended in v1.6 to also dispatch village↔village arcs | up to 6 hex, ≤3 days |
-| **Standing merchant** | 500 – 1,500 kg | full crew + escort, 10–50 mules or wagons | `patrician_family`, `city_corporation`, `governor_office`, `merchant_guild` | multi-cluster, multi-day |
-| **International venture** | 500 – 1,500 kg | full crew + escort | `patrician_family` or `merchant_guild` (v1.6) | home → edge hex → 20-tick sojourn → home |
+| **Villager pack caravan** | ~200–450 kg gross before rations | 1 drover + 1 guard, 2–4 mules plus optional donkey, pack saddle | `free_village` / `hamlet_household` steward (docs/15 §C31) | usually short because treasury/capacity are small; no abstract 6-hex daily-pass cap |
+| **Standing merchant** | 500 – 1,500 kg | full crew + escort, 10–50 mules or wagons | warm-start: `patrician_family` / `governor_office`; replacement: `patrician_family` / optional `caravan_owner` | multi-cluster, multi-day |
+| **International venture** | 500 – 1,500 kg | full crew + escort | outbound: `patrician_family` / `merchant_guild`; inbound: synthetic `off_map_house` | export: home → edge hex → 20-tick sojourn → home; import: edge → city → edge |
 
-Cargo class caps come from the loaded cart, NOT from a pair-wise
-daily flow rate. A village steward dispatching a handcart with 50 kg
-of cheese to the adjacent village creates ONE caravan unit. If the
-spread justifies it again the next day, a second unit dispatches.
+Cargo caps come from the animals / vehicles on the actual unit, NOT
+from a pair-wise daily flow rate. A village steward dispatching a
+small pack caravan creates ONE caravan unit. If later planning still
+finds a viable route, another unit may dispatch within the owner and
+world caps.
 
 ### Why all tiers see the same risk
 
@@ -929,42 +941,38 @@ don't either. So the petty arc must use the same mechanics:
 - **Movement** uses the same per-hex / per-terrain / per-season cost
   model (§"Movement").
 - **Food consumption** uses the same crew-rations + animal-fodder
-  rules. A villager handcart needs ~1 ration / day for the one
-  drover; a 4-mule villager cart needs additional mule fodder.
+  rules. A villager pack caravan feeds its drover, guard, and
+  pack animals.
 - **Ambush exposure** uses the same bandit-density roll. Smaller,
   lightly defended units are easier targets — the same ambush
   formula naturally produces this (low `guardScore` × low
   `weaponsScore`).
 - **Disease** uses the same caravan-as-vector rule. An infected
-  handcart entering a clean village can spark a local outbreak.
+  villager caravan entering a clean village can spark a local
+  outbreak.
 - **Snapshot** carries the same `Caravan` fields. There is no
   separate "petty" type — only different size parameters.
 
 ### Dispatch triggers (locked, v1.6)
 
-A `free_village` or `hamlet_household` steward dispatches a handcart
-or villager cart when:
+A `free_village` or `hamlet_household` steward is eligible to
+dispatch when the home settlement is a village or hamlet, the owner
+has at least the minimum operating treasury, it is under the per-owner
+active cap, and one of these conditions is true:
 
-1. **Local arbitrage** — observed `knownPrices` for an adjacent
-   settlement show a spread that beats round-trip transport cost
-   plus the steward's reluctance margin (~10–20 % above
-   break-even, lower than the patrician 3× because peasant
-   opportunity cost is low and they walk anyway).
-2. **Surplus run** — village has any exportable inventory above
-   reserve (existing §C31 trigger, extended to neighbors not just
-   the nearest city).
-3. **Import trip** — steward has accumulated cash to buy goods the
-   village can't make.
-4. **Hard-times resupply** — village staple stocks under reserve;
-   the steward drains cash to fetch food back.
+1. **Surplus run** — exportable inventory is meaningfully above a
+   local-use reserve.
+2. **Import trip** — the steward has accumulated enough treasury to
+   buy goods the settlement cannot make.
+3. **Hard-times resupply** — grain stocks are critically low and the
+   steward has cash to fetch staples back.
 
-For the dispatcher's `knownPrices` to register an adjacent
-settlement as a candidate, **someone has to have walked the news
-back** — same rule as everywhere else (docs/13 §"News-carrier
-price piggyback"). A village with no recent caravan traffic
-in/out has stale information about its neighbors. This is what
-makes the "no hidden hands" rule bite at the local-arbitrage
-layer.
+Dispatch does not itself pick an adjacent arbitrage target. Once the
+unit exists, the normal caravan planner uses the caravan's
+`knownPrices`, bid-depth estimates, route costs, bandit risk, tolls,
+and fallback scouting to choose a destination. A village with stale
+or missing observations can still scout, but it does not receive a
+hidden price oracle.
 
 ### Same-hex coexistence is the ONLY zero-tick case
 
@@ -990,58 +998,40 @@ arrive sick.
 | 4 | 2 each way | 4 days |
 | 5 | 2–3 each way | 5 days |
 | 6 | 3 each way | 6 days |
-| 7+ | use standing merchant / international rules | … |
+| 7+ | 3+ each way | same operating-cost model; small caravans rarely profit |
 
-The handcart and villager-cart tiers normally restrict to ≤ 6 hex
-because longer hauls don't pay for the smaller carrying capacity.
-Past 6 hex the planner naturally selects a larger tier (or no
-dispatch at all).
-
-### Distance and cost
-
-| Hex distance | Days to walk | Transport cost (coin/kg)    | Notes                                                        |
-| ------------ | ------------ | --------------------------- | ------------------------------------------------------------ |
-| 0 (same hex) | 0 ticks      | 0                           | Same-hex pagus + hamlets — free sync.                        |
-| 1 (adjacent) | 1            | 0.005                       | A villager walks over with a basket.                         |
-| 2            | 1            | 0.01                        | Pickup cart, half-day each way.                              |
-| 3            | 1–2          | 0.02                        | Outer range for household petty trade.                       |
-| 4            | 2            | 0.035                       | Industrial/workshop cartage only.                            |
-| 5            | 2–3          | 0.055                       | Industrial/workshop cartage only.                            |
-| 6            | 3            | 0.08                        | Outer range for ore/charcoal/metal/tool local cartage.       |
-| 7+           | 3+           | use long-haul caravan rules | Out of local-trade scope; persistent caravans should handle. |
-
-Transport cost is a fixed coin/kg surcharge added to the seller's
-asking price. If buyer's price doesn't beat seller's price + cost
-
-- merchant cut, no trade happens that day for that resource pair.
+There is no hard 6-hex local-trade cap in the implementation. Longer
+routes are naturally discouraged because a small villager pack caravan
+has limited cargo capacity, limited treasury, ration/fodder needs, and
+the same risk model as larger caravans. The old fixed coin/kg
+local-cartage surcharge is not used for distance >= 1 trade.
 
 ### Why this matters
 
 - The pagus + dependent-hamlets cluster on the same hex shares
   surplus instantly via market clearing: a hamlet that produced
   extra wool sees it reach the village's weaver same-tick.
-- A rich city's market spike for grain pulls grain from every
-  neighbor village within range — but each shipment is a real
-  villager handcart on the road, taking real days, exposed to
-  real bandits. The "city sucks the countryside dry" pattern
-  emerges, but slowly enough that interceptable rural ambushes
-  matter.
+- A rich city's market spike for grain can pull grain from villages
+  whose stewards have stock, cash, observations, and viable routes -
+  but each shipment is a real villager caravan on the road, taking
+  real days, exposed to real bandits. The "city sucks the countryside
+  dry" pattern emerges only through dispatchable units.
 - A village starting to starve sees its grain price spike; a
-  neighbor with surplus dispatches a real handcart that walks the
-  hex, arrives, and clears its bid at the famished market. The
-  cart can be ambushed en route — and IS, sometimes.
+  neighbor with surplus can dispatch a real villager caravan that
+  walks the route, arrives, and clears its bid at the famished
+  market. The caravan can be ambushed en route - and is, sometimes.
 - Famine still happens — but it can happen because the regional
   surplus genuinely failed, OR because the road between two
   settlements is unsafe and the cart never arrived.
 
 ### Local petty trade vs. long-haul caravans
 
-| Local petty / villager cart | Standing merchant / international |
+| Villager pack caravan | Standing merchant / international |
 |-----------------------------|-----------------------------------|
-| Handcart or 2–4 mule cart | Large mule train or wagon, 10–50 animals |
-| Originates at village/hamlet; restricted route set (nearest cities + adjacent villages) | Any city-based dispatcher; route anywhere with information |
-| Dispatched by `free_village` / `hamlet_household` steward | Dispatched by `patrician_family`, `city_corporation`, `governor_office`, `merchant_guild` |
-| 1–6 hex round trip | Multi-cluster, multi-day, possibly international (with 20-tick off-map sojourn) |
+| 2–4 mule pack caravan, optional donkey | Larger mule train or wagon, 10–50 animals |
+| Originates at village/hamlet; route chosen by normal planner from known prices or fallback scouting | Any city-based dispatcher; route anywhere with information |
+| Dispatched by `free_village` / `hamlet_household` steward | Standing replacement by `patrician_family` / optional `caravan_owner`; outbound edge exports by `patrician_family` / `merchant_guild`; tax shipments by `governor_office`; inbound imports by synthetic `off_map_house` |
+| Usually short because capacity, treasury, and rations are small; no hidden local-trade distance cap | Multi-cluster, multi-day, possibly international (with 20-tick off-map sojourn) |
 | **Real Caravan unit with full movement / food / ambush / disease machinery** | Same |
 | Buys + sells via the destination's CDA market (bid/ask) | Same |
 | Cheaper to lose (less capital exposed) but proportionally less defended | Bigger losses possible but proportionally better defended |

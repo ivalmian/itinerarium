@@ -611,8 +611,9 @@ seeds are scaled **5× the pre-realism-pass baseline**. Reasons:
   side effect on the staple subsistence chain (sub-1-coin bread)
   remains, but every other chain has headroom.
 - Procgen treasury seeds (patrician 40k–120k, governor 100k–250k,
-  city corp 25k, plebeian households 150 coin/capita, merchant houses
-  5k–25k, etc.) move in lockstep so actors start with real
+  city corp 25k, plebeian households 150 coin/capita, edge-hub
+  synthetic off-map endpoints 100k operating float, etc.) move in
+  lockstep so actors start with real
   working capital at the new price level rather than running broke
   from day 1.
 
@@ -629,19 +630,20 @@ at **quantity = 2.0 modii per forum-capacity-unit** and a
 town/city, that's a structurally high civic bid for staple food.
 
 The effect, working through real caravan units (per docs/10 §43,
-the abstract local-trade daily-pass is deleted — every cross-
-settlement trade is a real unit on the map):
+the abstract local-trade daily-pass is deleted for distance ≥1 —
+every cross-hex settlement trade is a real unit on the map):
 
 1. The forum's bid pulls the city's clearing price for grain well
    above the rural village's clearing price.
 2. The village's `free_village` steward dispatches a **villager
-   caravan** (handcart, 2-4 mules, 1 drover + 1 guard) carrying
-   grain to the city. On arrival the caravan sells at the city's
-   clearing price (per the bid/ask book).
+   caravan** (2-4 mules, optional donkey, 1 drover + 1 guard) when
+   surplus/import/resupply triggers justify a run. If the normal
+   planner selects the city and loads grain, arrival sells at the
+   city's clearing price (per the bid/ask book).
 3. Coin flows from city corp → village household. Grain flows the
-   other way. The spread closes to roughly the per-hex transport
-   cost (~0.005–0.02 coin/kg), but the village still nets a real
-   premium over its local clearing price.
+   other way. The spread closes only through the shipped quantity,
+   after real wages, fodder, rations, cart wear, and risk; there is
+   no hidden fixed local-cartage price band.
 
 This makes "rural producers, urban consumers, integrated through trade"
 emerge from the price gradient instead of being scripted. It also
@@ -663,7 +665,7 @@ the trade's execution price into `lastClearingPrice` for the
 relevant settlement(s)**, even when the trade itself didn't go
 through the CDA. Specifically:
 
-- Caravan trade-on-arrival (handcart, villager, standing, edge-hub
+- Caravan trade-on-arrival (villager, standing, edge-hub
   inbound) — writes the trade's per-unit price into the settlement's
   clearing-price map for each resource sold/bought.
 - Off-map import / export caravan — same; an import landing at city
@@ -806,26 +808,29 @@ is no shared "regional clearing price"; if the village runs short
 of grain its price will spike before the neighbor hamlets feel it.
 
 What pulls those four markets back into rough alignment is **real
-caravan traffic** (per docs/10 §43). Short-haul **handcart and
-villager caravans** (1-2 drovers + a few mules, ≤ 6 hex round trip,
-≤ 3 days) carry household-sized loads between nearby settlements
-including fresh local foods such as milk, fish, and game. Standing
-merchant caravans handle the longer arbitrages. The abstract
+caravan traffic** (per docs/10 §43). Short-haul **villager caravans**
+(implemented as low-capacity pack caravans with
+a drover, guard, and 2-4 mules) carry small loads when a village or
+hamlet steward has surplus, import cash, or hard-times staple needs.
+Standing merchant caravans handle larger arbitrages. The abstract
 daily-pass "local trade petty merchant" model that previously
-teleported goods between adjacent settlements is deleted; every
-trade is a real unit subject to ambush, weather, and road wear.
+teleported goods between adjacent hexes is deleted; every distance
+>=1 trade is a real unit subject to ambush, weather, and road wear.
+Only same-hex pagus/hamlet coexistence clears at zero travel time.
 
 So:
 
-- Same-hex spreads close to ~0 (transport cost is 0).
-- Adjacent-hex spreads close to ~0.005 coin/kg.
-- 3-hex spreads close to ~0.02 coin/kg.
-- 4–6 hex spreads close only for workshop/industrial cartage, with
-  higher costs up to ~0.08 coin/kg; household food and comfort goods
-  still need long-haul trade beyond 3 hexes.
-- Beyond the local-cartage range, only long-haul caravans connect
-  markets, and spreads can stay wide for days or weeks — exactly when
-  caravan owners notice and re-route per
+- Same-hex spreads can close at ~0 because transport cost is 0 and
+  the residual `localTradePhase` is same-hex only.
+- Adjacent and farther spreads close only when real caravans move:
+  villager pack caravans, standing merchant caravans, tax shipments,
+  or edge-hub caravans depending on owner and purpose.
+- Shorter distance lowers wages/fodder/cart-wear cost, but there is
+  no fixed coin/kg local-cartage surcharge and no hard 3/6-hex
+  hidden smoothing band in the current implementation.
+- Spreads can stay wide for days or weeks until an actor has the
+  observation, treasury, capacity, and route safety to dispatch or
+  re-route per
   [06 — Caravans](06-caravans.md) §"NPC caravan AI".
 
 This is what makes the no-aggregation entity model
@@ -992,22 +997,33 @@ market. A caravan that arrives at an edge hex with goods can:
 After transacting, the caravan enters the **20-tick off-map
 sojourn** (see [06 — Caravans](06-caravans.md#the-20-tick-off-map-sojourn-locked)).
 
-### No fixed dispatch cadence; no exogenous "import houses"
+### Edge-hub dispatch is margin-gated, not a fixed import house
 
-The previous model — external caravans spawning from edge gates on
-a probability schedule with daily/fleet caps — is **deleted**.
-Imports and exports are the SAME mechanic now: ventures
-dispatched by our cities' patrician families and guilds, driven
-by their own information and treasury.
+The previous tiny-throttle model — a few external caravans spawning
+from edge gates on a sparse schedule regardless of prices — is
+deleted. The implementation now runs the edge-hub phase every day
+through a small set of border gates, but dispatch still requires a
+real margin signal and is bounded by high safety caps plus the global
+caravan ceiling.
 
-What restrains volume is not a global throttle but **bounded
-information + real treasury + the 3× transport-cost dispatch
-threshold** (see [06](06-caravans.md#venture-dispatch-criterion-3-transport-cost)).
-A patrician dispatcher with limited cash and stale information
-about destination prices does not flood the network. As trade
-volume rises, the local home-market ask price for export goods
-rises and 3× margins shrink, throttling further dispatch
-organically.
+Imports and exports are related but not identical:
+
+- **Inbound imports** are spawned by the edge-hub phase when a town or
+  city has a local price high enough to cover global reference price
+  plus transport. The owner is the per-gate synthetic `off_map_house`
+  actor with no `homeSettlement`; it is a temporary accounting endpoint
+  for the foreign visitor, not a permanent on-map import house.
+- **Outbound exports** are dispatched from on-map `patrician_family`
+  and `merchant_guild` stockpiles when the owner has material at the
+  source settlement and the global spread clears the 3× transport-cost
+  dispatch threshold (see [06](06-caravans.md#venture-dispatch-criterion-3-transport-cost)).
+
+Current code caps are intentionally large, not load-bearing economic
+rules: 200 active import caravans, 300 active export caravans, 20
+import spawns/day, and 30 export spawns/day, all still subject to the
+world caravan limit. Real throttling comes from bounded information,
+finite treasuries / stockpiles, local prices moving against the trade,
+and the margin gates.
 
 ### Caravans transact via local markets, never stockpile
 
@@ -1042,9 +1058,10 @@ in [06 — Caravans](06-caravans.md).
 ### Player and global market
 
 **The player cannot run off-map caravans** in the current scope. Long-haul export
-is the business of established merchant houses with capital,
-network, and patience for multi-month round-trips. The player
-operates inside the map, where they're competitive.
+is the business of patrician families and merchant guilds with capital,
+network, and patience for multi-month round-trips; inbound imports are
+foreign edge-hub visitors owned by synthetic `off_map_house` endpoints.
+The player operates inside the map, where they're competitive.
 
 ## Tariffs & taxes
 
@@ -1114,9 +1131,10 @@ The v1.5 lever to keep cash circulating is the **distribution of
 liquid wealth across owner kinds**: every actor type that bids on
 goods needs a sustainable income channel. City corporations get tax
 inflows and own civic production. Patrician families need rents,
-tribute, and merchant-house dividends to refill what they pay out
-as wages — a patrician estate that pays wages but never collects
-rent or sells output for coin is structurally doomed in this model.
+tribute, civic dividends, caravan/export profits, and ordinary sales
+to refill what they pay out as wages — a patrician estate that pays
+wages but never collects rent or sells output for coin is
+structurally doomed in this model.
 Common households need wages-in-coin to participate in comfort and
 service markets — wages-in-grain only feeds them, it does not let
 them buy a new clay pot. The procgen + bootstrap pass therefore has
@@ -1170,9 +1188,9 @@ On any given day in a town's market hex, you might find:
   (delivered overnight by their own carts).
 - A **free village** caravan that walked in this morning with
   cheese and wool to sell + tools to buy.
-- An **off-map merchant house**'s caravan unloading silks and
-  loading silver.
-- A **bandit fence** quietly buying stolen amphorae at 60% price.
+- A synthetic **off-map edge visitor** unloading silks and loading
+  silver before leaving the province.
+- A **bandit fence** quietly buying stolen amphorae at 80% price.
 - The **governor's office** procuring wheat for the legion.
 - Random **plebeian** households drawing their daily bread.
 
@@ -1207,12 +1225,12 @@ on the same goods, and that's what drives most local commerce:
 | Status buyer (patrician)                     | Inelastic on luxury goods; status is the point of the bid                                         | Very high bids on silks/jewels/fine wine                                   |
 | Producer of inputs (a forester selling wood) | Wants to recover production cost + margin                                                         | Sells above cost; holds back if price < reserve                            |
 | Producer of outputs (a baker buying flour)   | Derived demand; bids only as much as bread will return                                            | Bids = (bread price × output ratio) − labor − fuel                         |
-| Bandit fence                                 | Buys stolen goods at deep discount, resells anonymously                                           | Bids ~60% of going price; never asks below 95%                             |
-| Off-map merchant                             | Imports = sells slightly above their long-haul cost; exports = buys slightly above local clearing | Tight margins, large volume                                                |
+| Bandit fence                                 | Buys stolen goods at a discount, resells anonymously                                              | Bids 80% of going price; never asks below 95%                              |
+| Synthetic off-map edge visitor              | Imports cargo from global market; may buy profitable return cargo before leaving                  | Sells into scarce towns/cities; buys only if global spread covers return transport |
 | Governor / city watch                        | Buys grain + tools + weapons/armor/shields for garrisons; sells confiscated bandit loot           | Public-procurement bids, sometimes pays above market for political loyalty |
 | Temple / civic office                        | Sells local service capacity; buys offerings, stipends, tools, and cloth to sustain it            | Service trades move coin only; institutional goods are consumed as upkeep  |
 | Garrison / forum owner                       | Sells standing security or administrative capacity backed by buildings and staff                  | Local service supply clears without creating cargo                         |
-| Investor / merchant house                    | Holds construction materials, equines, and carts as buffer-stock capital                          | Stockpile bids funded by actual treasury; purchases become actor inventory |
+| Reserve owner / caravan owner                | Holds construction reserves or transport capital as buffer-stock                                  | Stockpile bids funded by actual treasury; purchases become actor inventory |
 
 The CDA implementation (per `src/sim/market/clear.ts`) sums these
 schedules into one local clearing price per resource per day. The

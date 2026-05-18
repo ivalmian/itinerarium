@@ -10,19 +10,17 @@
  * goods seller → buyer (or direct consumption) and coin in the
  * other direction, treasury-capped per docs/15 §C21.
  *
- * The local-trade phase fires after the main market clear and
- * smooths surplus between settlements within the local-trade
- * radius. Three transport tiers (household-petty / workshop /
- * industrial) pick load + max-distance from a resource taxonomy;
- * the village-scale herd cap (`MAX_WALKING_HERD_LOCAL_TRADE_UNITS`)
- * keeps cattle/equines from teleporting in pairs across the map.
+ * The residual local-trade phase fires after the main market clear
+ * and only handles same-hex pagus / dependent-hamlet coexistence at
+ * zero travel time. Distance >= 1 inter-settlement trade must use
+ * real caravan units.
  *
  * Shared between the two phases:
  *   - market-max-price ceiling formula + strategic-input scarcity
  *     multipliers (`marketMaxPriceForResource`)
  *   - the bid/ask book-ladder bookkeeping for the price-history UI
- *   - `seededPricesForSettlement` (used by both the local-trade
- *     schedule and the trade phase via the demand source builder)
+ *   - `seededPricesForSettlement` (used by the trade phase via the
+ *     demand source builder and by the residual same-hex local pass)
  *   - `ownerKindByActorForWorld` per-world WeakMap cache
  *
  * Originally lived inline in `src/sim/tick.ts`.
@@ -805,44 +803,19 @@ const DEFAULT_GLOBAL_TRADABLE_PRICE_ENTRIES: readonly (readonly [ResourceId, num
 // --- Phase 4b: Local trade (regional smoothing) -----------------------------
 
 /**
- * Petty merchants and villager pickup carts that walk between nearby
- * settlements every day, arbitraging local price spreads with small loads.
- * Household goods use the classic ≤3-hex petty radius. Workshop and bulky
- * industrial inputs use ≤6-hex cartage so mine/charcoal/bloomery/smithy
- * clusters can feed each other without promoting every sack of grain to
- * regional teleportation. Per docs/06 §"Local trade between nearby
- * settlements" and docs/08 §"Per-settlement markets, regional smoothing".
+ * Residual same-hex local trade after the main market clear.
  *
- * For each unordered settlement pair (A, B) within the resource's local
- * cartage radius whose anchors are both on passable terrain in the current
- * season:
- *   - For each tradable resource R for which BOTH settlements have observed
- *     a clearing price:
- *       - Add a transport-cost surcharge per the docs/06 distance table.
- *       - If the spread (after transport cost) is positive, pick the cheaper
- *         settlement as seller and the dearer as buyer.
- *       - Find any seller-side actor with stock>0 and any buyer-side actor
- *         with treasury>0; move a resource-appropriate load from seller to
- *         buyer at the midpoint price (split the spread). Household goods use
- *         basket loads; industrial inputs use cartage loads so mine/charcoal/
- *         bloomery clusters can actually feed each other.
- *       - The petty merchant takes a 5% cut on the spread; in v1.5 we just
- *         absorb it (no separate merchant household ledger; tracked as a
- *         follow-up).
+ * The old abstract local-cartage pass between distinct settlements was
+ * deleted for distance >= 1. This function now only arbitrages price spreads
+ * for pagus / dependent-hamlet coexistence on the same literal hex, with zero
+ * transport time and zero transport cost. Every cross-hex inter-settlement
+ * flow must use real caravan units (docs/06 §"Local trade between nearby
+ * settlements", docs/08 §"Per-settlement markets, regional smoothing").
  *
- * Determinism: settlements are visited in insertion order; pairs are formed
- * with seller.id < buyer.id (lexicographic) so each unordered pair is
+ * Determinism: settlements are visited in insertion order; same-hex pairs are
+ * formed with seller.id < buyer.id (lexicographic) so each unordered pair is
  * visited at most once per tick. Within a pair, owners are scanned in their
  * current `stockpileOwners` order (the same order all other phases use).
- *
- * Performance: a hex-keyed spatial index of settlement anchors is built once
- * per phase; each settlement enumerates only its bounded local-cartage
- * neighborhood instead of comparing against all N settlements (an O(N²) walk
- * is unacceptable at the future-state ~8000-settlement scale).
- *
- * Same-hex (distance 0) is supported with zero transport cost — that is the
- * canonical pagus + dependent-hamlets case from docs/05 §"Same-hex
- * coexistence".
  */
 export const localTradePhase = (
   world: WorldState,
@@ -1315,37 +1288,30 @@ const pickBuyerActor = (world: WorldState, settlement: Settlement): Actor | null
   return null;
 };
 
-// LOCAL_TRADE_MAX_HEX_DISTANCE moved to src/sim/world/settlementIndex.ts.
+// Legacy local-trade radii still bound the pair index, but this phase skips
+// every pair with distance > 0. The remaining active path is same-hex only.
 const HOUSEHOLD_LOCAL_TRADE_MAX_HEX_DISTANCE = 3;
 const INDUSTRIAL_LOCAL_TRADE_MAX_HEX_DISTANCE = 6;
 
 /**
- * Per-pair, per-day, per-resource caps. Household goods use a single
- * villager/donkey basket. Strategic workshop goods use a pickup-wagon sized
- * lot, and bulky industrial inputs use local cartage because mine/charcoal/
- * bloomery clusters are deliberately local and need ton-scale material
- * movement before long-haul caravans get involved.
+ * Per-pair, per-day, per-resource quantity caps for the residual same-hex
+ * local-trade pass. Cross-hex movement uses real caravan units, so these are
+ * not transport abstractions for distance >= 1 trade.
  * docs/06 §"Local trade between nearby settlements".
  */
 const MAX_HOUSEHOLD_PETTY_LOAD_KG = 50;
 const MAX_WORKSHOP_CARTAGE_LOAD_KG = 500;
 const MAX_INDUSTRIAL_CARTAGE_LOAD_KG = 3_000;
 /**
- * Per-trade cap on herd capital moved between neighboring settlements
- * by foot. Originally 0.1 herd-unit ("a handful of sheep walking
- * across to the next village") — but under the whole-unit
- * transactions rule (docs/08) every trade is floored to an integer
- * number of units, so a 0.1 cap forced zero-quantity trades and the
- * pathway never activated. Set to 1 herd-unit (~30 sheep / 10 cattle
- * / etc.) which is the smallest whole transaction the unit basis
- * supports. Bigger transfers go via caravan.
+ * Per-trade cap on herd capital moved through same-hex local clearing. Bigger
+ * transfers and all distance >= 1 transfers go via caravan.
  */
 const MAX_WALKING_HERD_LOCAL_TRADE_UNITS = 1;
 
 const WORKSHOP_CARTAGE_RESOURCES: ReadonlySet<string> = new Set([
   'goods.tools',
-  // Weapon archetypes (docs/02 + docs/03). Each travels as a workshop
-  // cartage good — small wagon-lot batches over short distances.
+  // Weapon archetypes (docs/02 + docs/03). Same-hex residual clearing sizes
+  // them as workshop batches; cross-hex movement goes by caravan.
   'goods.gladius',
   'goods.hasta',
   'goods.pilum',
@@ -1405,15 +1371,14 @@ const computeLocalTradeMaxHexDistanceForResource = (resource: ResourceId): numbe
 };
 
 /**
- * Petty-merchant cut on the spread. v1.5 just absorbs this (no separate
- * merchant household actor); deferred follow-up tracks merchant
- * household ledgers so the cut accrues somewhere.
+ * Petty-merchant cut on the spread. The same-hex residual pass absorbs this
+ * today; there is no separate petty-trader ledger.
  */
 const PETTY_MERCHANT_CUT = 0.05;
 
 /**
- * Coin-per-kg surcharge for moving petty cargo across the pair distance.
- * Tabled by hex distance per docs/06 §"Distance and cost".
+ * Legacy coin-per-kg table. The active residual local-trade path only uses
+ * distance 0; distance >= 1 trade goes by real caravan units.
  */
 const TRANSPORT_COST_BY_DISTANCE: Readonly<Record<number, number>> = {
   0: 0,
@@ -1456,4 +1421,3 @@ const localTradeLoadKgForResource = (resource: ResourceId): number =>
 const localTradeMaxHexDistanceForResource = (resource: ResourceId): number =>
   LOCAL_TRADE_MAX_DISTANCE_BY_RESOURCE.get(resource) ??
   computeLocalTradeMaxHexDistanceForResource(resource);
-

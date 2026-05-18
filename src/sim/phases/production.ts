@@ -46,7 +46,6 @@ import {
   type JobId,
   type RecipeId,
   type ResourceId,
-  type SettlementId,
 } from '../types.js';
 import {
   buildRecipeWageContext,
@@ -123,7 +122,7 @@ export const productionPhase = (
           }
           const inventoryCapacity = productionOutputInventoryCapacityForRecipe(
             ownerActor,
-            settlement.id,
+            settlement,
             recipe,
             buildings,
           );
@@ -735,7 +734,7 @@ const productionOutputStockTargetDays = (resource: ResourceId): number => {
 
 const productionOutputInventoryCapacityForRecipe = (
   ownerActor: Actor,
-  settlement: SettlementId,
+  settlement: Settlement,
   recipe: RecipeDef,
   buildingsForRecipe: readonly SettlementBuilding[],
 ): number => {
@@ -754,7 +753,7 @@ const productionOutputInventoryCapacityForRecipe = (
     const currentStock =
       resource === COIN_RESOURCE
         ? ownerActor.treasury
-        : getStockAt(ownerActor, settlement, resource);
+        : getStockAt(ownerActor, settlement.id, resource);
     const gap = targetStock - currentStock;
     if (gap <= 0) return 0;
     capacity = Math.min(capacity, gap / qtyPerRun);

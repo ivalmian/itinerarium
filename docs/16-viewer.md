@@ -20,7 +20,7 @@ and not what this viewer is.
   sees it grow visually.
 - **Caravans animate.** Each caravan is a moving dot; it interpolates
   between hexes on each tick. Color by owner faction (or solid grey
-  for off-map houses).
+  for synthetic off-map edge visitors).
 - **Bandit camps appear** as a wilderness skull/X glyph. They move
   when the camp moves; they vanish when the camp dies; new ones
   appear when emerges. Witnessing emergent banditry is half the

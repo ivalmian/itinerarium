@@ -284,7 +284,7 @@ _The Economy and Society of Pompeii_, 1988):
 | Olive oil     | 10–25 kg             | 0.027–0.068 kg      | Cooking + lamps + soap. Plebs lower; patricians higher. |
 | Cheese        | 3–6 kg               | 0.008–0.016 kg      | Mostly rural / soldier ration. |
 | Salted meat   | 5–15 kg              | 0.014–0.041 kg      | Plebs low; military / patrician higher. |
-| Salted fish (incl. garum) | 4–10 kg | 0.011–0.027 kg | Coastal cities higher; inland lower. |
+| Salted fish (incl. garum) | 4–10 kg | 0.011–0.027 kg | Water-adjacent cities higher; inland lower. |
 | Cloth         | 1.5–3 kg             | 0.004–0.008 kg      | Replacement for clothing + household textile wear. |
 | Clothing      | 1–2 garments         | n/a                 | Garment-units of ~0.5 kg each. ~0.003–0.005 kg/day cloth-equivalent. |
 | Pottery       | 3–6 vessels          | n/a                 | Breakage rate; ~0.01 units/day. |
@@ -420,7 +420,7 @@ owner buys or allocates subsistence for them. Which owner commands the
 work matters: slaves in a settlement are not a free public labor pool.
 Patrician estates, civic institutions, villages/hamlets, temples, the
 governor, and the player can use enslaved workers they control; common
-household aggregates, merchant guilds, off-map houses, and caravan firms
+household aggregates, merchant guilds, synthetic off-map endpoints, and caravan firms
 must hire free/freed/foreigner labor instead. This is why households can
 spend on goods instead of being a purely notional demand source, while
 slave upkeep still remains a concrete owner-funded demand.

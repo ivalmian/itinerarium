@@ -145,9 +145,10 @@ across clusters — until news catches up.
   targets.
 - Become a patrician family member or hold political office.
 - Replace a governor or set tax rates.
-- Run off-map (long-haul export/import) caravans. That's the
-  business of merchant houses with the network and capital
-  for multi-month round-trips. See
+- Run off-map (long-haul export/import) caravans. Outbound exports
+  are the business of patrician families and merchant guilds with the
+  network and capital for multi-month round-trips; inbound imports are
+  synthetic edge-hub visitors. See
   [06 — Caravans](06-caravans.md).
 
 These are intentionally out of scope; deferred to future layers.

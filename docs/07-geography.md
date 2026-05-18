@@ -217,8 +217,9 @@ the current approach.
    - Salt is bottlenecked geographically — only in specific
      salt-mine deposits in mountain hexes (rock salt) or in
      marsh/lake-margin evaporation deposits. Inland regions
-     without salt depend on trade. (Sea-coast salt pans are
-     deferred along with the rest of the sea-trade content.)
+     without salt depend on trade. There is no separate coast terrain;
+     the current `evaporate_salt` recipe is an abstract pan recipe
+     hosted by the mine building.
    - Iron ore is the most common; provincial worlds should always
      have at least 2 iron deposits (smithies need iron).
 5. **Place 4–5 city sites + 10–25 town sites**, each at a good
@@ -289,9 +290,10 @@ world's actors actually wanted to do.
 
 A one-time pass rebuilds the road network from observed wear:
 
-1. **Roman roads kept.** Engineered Roman roads stay Roman
-   regardless of wear (the empire built them; the empire
-   maintains them).
+1. **Roman roads kept for reset purposes.** Engineered Roman roads
+   stay Roman regardless of observed wear during this one-time reset.
+   Afterward, the quarterly `roadMaintenancePhase` can still demote
+   unfunded Roman-road hexes to dirt after 4 missed quarters.
 2. **Worn-in trails promoted.** Any non-Roman hex with
    `roadWear ≥ DIRT_UPGRADE_THRESHOLD` (default 100) becomes
    `road = 'dirt'`.

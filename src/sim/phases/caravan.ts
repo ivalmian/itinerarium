@@ -9,15 +9,16 @@
  *     tax-shipment completion, and the standing-caravan home
  *     remittance.
  *
- *   - **merchantCaravanAssemblyPhase** — every 7 days, patrician
- *     families / merchant houses replace lost long-haul caravans
- *     up to a per-world target derived from settlement count.
+ *   - **merchantCaravanAssemblyPhase** — every 7 days, eligible
+ *     patrician families / caravan-owner firms replace lost long-haul
+ *     caravans up to a per-world target derived from settlement count.
  *
- *   - **villagerCaravanAssemblyPhase** (docs/15 §C31) — every 14
- *     days, free villages with food surplus dispatch a handcart
- *     caravan to the nearest city. Separate fleet target from the
- *     merchant target so short-haul village→city food runs and
- *     long-haul trade don't compete for the same caravan slots.
+ *   - **villagerCaravanAssemblyPhase** (docs/15 §C31) — every 3
+ *     days, free villages / hamlet households with surplus, import
+ *     cash, or hard-times staple needs dispatch low-capacity caravans.
+ *     Separate fleet target from the merchant target so village /
+ *     hamlet runs and long-haul trade don't compete for the same
+ *     caravan slots.
  *
  *   - **caravanReplanPhase** — every tick, NPC caravans sitting at
  *     their destination observe local prices, restock their price
@@ -634,10 +635,9 @@ const remitStandingCaravanProfitAtHome = (
   settlements: readonly Settlement[],
   events: TickEvent[],
 ): number => {
-  // Both standing merchant caravans (patrician/caravan_owner/off_map) and
-  // villager caravans (free_village steward, docs/15 §C31) remit profit at
-  // home. Edge-hub + tax caravans are excluded because their balance is
-  // closed at the hub/capital, not at an owner's home.
+  // Standing merchant caravans and villager caravans (free_village steward,
+  // docs/15 §C31) remit profit at home. Edge-hub + tax caravans are excluded
+  // because their balance is closed at the hub/capital, not at an owner's home.
   if (!isStandingMerchantCaravan(caravan) && !isVillagerCaravan(caravan)) return 0;
   const owner = world.actors.get(caravan.ownerActor);
   if (owner === undefined || owner.homeSettlement === undefined) return 0;
@@ -918,20 +918,19 @@ const MERCHANT_CARAVAN_MIN_PACK_ANIMALS = 6;
 const MERCHANT_CARAVAN_PREFERRED_EQUINE_UNITS = 2;
 
 /**
- * Per docs/15 §C31: villager caravans are short-haul village → city food
- * runs spawned by the village's `free_village` steward. Their ID carries
- * the `villager-` prefix so the viewer renders them with the dedicated
- * peasant-with-handcart glyph and so caravan-bookkeeping doesn't confuse
- * them with patron-owned long-haul merchant trains.
+ * Per docs/15 §C31: villager caravans are low-capacity village / hamlet
+ * market runs spawned by `free_village` or `hamlet_household` stewards.
+ * Their ID carries the `villager-` prefix so the viewer renders them with
+ * the dedicated peasant-with-handcart glyph and so caravan-bookkeeping
+ * doesn't confuse them with patron-owned long-haul merchant trains.
  */
 const VILLAGER_CARAVAN_PREFIX = 'villager-';
 // v1.6 pass-22: villager caravan dispatch made faster + more aggressive
 // to absorb cross-settlement trade flow that the v1.6 deletion of the
 // localTradePhase abstraction (Phase 24c) leaves uncarried. Pre-v1.6
 // these ran every 14 days with cap 1 per village; now they run every
-// 3 days with cap 3 per village so the village->city food flow (and
-// adjacent-village arbitrage) has real bandwidth instead of relying
-// on the abstract daily-pass teleportation.
+// 3 days with cap 3 per village so village / hamlet trade flow has real
+// bandwidth instead of relying on the abstract daily-pass teleportation.
 const VILLAGER_CARAVAN_ASSEMBLY_INTERVAL_DAYS = 3;
 const VILLAGER_CARAVAN_MAX_DISPATCHED_PER_INTERVAL = 20;
 const VILLAGER_CARAVAN_TARGET_PER_VILLAGE = 0.5;
@@ -1253,17 +1252,17 @@ const VILLAGER_CARAVAN_IMPORT_TRIP_MIN_TREASURY = 200;
 
 /**
  * Per docs/15 §C31: is it worth sending a villager caravan out THIS
- * cycle? Three Roman village-to-city motivations:
+ * cycle? Three village / hamlet market-run motivations:
  *  1. Surplus run — the village has any meaningful exportable inventory
  *     (food, fibre, wood, livestock, cloth) above a small per-capita
- *     threshold. The caravan carries it to the city, returns with coin
- *     and/or city goods.
- *  2. Import trip — the village has accumulated treasury and wants to
+ *     threshold. The caravan planner can carry it to a profitable market
+ *     and return with coin and/or bought goods.
+ *  2. Import trip — the steward has accumulated treasury and wants to
  *     buy what it can't make itself (oil, wine, salt, pottery, tools).
  *  3. Hard-times resupply — the village's own subsistence stocks are
  *     critically low AND it has any cash, so the steward drains some
  *     treasury and sends the caravan to buy back food/staples from the
- *     city.
+ *     market.
  *
  * Each case is a "yes, dispatch a caravan" — the planner picks the
  * cargo + direction once the caravan exists.
@@ -2003,4 +2002,3 @@ const refundCaravanToOwner = (world: WorldState, c: Caravan): void => {
   }
   if (cartUnits > 0) increaseStockpile(owner, refundSettlement, cartResource, cartUnits);
 };
-

@@ -31,7 +31,7 @@ free/paid worker-days to a worker/household actor. Labor is
 owner-sensitive, not just settlement-wide: a patrician estate, temple,
 governor office, city corporation, village household, or player estate
 may command enslaved workers it owns or controls; common-household
-aggregates, merchant guilds, off-map houses, and caravan firms cannot
+aggregates, merchant guilds, synthetic off-map endpoints, and caravan firms cannot
 draw on another actor's slaves as free labor just because those slaves
 exist in the same settlement. Enslaved worker-days are real labor but do
 **not** receive a cash wage; their subsistence/upkeep appears through
@@ -116,7 +116,7 @@ prevents a flour glut from coexisting with persistent bread shortages.
 
 Military and capital workshop outputs are even tighter. Weapons,
 armor, shields, and carts are not ordinary speculative inventory:
-unless barracks, governor offices, caravans, or merchant houses are
+unless barracks, governor offices, caravans, or caravan owners are
 actively buying them, workshops keep only tiny showroom/procurement
 buffers. That leaves scarce iron for tools before smithies fill stores
 with armor nobody has ordered.
@@ -235,12 +235,14 @@ caravan_transport:                               # see also [06 — Caravans]
 **Refining:** `mill_grain`, `bake_bread`, `press_olives`, `make_wine`,
 `make_cheese`, `salt_fish`, `salt_meat`, `ret_flax`, `tan_leather`,
 `burn_charcoal`, `saw_lumber`, `dress_stone`, `fire_bricks`,
-`throw_pottery`, `throw_amphorae`, `smelt_iron`, `alloy_bronze`,
-`smelt_lead`, `cupel_silver`, `refine_gold`.
+`throw_pottery`, `throw_amphorae`, `smelt_iron`, `smelt_copper`,
+`smelt_tin`, `alloy_bronze`, `smelt_lead`, `cupel_silver`,
+`refine_gold`.
 
-`alloy_bronze` currently models copper/tin ore flowing directly into
-bronze; whether to split out `metal.copper` and `metal.tin`
-intermediates is tracked in docs/15 §C13.
+`smelt_copper` and `smelt_tin` refine ore into `metal.copper` and
+`metal.tin`; `alloy_bronze` then consumes those intermediates plus
+charcoal. The old direct copper/tin-ore → bronze shortcut was removed
+in docs/15 §C13 and in `src/sim/production/recipes.ts`.
 
 **Manufacture:** `weave_cloth`, `weave_linen_cloth`,
 `tailor_clothing`, `forge_tools`, `forge_gladius`, `forge_hasta`,
@@ -341,9 +343,9 @@ Surplus is the source of **export value**. Exports are the only real
 income — minting silver doesn't create wealth, it just expands the money
 supply. A province with no exports cannot pay for off-map imports
 forever; eventually the silver mines run out and inflation turns into
-deflation as coin leaves the system. Per docs/08, off-map merchant
-houses arrive with desirable goods (spices, silks, exotic dyes); the
-province pays in surplus oil/wine/cloth + minted silver.
+deflation as coin leaves the system. Per docs/08, synthetic off-map
+edge visitors arrive with desirable goods (spices, silks, exotic dyes);
+the province pays in surplus oil/wine/cloth + minted silver.
 
 In implementation terms, `mint_coin` outputs `goods.coin` only as the
 recipe/resource identity. A successful mint run credits the mint owner's
@@ -361,8 +363,8 @@ new coin produced per year = g × P × M  +  net imports value  −  net exports
 ```
 
 - **`g × P × M`** = the new transactional + savings demand from extra people.
-- **Net imports value** = coin paid to off-map houses → leaves the system.
-- **Net exports value** = coin received from off-map houses → enters the system.
+- **Net imports value** = coin paid to synthetic off-map edge visitors → leaves the system.
+- **Net exports value** = coin received from the off-map global market → enters the system.
 
 If a province exports more than it imports, the trade surplus brings
 silver in _without_ needing to mint locally. If it imports more, the

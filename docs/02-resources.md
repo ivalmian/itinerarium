@@ -35,7 +35,7 @@ only — they don't restrict gameplay.
 | `mineral.lead_ore`   | Mountain hexes                         | Finite, long-lived deposit; often co-located with silver.                                                               |
 | `mineral.silver_ore` | Mountain hexes                         | Finite, long-lived deposit; coinage + luxury.                                                                           |
 | `mineral.gold_ore`   | Rare mountain/river hexes              | Finite, long-lived deposit; coinage + status.                                                                           |
-| `mineral.salt`       | Coastal pans, salt mines, edge imports | Essential for preservation; geographically bottlenecked, so shortages are solved by real trade rather than local magic. |
+| `mineral.salt`       | Salt deposits/mines, pan evaporation, edge imports | Essential for preservation; geographically bottlenecked, so shortages are solved by real trade rather than local magic. There is still no separate `coast` terrain; `evaporate_salt` is an abstract mine-hosted pan recipe in the current implementation. |
 
 ## Tier 1 — Refined / processed
 

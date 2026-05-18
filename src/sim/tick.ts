@@ -354,8 +354,8 @@ export type TickEvent =
     }
   | {
       /**
-       * Per docs/15 §C31: a `free_village` actor dispatched a villager
-       * caravan to carry village food surplus to the nearest city.
+       * Per docs/15 §C31: a `free_village` or `hamlet_household` actor
+       * dispatched a low-capacity villager caravan for a market run.
        */
       readonly type: 'villager_caravan_dispatched';
       readonly caravan: CaravanId;
@@ -589,12 +589,11 @@ export const tick = (inputs: TickInputs): TickResult => {
   // --- Phase 4: Trade ------------------------------------------------------
   const subsistenceAccess = initializeSubsistenceAccess(world);
   tradePhase(world, season, today, events, stats, subsistenceAccess, laborContextForSettlement);
-  // After every settlement clears its market, run the petty-merchant /
-  // villager-pickup-cart pass that arbitrages price spreads between
-  // settlements within 3 hexes (docs/06 §"Local trade between nearby
-  // settlements", docs/08 §"Per-settlement markets, regional smoothing").
-  // This is what keeps ~8000 separate markets aligned into a regional
-  // price gradient instead of 8000 disconnected wells.
+  // After every settlement clears its market, run the residual same-hex
+  // local-trade pass for pagus / dependent-hamlet coexistence. Distance >= 1
+  // inter-settlement trade uses real caravan units (docs/06 §"Local trade
+  // between nearby settlements", docs/08 §"Per-settlement markets, regional
+  // smoothing").
   localTradePhase(world, season, today, events, subsistenceAccess, laborContextForSettlement);
 
   // --- Phase 4c: Resident-presence price sync -----------------------------
@@ -752,15 +751,15 @@ const politicsPhase = (world: WorldState, rng: Rng, today: Day, events: TickEven
   // the v1 baseline issue (see docs/06 §"Caravan lifecycle in the tick
   // loop").
   caravanReplanPhase(world, rng.derive('caravan-replan'), today, events);
-  // Merchant houses and patrician families replace lost trading caravans
-  // slowly when the standing fleet falls below the province's settlement
-  // count. This keeps trade alive over long burn-ins without injecting
-  // discontinuous random fleets.
+  // Eligible patrician families / caravan-owner firms replace lost trading
+  // caravans slowly when the standing fleet falls below the province's
+  // settlement-count target. This keeps trade alive over long burn-ins
+  // without injecting discontinuous random fleets.
   merchantCaravanAssemblyPhase(world, rng.derive('merchant-caravan-assembly'), today, events);
-  // Per docs/15 §C31: villages with food surplus dispatch a small handcart
-  // caravan to the nearest city. Separate fleet target from merchants so
-  // long-haul trade and short-haul village→city food runs don't compete
-  // for the same caravan slots.
+  // Per docs/15 §C31: villages / hamlets with surplus, import cash, or
+  // hard-times staple needs dispatch low-capacity villager caravans. Separate
+  // fleet target from merchants so local runs and long-haul trade don't
+  // compete for the same caravan slots.
   villagerCaravanAssemblyPhase(world, rng.derive('villager-caravan-assembly'), today, events);
   // Bandit emergence + decisions + raid resolution. Without this loop,
   // the seeded bandit camps are inert decorations — see docs/12
@@ -798,7 +797,7 @@ const politicsPhase = (world: WorldState, rng: Rng, today: Day, events: TickEven
   // Quarterly hook (every 90 days): each settlement's stockpile-owning
   // actors evaluate observed prices and invest in profitable buildings,
   // and the fiscal-redistribution pass moves cash from cash-generating
-  // actor kinds (city corps, off-map houses, tenant villages) to
+  // actor kinds (city corporations and tenant villages/hamlets) to
   // cash-consuming actor kinds (patrician families). Per docs/15 §C4
   // (investment) and §C20 (fiscal redistribution).
   if ((today + 1) % 90 === 0) {

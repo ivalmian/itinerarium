@@ -57,7 +57,7 @@ free_village, city_corporation, governor_office, hamlet_household}`:
 
 **Acceptance:** at year 10, settlements show specialization
 beyond the procgen seed: cities near mines have more bloomeries;
-coastal towns have more fisheries; etc. New buildings logged via
+water-adjacent towns have more fisheries; etc. New buildings logged via
 a new `building_invested` TickEvent.
 
 **Cross-refs:** `docs/05-settlements.md` §"Stage 2 — Dynamic
@@ -264,7 +264,7 @@ output goes nowhere → seller's stockpile stays full → next
 round's clearing prices fall → derived input demand falls.
 
 **Cross-refs:** `docs/05-settlements.md` §"Storage capacity"
-(planned doc), `docs/02-resources.md` (perishableDays),
+(landed doc), `docs/02-resources.md` (perishableDays),
 `src/sim/buildings/catalog.ts` (storageCapacity field),
 `src/sim/world/settlement.ts` (`computeStorageCapacity`),
 `src/sim/tick.ts` (`storageSpoilagePhase`).
@@ -605,16 +605,17 @@ actor.ts` `ActorKind`, `src/procgen/seed.ts` household seeding,
 
 ## C22 — Off-map coin flow via exports, not synthetic residual (landed; superseded in v1.6)
 
-> **v1.6 update:** the two-channel model below (off_map_house spawns
-> imports + city actor spawns separate export caravan via a fixed
-> cadence) is replaced by **patrician + merchant-guild international
-> ventures**: a single round-trip caravan dispatched on-demand when
-> `expected_profit ≥ 3 × transport_cost`, with a 20-tick off-map
-> sojourn at the edge hex. See decisions 37–41 in
-> [10 — Scope](10-scope-and-questions.md), [06 — Caravans](06-caravans.md)
-> §"International ventures", and [08 — Money & Trade](08-money-and-trade.md)
-> §"The off-map global market". The historical C22 text below
-> documents the v1.5 mechanic for audit-trail purposes.
+> **Current update:** the old tiny fixed-cadence import/export channel
+> is superseded. Exports are margin-gated ventures from
+> `patrician_family` / `merchant_guild` stockpiles; imports are
+> margin-gated edge-hub visits owned by synthetic per-gate
+> `off_map_house` endpoints. Exports use a 20-tick off-map sojourn;
+> inbound visits return to the edge and are deleted with residual
+> treasury. See decisions 37–45 in [10 — Scope](10-scope-and-questions.md),
+> [06 — Caravans](06-caravans.md) §"International ventures", and
+> [08 — Money & Trade](08-money-and-trade.md) §"The off-map global
+> market". The historical C22 text below documents the v1.5 mechanic
+> for audit-trail purposes.
 
 **Pre-§C22 hack (C20 channel 3):** every quarter, each `off_map_house`
 actor paid back `OFF_MAP_HOUSE_RESIDUAL_FRACTION = 0.06` of its
@@ -630,23 +631,25 @@ are:
 
 1. **Imports.** An `off_map_house` spawns an import caravan at an
    edge hex with cargo and operating coin. The caravan sells the
-   cargo on-map; the sale credits the off-map house's treasury. The
-   house's treasury grows.
-2. **Exports.** A city-based actor (`patrician_family`,
-   `city_corporation`, `governor_office`) has surplus cargo
+   cargo on-map; the sale credits the caravan's treasury. If the
+   visitor returns to the edge with residual coin or cargo value, the
+   caravan is deleted and that treasury leaves the provincial economy.
+2. **Exports.** A city-based actor (`patrician_family` or
+   `merchant_guild`) has surplus cargo
    registered as `availableForExport`. An export caravan is spawned
    with the city actor as `ownerActor`. The caravan walks to an
    edge hex; on arrival, `completeOffMapExportIfArrived` sells the
-   cargo at `DEFAULT_GLOBAL_PRICES` and credits the OWNER's
-   treasury. The on-map actor's treasury grows.
+   cargo at `DEFAULT_GLOBAL_PRICES` and credits the caravan treasury.
+   After the 20-tick sojourn and return home, the standard home
+   remittance moves surplus coin to the owner. The on-map actor's
+   treasury grows only through that physical return path.
 
 That is sufficient. The trade surplus / deficit is the real
 balance: a province with strong exports earns more from off-map
 than it spends on imports; a province with thin exports drains
-its money supply. Off-map houses still hoard import-sale coin in
-their treasuries, but they don't bid for anything on-map (their
-export caravans are owned by city actors, not by them), so the
-hoard is a benign sink.
+its money supply. Synthetic off-map endpoints do not remit to
+on-map owners; import-sale coin that returns to the edge disappears
+with the inbound caravan.
 
 **v1.5 mechanics (landed):**
 
@@ -662,10 +665,10 @@ hoard is a benign sink.
 
 **Acceptance:** at year 3 the patrician/city-corp treasuries are
 sustained by civic dividends, tenant rents, and export-caravan
-proceeds — not by a synthetic merchant transfer. Off-map house
-treasury grows monotonically (with no observable behavioral
-consequence). The viewer's economic event log shows export
-caravans completing instead of residual transfers firing.
+proceeds — not by a synthetic merchant transfer. Import-sale coin
+that returns to the edge leaves the economy with the synthetic
+visitor. The viewer's economic event log shows export caravans
+completing instead of residual transfers firing.
 
 **Cross-refs:** `docs/06-caravans.md` §"Edge-hub caravans",
 `docs/08-money-and-trade.md` §"Off-map global market",
@@ -1071,49 +1074,51 @@ ownership", `src/sim/politics/actor.ts`,
 ## C31 — Villager caravans (landed; extended in v1.6)
 
 > **v1.6 extension (locked, decision 43):** the abstract daily-pass
-> `localTradePhase` is deleted; villager caravans become the
-> general-purpose vehicle for **all** local inter-settlement trade,
-> not just village→nearest-city. Dispatcher logic is extended to
-> consider adjacent villages, hamlets, and towns within ≤6 hex as
-> candidate destinations whenever the steward's `knownPrices`
-> identifies a spread that beats round-trip transport cost +
-> reluctance margin. A new smaller "handcart" tier (1 person, ≤50
-> kg, no animals) sits below the existing 2-4-mule villager cart
-> for very short and very light arcs. All tiers share the SAME
-> movement / food / ambush / disease machinery as long-haul
-> caravans.
+> `localTradePhase` is deleted for distance ≥1; the remaining
+> implementation only clears same-hex pagus/hamlet coexistence at
+> zero travel time. Villager caravans are the implemented
+> low-capacity vehicle for local inter-settlement trade beyond
+> same-hex. In the current code, `free_village` and
+> `hamlet_household` stewards can dispatch 2-4-mule pack caravans
+> every 3 days when they have exportable surplus, enough import-trip
+> treasury, or hard-times staple needs. Dispatch does not hard-code a
+> nearest-city / adjacent-village / ≤6-hex destination set; once the
+> unit exists, the normal caravan planner picks routes from
+> `knownPrices`, bid depth, route cost, bandit risk, tolls, and
+> fallback scouting. There is no separate 1-person handcart tier in
+> the implementation. These villager caravans share the SAME
+> movement / food / ambush / disease machinery as long-haul caravans.
 
 **Motivation:** after §C30 the famine regression revealed that the
 trade system wasn't moving enough food and other rural production
-from village granaries to city markets. Patron-funded long-haul
+from village granaries to other markets. Patron-funded long-haul
 merchant caravans handle inter-city trade but rarely originate at a
-village. The historical Roman gap is exactly this: a village
-steward + 1-2 mules + a handcart, doing a short out-and-back to the
-nearest city every few weeks. That's a villager caravan.
+village or hamlet. The historical Roman gap is a local steward
+dispatching a small pack caravan when the settlement has surplus,
+cash for imports, or an urgent staple shortage.
 
-**The Roman village ↔ city economic relationship the model exposes:**
+**The Roman village / hamlet market relationship the model exposes:**
 
-A village headman / steward routinely sent a small caravan to the
-nearest city for one of three reasons:
+A village or hamlet steward routinely sends a small caravan for one
+of three reasons:
 
 1. **Surplus run.** The village has more grain / legumes / wool /
    flax / lumber / cheese / pigs / cloth than the village itself
-   needs. Cart it to the city, sell at market, come home with coin
-   and/or city-made goods (oil, wine, pottery, salt, iron tools)
-   the village can't make itself.
+   needs. Carry it to a market, sell, come home with coin and/or
+   bought goods (oil, wine, pottery, salt, iron tools) the
+   settlement can't make itself.
 2. **Import trip.** The village has accumulated coin from prior
    trips. The headman wants pottery / tools / oil / salt that the
-   city sells cheap, brings them back, distributes them to
-   villagers, or stockpiles for the off-season.
+   market sells cheap, brings them back, distributes them locally,
+   or stockpiles for the off-season.
 3. **Hard-times resupply.** The village's own subsistence grain is
    running low (bad harvest, locusts, plague), and the headman
-   drains some of the village treasury to send the caravan to buy
-   staples back from the city.
+   drains some treasury to send the caravan to buy staples back.
 
 All three are the same caravan with different cargo + direction.
-We model the dispatch trigger as "village has meaningful exportable
-inventory OR has decent treasury to fund an import / resupply
-trip"; the planner picks the actual cargo each leg.
+We model the dispatch trigger as "settlement has meaningful
+exportable inventory OR has treasury to fund an import / resupply
+trip"; the planner picks the actual cargo and route each leg.
 
 **v1.5 mechanics (landed):**
 
@@ -1122,8 +1127,9 @@ trip"; the planner picks the actual cargo each leg.
    renders these with a dedicated peasant-with-handcart SVG
    (`viewer/art/units/villager_caravan.svg`) so they read
    visually distinct from patron-funded long-haul mule trains.
-2. `villagerCaravanAssemblyPhase` runs every 14 days. For each
-   `free_village` actor whose home settlement is a village and that
+2. `villagerCaravanAssemblyPhase` runs every 3 days. For each
+   `free_village` or `hamlet_household` actor whose home settlement
+   is a village or hamlet, is under the per-owner active cap, and
    has either:
    - any of `VILLAGER_EXPORTABLE_RESOURCES` (food, fibre, wood,
      hides, livestock, cloth) at ≥14 days of local subsistence
@@ -1131,8 +1137,8 @@ trip"; the planner picks the actual cargo each leg.
    - treasury ≥ 200 coin (import-trip threshold), OR
    - grain stock <7 days AND any treasury (hard-times resupply)
 
-   ...the steward dispatches a villager caravan (one per village
-   at a time).
+   ...the steward can dispatch a villager caravan (owner cap 3,
+   global per-interval dispatch cap 20, world target max 120).
 
 3. Caravan composition: 2-4 mules + 0-1 donkeys, 1 drover + 1
    guard, no light cart, 4-day starter rations. Operating
@@ -1153,14 +1159,13 @@ trip"; the planner picks the actual cargo each leg.
 7. New `tribute_paid` companion event `villager_caravan_dispatched`
    for telemetry.
 
-**Why the 5% profit floor still works for villages:**
+**Why the 5% profit floor still works for local runs:**
 
-Short-haul village→city routes have low transport cost but smaller
-price spreads than long-haul. A village-grain → city-grain spread
-of even 3-4% may not clear the gate, but a village-grain →
-city-grain via the city's higher subsistence price often does, and
-the return-leg arbitrage (city-pottery → village-pottery) also
-clears. The planner picks whichever leg is profitable.
+Shorter villager-caravan routes often have lower operating cost but
+smaller price spreads than long-haul trade. A small grain spread may
+not clear the planner's gate, but a high staple bid at a nearby
+market or a return-leg import opportunity can. The planner picks
+whichever leg is profitable.
 
 **Cross-refs:** `docs/06-caravans.md` §"NPC caravan AI",
 `docs/11-politics-and-ownership.md` §"Patron-client villages" +
@@ -1417,9 +1422,9 @@ order:
   the bootstrap grace period instead of being force-sold. Hard goods do
   not spoil.
 - ✅ C11 — Roman-road maintenance cost: governor pays
-  0.1 coin + 0.01 cut_stone per Roman hex per quarter; missed
-  quarters accumulate; after 4 missed quarters the hex demotes
-  to dirt with a `road_unmaintained` event.
+  0.1 coin per Roman hex per quarter; missed quarters accumulate;
+  after 4 missed quarters the hex demotes to dirt with a
+  `road_unmaintained` event.
 - ✅ C15 (partial) — Per-(settlement, resource) CSV time-series
   instrument. `--instruments=time-series` writes one CSV per pair;
   `unmetDemandAtClearingPrice` plumbing remains the open piece.
