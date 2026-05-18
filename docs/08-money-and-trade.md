@@ -111,13 +111,35 @@ civic/village/hamlet/common stores represent the people they feed,
 while patrician private stores only self-feed patricians and enslaved
 dependents unless a separate wage, ration entitlement, or transfer moves
 food to common households.
-If buyer and seller differ, the buyer must have coin (or a future
-explicit entitlement ledger) to take the seller's goods. There is no
-implicit "poor household takes patrician grain for free" transfer in the
-market-clear step. Tenant rationing and staple wages are modeled as
-owner-controlled self-provision or as explicit in-kind wage transfers;
-otherwise a cashless buyer remains a real shortage. Famine pressure is
-based on the combined fill.
+
+**Communal subsistence pool (locked).** Self-provision extends one
+step beyond same-actor matching to handle the village's real
+ownership pattern. A `plebeian_household` / `freedman_household` /
+`foreigner_household` consuming food at a settlement where a
+`free_village` or `hamlet_household` owns stockpile is the village
+feeding its own people. The household's effective subsistence budget
+is credited with the value of the village/hamlet's stockpile at the
+**reference price**, and the resulting trade still flows through the
+CDA (so the price ladder is honest about the demand) but settles at
+**zero coin transfer** — the food was always the community's, just
+held in the headman's granary. Without this, the village
+sells $290M of grain externally while only $13M wage-side coin
+reaches its own households, leaving the eaters structurally cashless
+and starving despite collective village wealth.
+
+Patrician stockpiles do NOT participate in the communal pool: a
+patrician estate's granary feeds its slaves and family directly, not
+the wider city's plebeian households. A separate wage, ration, or
+transfer is still required to move patrician grain to common
+households.
+
+If buyer and seller differ AND aren't in a communal pool, the buyer
+must have coin (or a future explicit entitlement ledger) to take the
+seller's goods. There is no implicit "poor household takes patrician
+grain for free" transfer in the market-clear step. Tenant rationing
+and staple wages are modeled as owner-controlled self-provision or as
+explicit in-kind wage transfers; otherwise a cashless buyer remains
+a real shortage. Famine pressure is based on the combined fill.
 
 Aggregating across segments produces a step function: poorest
 segments fall off first as price rises, then progressively richer

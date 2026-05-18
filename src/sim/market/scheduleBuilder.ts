@@ -992,18 +992,77 @@ const outputInventoryConstrainedCapacity = (
   return Math.min(productionCapacity, gap / valuedOutput.qty);
 };
 
+/**
+ * Buyer kinds that participate in a settlement's communal subsistence
+ * pool — the urban / village wage-earning households whose food
+ * security historically came from their village's collective stores
+ * before any of it went to market (docs/04 §"Community self-
+ * provision"). When one of these actors needs subsistence calories at
+ * a settlement where a `free_village` or `hamlet_household` owns
+ * stockpiles, the household's effective subsistence budget is
+ * credited with the value of the village/hamlet stockpile, and the
+ * resulting trade settles at zero coin transfer — the food was
+ * always the community's, just held in the headman's granary.
+ */
+const COMMUNITY_FOOD_BENEFICIARY_KINDS: ReadonlySet<ActorKind> = new Set([
+  'plebeian_household',
+  'freedman_household',
+  'foreigner_household',
+]);
+
+const COMMUNITY_FOOD_PROVIDER_KINDS: ReadonlySet<ActorKind> = new Set([
+  'free_village',
+  'hamlet_household',
+]);
+
+/**
+ * True when the buyer + seller at this settlement form a community
+ * subsistence pool — the village's grain feeding the village's
+ * common-household residents. Used by both the bid-budget calc here
+ * and the trade-execution coin-transfer bypass in src/sim/phases/trade.ts.
+ */
+export const isCommunityFoodPool = (
+  buyerKind: ActorKind | undefined,
+  sellerKind: ActorKind | undefined,
+): boolean => {
+  if (buyerKind === undefined || sellerKind === undefined) return false;
+  return (
+    COMMUNITY_FOOD_BENEFICIARY_KINDS.has(buyerKind) &&
+    COMMUNITY_FOOD_PROVIDER_KINDS.has(sellerKind)
+  );
+};
+
 const subsistenceBudgetForActor = (
   context: SettlementScheduleContext,
   resource: ResourceId,
   actor: ActorId | undefined,
   fallback: number,
   prices: ReadonlyMap<ResourceId, number>,
+  ownerKindByActor: ReadonlyMap<ActorId, ActorKind> | undefined,
 ): number => {
   if (actor === undefined || context.actorTreasuryByActor === undefined) return fallback;
   const treasury = Math.max(0, context.actorTreasuryByActor.get(actor) ?? 0);
   const ownStock = Math.max(0, context.stockpilesByOwner.get(actor)?.get(resource) ?? 0);
+  // Community self-provision per docs/04 §"Community self-provision":
+  // a plebeian/freedman/foreigner household at a settlement gets a
+  // budget credit equal to the free_village or hamlet_household's
+  // stockpile of this resource at the same settlement. The village's
+  // grain IS the village's food; it doesn't require the eater to also
+  // hold the coin to "buy" it back.
+  let communityStock = 0;
+  const buyerKind = ownerKindByActor?.get(actor);
+  if (buyerKind !== undefined && COMMUNITY_FOOD_BENEFICIARY_KINDS.has(buyerKind)) {
+    for (const [ownerId, stockpile] of context.stockpilesByOwner) {
+      if (ownerId === actor) continue;
+      const providerKind = ownerKindByActor?.get(ownerId);
+      if (providerKind === undefined) continue;
+      if (!COMMUNITY_FOOD_PROVIDER_KINDS.has(providerKind)) continue;
+      communityStock += stockpile.get(resource) ?? 0;
+    }
+  }
   const referencePrice = prices.get(resource) ?? 0;
-  const selfProvisionCredit = referencePrice > 0 ? ownStock * referencePrice : 0;
+  const selfProvisionCredit =
+    referencePrice > 0 ? (ownStock + communityStock) * referencePrice : 0;
   return effectiveMarketBudget(Math.min(fallback, treasury + selfProvisionCredit));
 };
 
@@ -1052,6 +1111,7 @@ const subsistenceSources = (
         buyer,
         perBuyerNominalWealth,
         inputs.recentLocalPrices,
+        inputs.ownerKindByActor,
       );
       if (segmentWealth <= 0) continue;
       out.push(
