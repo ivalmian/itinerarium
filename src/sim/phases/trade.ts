@@ -877,6 +877,15 @@ export const localTradePhase = (
 
   for (const pair of localTradePairs) {
     const { a, b, dist } = pair;
+    // v1.6 Phase 24c (docs/10 decision 43): the abstract localTrade
+    // daily-pass is deleted for distance >= 1. Inter-settlement trade
+    // at 1+ hex distance goes through real Caravan units (standing
+    // merchants, villager carts, replacement caravans) that walk the
+    // route, consume rations, and risk ambush. Only same-hex
+    // coexistence (pagus + dependent hamlets sharing one literal hex)
+    // clears at the 0-tick intra-hex market step, because there is no
+    // road to walk and no ambush exposure.
+    if (dist > 0) continue;
     if (!isAnchorPassable(a)) continue;
     if (!isAnchorPassable(b)) continue;
     // Per docs/06 §"Distance and cost", the table is in coin/kg, not
