@@ -117,7 +117,13 @@ const lastSuccessfulRaidDay: Map<BanditCampId, Day> = new Map();
  */
 const recruitDriveMultiplier: Map<BanditCampId, number> = new Map();
 
-const RECRUIT_RANGE_HEXES = 50;
+// docs/12 + v1.9 step 5: per-settlement recruit/found radius.
+// Pre-v1.9 this was 50 hex which on the typical 60-hex-wide map
+// meant nearly every settlement could see ANY surviving camp →
+// once even one camp survived a patrol sweep, no new camps could
+// be founded anywhere in the province (the nearest === null gate
+// failed everywhere). 15 hex restores cluster-local independence.
+const RECRUIT_RANGE_HEXES = 15;
 // Recruitment is a low background trickle in normal years and a visible
 // pressure valve during food stress. Earlier viewer-tuned values pushed
 // every seeded camp to insurgency scale within two years, which converted
@@ -867,11 +873,33 @@ const executeFenceTransaction = (
   });
 };
 
+/**
+ * Per docs/12 §"Bandit raid parties" + v1.9 step 5: search a small
+ * radius around the target hex rather than requiring exact equality.
+ * Pre-v1.9 a raid party reaching the target's snapshot hex would
+ * silently abort if the caravan had moved one hex away — and since
+ * raid parties move 25 hex/day while caravans move ~6 hex/day, the
+ * caravan is always ~6 hex away by arrival. With a 2-hex search
+ * radius, the party finds the displaced target nearly always.
+ *
+ * Returns the closest caravan within `radius`, preferring the
+ * exact-hex match.
+ */
+const RAID_ARRIVAL_SEARCH_RADIUS = 2;
+
 const findCaravanAtHex = (world: WorldState, hex: Hex): Caravan | null => {
+  let best: Caravan | null = null;
+  let bestDist = Infinity;
   for (const c of world.caravans.values()) {
-    if (hexEquals(c.position, hex)) return c;
+    const d = hexDistance(c.position, hex);
+    if (d > RAID_ARRIVAL_SEARCH_RADIUS) continue;
+    if (d < bestDist) {
+      bestDist = d;
+      best = c;
+      if (d === 0) return best; // perfect match wins immediately
+    }
   }
-  return null;
+  return best;
 };
 
 // --- Bandit party movement + mission resolution (docs/15 §C32) ----------
