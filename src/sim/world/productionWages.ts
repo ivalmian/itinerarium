@@ -42,11 +42,19 @@ import type { WorldState } from '../../procgen/seed.js';
  * (captive labor, owner captures all surplus); the more mobile a
  * class is, the higher the share.
  */
+// v1.8 pass 33: freedman share bumped 0.25 → 0.35 (parity with
+// plebeian). Historically libertini (freedmen) often had MORE
+// economic agency than plebeians — they brought capital from
+// manumission, frequently held skilled / commercial roles, and
+// dominated specific urban trades (bankers, scribes, craftsmen).
+// Pre-pass-33 share of 0.25 left their treasuries ~35× thinner
+// than plebs (median 644 vs 23,181 at Y2). Bump to 0.35 lets them
+// keep pace with plebs as wage-earners.
 export const SURPLUS_SHARE_BY_CLASS: Readonly<
   Record<'slave' | 'freedman' | 'plebeian' | 'foreigner' | 'patrician', number>
 > = {
   slave: 0,
-  freedman: 0.25,
+  freedman: 0.35,
   plebeian: 0.35,
   foreigner: 0.45,
   patrician: 0.5,
