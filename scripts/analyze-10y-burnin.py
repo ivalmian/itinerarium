@@ -13,8 +13,8 @@ from __future__ import annotations
 import json, csv, statistics, os, sys
 from collections import defaultdict, Counter
 
-OUT = 'docs/v1-7-burnin-report.md'
-BURNIN_DIR = 'burnin-final-10y-pass27'
+OUT = 'docs/v1-8-burnin-report.md'
+BURNIN_DIR = 'burnin-final-10y-v18'
 
 YEARS = [(i + 1, (i + 1) * 365) for i in range(9)]  # (year_label, day)
 
