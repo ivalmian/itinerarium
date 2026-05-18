@@ -58,6 +58,78 @@ export const SURPLUS_SHARE_BY_CLASS: Readonly<
 };
 
 /**
+ * Per-run net margin of a recipe, valued at current local prices:
+ *
+ *   (sum_outputs(qty × output_price) − sum_inputs(qty × input_price))
+ *
+ * Output is priced at the best LOCAL BID if available (what buyers
+ * actually want to pay today), falling back to `lastClearingPrice`
+ * (what trade most recently cleared at). When neither side has a
+ * quote we return null — the caller decides what to do.
+ *
+ * This is the gross margin BEFORE wages. The production phase
+ * compares it against the subsistence wage bill to decide whether
+ * to run the recipe; loss-making recipes are blocked instead of
+ * subsidized.
+ *
+ * Per docs/00 Pillar 8: outputs without a quoted bid have no
+ * demand; producing more of them just wastes inputs. The user's
+ * directive (v1.6 pass 25): "have asks that force profitability
+ * and stop producing if there is no bid."
+ */
+export const recipeGrossMarginPerRun = (
+  recipe: RecipeDef,
+  outputBids: ReadonlyMap<ResourceId, number>,
+  lastClearingPrices: ReadonlyMap<ResourceId, number>,
+  inputPrices: ReadonlyMap<ResourceId, number>,
+  globalPrices: ReadonlyMap<ResourceId, number>,
+): number | null => {
+  // OUTPUT revenue uses the most recent LOCAL CLEARING PRICE - the
+  // actual realized trade price, not the buyer's aspirational
+  // maximum bid (which the CDA may never clear at if other sellers
+  // undercut). Using bestBid would let the dairy bet on the
+  // highest-willingness buyer when the real transaction clears
+  // much lower. NO global fallback: per user direction "stop
+  // producing if there is no bid demonstrated", we won't bet that
+  // the off-map global market will absorb unsold output. If
+  // nothing has cleared locally, demand isn't yet demonstrated
+  // and the recipe blocks (a future caravan import / arbitrage
+  // run can set the price; on the next tick production resumes).
+  //
+  // The `outputBids` parameter is kept on the signature for future
+  // refinement (e.g. min(bid, clearing) once we trust both signals).
+  void outputBids;
+  let outputValue = 0;
+  let anyOutputPriced = false;
+  for (const [r, q] of recipe.outputs) {
+    const last = lastClearingPrices.get(r);
+    if (last !== undefined && last > 0) {
+      outputValue += q * last;
+      anyOutputPriced = true;
+    }
+  }
+  if (!anyOutputPriced) return null;
+  // INPUT cost reflects the OPPORTUNITY cost of using the input
+  // instead of selling it. Prefer local clearing (what the owner
+  // could get for it locally), fall back to the global reference
+  // (could export it via an edge-hub caravan). NEITHER is the
+  // owner's sunk-cost basis - the gate is asking "would it be
+  // smarter to sell this input than to convert it." For
+  // make_cheese specifically: milk has a 2-day shelf life and the
+  // dairy converts it on-site (no local clearing for milk) but
+  // the milk could in principle be sold to a neighboring town -
+  // global fallback captures that opportunity-cost reasoning.
+  let inputValue = 0;
+  for (const [r, q] of recipe.inputs) {
+    const local = inputPrices.get(r);
+    const global = globalPrices.get(r);
+    const price = local && local > 0 ? local : global && global > 0 ? global : 0;
+    if (price > 0) inputValue += q * price;
+  }
+  return outputValue - inputValue;
+};
+
+/**
  * The recipe's per-worker-day marginal product, valued at current
  * local prices:
  *
