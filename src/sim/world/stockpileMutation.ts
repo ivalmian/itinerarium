@@ -15,7 +15,7 @@
  * stockpile slice at a given settlement).
  */
 
-import { addStockAt, removeStockAt, type Actor } from '../politics/actor.js';
+import { addCoin, addStockAt, removeStockAt, type Actor } from '../politics/actor.js';
 import type { Quantity, ResourceId, SettlementId } from '../types.js';
 import { resourceId } from '../types.js';
 
@@ -48,7 +48,7 @@ export const receiveResourceOrCoin = (
 ): void => {
   if (qty <= 0) return;
   if (resource === COIN_RESOURCE) {
-    actor.treasury += qty;
+    addCoin(actor, qty);
     return;
   }
   increaseStockpile(actor, settlement, resource, qty);

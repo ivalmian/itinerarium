@@ -23,7 +23,7 @@ import {
   type TaxAssessment,
   type TaxRatesPercent,
 } from '../politics/taxShipment.js';
-import { getStockAt, removeStockAt, type Actor } from '../politics/actor.js';
+import { getStockAt, removeStockAt, subtractCoin, type Actor } from '../politics/actor.js';
 import type { Rng } from '../rng.js';
 import { resourceId, type ActorId, type Day } from '../types.js';
 import type { Settlement } from '../world/settlement.js';
@@ -84,7 +84,7 @@ const drainTaxAssessment = (world: WorldState, assessment: TaxAssessment): numbe
   if (assessment.resource === COIN_RESOURCE) {
     const drain = Math.min(owner.treasury, assessment.quantityOwed);
     if (drain <= 0) return 0;
-    owner.treasury -= drain;
+    subtractCoin(owner, drain);
     return drain;
   }
   const have = getStockAt(owner, assessment.fromSettlement, assessment.resource);

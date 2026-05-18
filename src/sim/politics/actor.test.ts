@@ -13,6 +13,7 @@ import {
   createActor,
   getStockAt,
   removeFromStockpile,
+  subtractCoin,
   type Actor,
   type ActorKind,
 } from './actor.js';
@@ -210,7 +211,7 @@ describe('ownership marker (hex / village owner-actor lookup)', () => {
 describe('treasury bookkeeping', () => {
   it('treasury can be mutated directly (it is a public field by design)', () => {
     const a = createActor({ id: id('a'), kind: 'player', name: 'You', treasury: 100 });
-    a.treasury -= 30;
+    subtractCoin(a, 30);
     expect(a.treasury).toBe(70);
   });
 });

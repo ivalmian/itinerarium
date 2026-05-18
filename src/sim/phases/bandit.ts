@@ -50,14 +50,7 @@ import {
   BANDIT_PARTY_MOVEMENT_HEXES_PER_DAY,
   visibleThreatForParty,
 } from '../conflict/unitMovement.js';
-import {
-  actorStockEntriesAt,
-  addStockAt,
-  createActor,
-  getStockAt,
-  removeStockAt,
-  type Actor,
-} from '../politics/actor.js';
+import { actorStockEntriesAt, addCoin, addStockAt, createActor, getStockAt, removeStockAt, subtractCoin, type Actor } from '../politics/actor.js';
 import { createCharacter, generateFullName } from '../politics/character.js';
 import {
   drainDemographics,
@@ -500,7 +493,7 @@ const applyCampAction = (
       if (target === undefined) return;
       const amount = Math.min(camp.treasury, action.amount);
       if (amount <= 0) return;
-      camp.treasury -= amount;
+      subtractCoin(camp, amount);
       spawnBanditParty(
         world,
         campId,
@@ -851,8 +844,8 @@ const executeFenceTransaction = (
     // moving through this city.
     recordClearingPrice(through, t.res, t.price);
   }
-  fence.treasury -= coinPaid;
-  camp.treasury += coinPaid;
+  subtractCoin(fence, coinPaid);
+  addCoin(camp, coinPaid);
   // Reputation: fence becomes friendlier to camp; camp likewise.
   world.reputation.apply(fence.id, camp.ownerActor, 0.05);
   world.reputation.apply(camp.ownerActor, fence.id, 0.05);
@@ -1096,7 +1089,7 @@ const resolvePartyMissionAtTarget = (
         party.cargo.set(resId, (party.cargo.get(resId) ?? 0) + qty);
       }
       targetCaravan.treasury = Math.max(0, targetCaravan.treasury - result.coinTaken);
-      party.treasury += result.coinTaken;
+      addCoin(party, result.coinTaken);
       // Apply party casualties. Drain banditDemographics in step with
       // banditCount and reflect into the global Person registry.
       const partyDeaths = Math.min(party.banditCount, result.banditCasualties.deaths);
@@ -1204,7 +1197,7 @@ const resolvePartyMissionAtTarget = (
       }
       const amount = Math.min(party.treasury, party.mission.amount);
       if (amount > 0) {
-        party.treasury -= amount;
+        subtractCoin(party, amount);
         if (receiver !== undefined) receiver.treasury += amount;
         if (receiver !== undefined) {
           world.reputation.apply(party.ownerActor, receiver.id, 0.05);

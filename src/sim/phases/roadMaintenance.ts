@@ -13,7 +13,7 @@
  * (`(today + 1) % 91 === 0`).
  */
 
-import type { Actor } from '../politics/actor.js';
+import { subtractCoin, type Actor } from '../politics/actor.js';
 import type { WorldState } from '../../procgen/seed.js';
 import type { TickEvent } from '../tick.js';
 
@@ -37,7 +37,7 @@ export const roadMaintenancePhase = (world: WorldState, events: TickEvent[]): vo
   for (const [h, tile] of world.grid.tiles()) {
     if (tile.road !== 'roman') continue;
     if (governor.treasury >= ROMAN_HEX_COIN_PER_QUARTER) {
-      governor.treasury -= ROMAN_HEX_COIN_PER_QUARTER;
+      subtractCoin(governor, ROMAN_HEX_COIN_PER_QUARTER);
       if (tile.romanQuartersUnmaintained !== undefined) {
         tile.romanQuartersUnmaintained = 0;
       }

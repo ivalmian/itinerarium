@@ -37,7 +37,7 @@
  * and burn-in instrumentation can audit the flows.
  */
 
-import type { Actor } from '../politics/actor.js';
+import { addCoin, subtractCoin, type Actor } from '../politics/actor.js';
 import type { Day, SettlementId } from '../types.js';
 import { hexDistance, type Hex } from '../world/hex.js';
 import type { WorldState } from '../../procgen/seed.js';
@@ -106,8 +106,8 @@ export const fiscalRedistributionPhase = (
     for (const family of families) {
       const transfer = Math.min(perFamily, corp.treasury);
       if (transfer < FISCAL_TRANSFER_MIN_COIN) continue;
-      corp.treasury -= transfer;
-      family.treasury += transfer;
+      subtractCoin(corp, transfer);
+      addCoin(family, transfer);
       events.push({
         type: 'fiscal_redistribution',
         channel: 'civic_dividend',
@@ -156,8 +156,8 @@ export const fiscalRedistributionPhase = (
         if (perFamily < FISCAL_TRANSFER_MIN_COIN) continue;
         const actual = Math.min(perFamily, tenant.treasury);
         if (actual < FISCAL_TRANSFER_MIN_COIN) continue;
-        tenant.treasury -= actual;
-        family.treasury += actual;
+        subtractCoin(tenant, actual);
+        addCoin(family, actual);
         events.push({
           type: 'fiscal_redistribution',
           channel: 'tenant_rent',
