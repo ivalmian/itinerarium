@@ -321,6 +321,45 @@ Specifically:
 
 Cross-reference: docs/08 §"Communal subsistence pool".
 
+### Village ration discipline (locked)
+
+A village that sells **all** its grain to the highest external bidder
+will starve its own residents the next winter. Real Roman villages
+did NOT do this — the village's first job was to feed itself; only
+the surplus above subsistence reserves went to market. The model
+implements this as a **`reservedForOwnUse`** carve-out applied to
+`free_village` and `hamlet_household` supply sources for subsistence
+resources.
+
+The reserve formula:
+
+```
+COMMUNITY_RESERVE_DAYS = 60
+reservedQty(resource) =
+  COMMUNITY_RESERVE_DAYS × Σ_class(headcount_class × subsistence_need_per_adult(resource, class, tier))
+```
+
+Sixty days is two months of community subsistence — enough to bridge
+the gap between the autumn harvest and the spring planting without
+being so generous that the village never participates in trade. Above
+the reserve, the village's stockpile is freely sellable.
+
+The reserve only applies to **subsistence resources** (food.grain,
+food.bread, food.legumes, mineral.salt, material.wood — anything in
+the SUBSISTENCE_NEEDS_FREE table). Non-subsistence outputs (cheese,
+wool, oil, etc.) have no reserve and flow to market normally.
+
+Effect: villages stop draining their granaries to zero during Y1
+winter even when a wealthy city is offering 12× procurement premium.
+The Q100 equilibrium stabilizes because the village's supply curve
+truncates at "above community reserve" rather than chasing the
+external bid all the way down.
+
+Patrician estates, city corporations, and other actors do NOT get
+this reserve carve-out — they're profit-maximizing market
+participants. Only the village commons holds back food for the
+village's own residents.
+
 Free workers receive coin income when production recipes run. The wage
 is the local subsistence basket, priced through the same market-price
 maps used by marginal cost. Enslaved workers do not receive wages; their

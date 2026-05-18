@@ -1032,6 +1032,47 @@ export const isCommunityFoodPool = (
   );
 };
 
+/**
+ * Per docs/04 §"Village ration discipline" + docs/08 §"Communal
+ * subsistence pool": when a `free_village` or `hamlet_household`
+ * actor sells subsistence goods on the market, it withholds
+ * `COMMUNITY_RESERVE_DAYS` of community subsistence need from the
+ * sellable pool. The village's first job is to feed its own people;
+ * only the surplus above that reserve goes to external buyers
+ * (caravan merchants, urban procurement, etc.).
+ *
+ * Without this, the village would happily sell ALL its grain to a
+ * better-paying urban bidder and starve its own residents in Q5
+ * winter. With it, the supply curve naturally caps export volume
+ * so the Q100 equilibrium is stable.
+ */
+const COMMUNITY_RESERVE_DAYS = 60;
+
+const communitySubsistenceReserve = (
+  resource: ResourceId,
+  context: SettlementScheduleContext,
+  ownerKind: ActorKind | undefined,
+  tier: Settlement['tier'],
+): number => {
+  if (ownerKind === undefined || !COMMUNITY_FOOD_PROVIDER_KINDS.has(ownerKind)) return 0;
+  const resourceKey: string = resource;
+  if (
+    SUBSISTENCE_NEEDS_FREE[resourceKey] === undefined &&
+    SUBSISTENCE_NEEDS_SLAVE[resourceKey] === undefined
+  ) {
+    return 0;
+  }
+  let dailyNeed = 0;
+  for (const [klass, adultEqCount] of context.adultEquivalentByClass) {
+    if (adultEqCount <= 0) continue;
+    const needsTable = klass === 'slave' ? SUBSISTENCE_NEEDS_SLAVE : SUBSISTENCE_NEEDS_FREE;
+    const perAdult = subsistenceNeedPerAdult(needsTable, resourceKey, tier);
+    if (perAdult <= 0) continue;
+    dailyNeed += perAdult * adultEqCount;
+  }
+  return dailyNeed * COMMUNITY_RESERVE_DAYS;
+};
+
 const subsistenceBudgetForActor = (
   context: SettlementScheduleContext,
   resource: ResourceId,
@@ -2407,6 +2448,16 @@ const supplyForResource = (
       marginalCostByKind.set(marginalCostKey, marginalCost);
     }
     const urgency = kind !== undefined ? URGENCY_BY_KIND[kind] : DEFAULT_OWNER_URGENCY;
+    // Per docs/04 §"Village ration discipline": free_village +
+    // hamlet_household actors withhold 60 days of community
+    // subsistence need from market sales. The village feeds itself
+    // first; only the surplus above the reserve is sellable.
+    const communityReserve = communitySubsistenceReserve(
+      resource,
+      context,
+      kind,
+      inputs.settlement.tier,
+    );
     // For resources with a real producing recipe: MC is the floor.
     // For purely-extracted resources (timber, ore, raw fish) the
     // recipe has nominal/zero priced inputs, so MC ≈ 0; fall back to
@@ -2430,7 +2481,7 @@ const supplyForResource = (
         `supply:${String(inputs.settlement.id)}:${String(ownerActor)}:${String(resource)}`,
         ownerActor,
         qty,
-        0,
+        communityReserve,
         productionCost,
         reservationFloor,
         expectedFuturePrice,
