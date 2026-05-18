@@ -31,7 +31,7 @@ import type { WorldState } from '../../procgen/seed.js';
 /**
  * Actor kinds whose "home presence at the settlement" is a real
  * daily fact. Bandit camps, caravan owners (mobile by definition),
- * the player (location varies), and off-map houses (off-map) are
+ * the player (location varies), and synthetic off-map endpoints are
  * NOT resident.
  */
 const RESIDENT_KINDS: ReadonlySet<ActorKind> = new Set<ActorKind>([

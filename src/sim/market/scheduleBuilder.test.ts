@@ -1555,10 +1555,10 @@ describe('buildSettlementSchedules — community self-provision (docs/04 §"Comm
   it('plebeian household at a free-village settlement gets a subsistence budget credit from the village stockpile', () => {
     const s = baseSettlement('community-village');
     setSegment(s, 'plebeian', 50);
-    // Plebeian household has minimal treasury but the village stores
-    // 1000 modii of grain. Community-self-provision should credit the
-    // household's subsistence budget against the village stockpile so
-    // its bid clears even though it has no coin.
+    // Plebeian household has zero coin. Village holds 1000 modii of
+    // grain. Community-self-provision credits the household's
+    // subsistence budget against the village stockpile so its bid
+    // clears even though it has no coin.
     const stockpilesByOwner = new Map([
       [PLEBEIAN, new Map<ResourceId, number>()],
       [VILLAGE, new Map<ResourceId, number>([[RES.grain, 1000]])],
@@ -1575,7 +1575,7 @@ describe('buildSettlementSchedules — community self-provision (docs/04 §"Comm
         [VILLAGE, 'free_village'],
       ]),
       actorTreasuryByActor: new Map([
-        [PLEBEIAN, 0], // no coin
+        [PLEBEIAN, 0],
         [VILLAGE, 100],
       ]),
     });
@@ -1591,6 +1591,7 @@ describe('buildSettlementSchedules — community self-provision (docs/04 §"Comm
     // effectiveMarketBudget.
     expect(subsBid.curveBudget ?? 0).toBeGreaterThan(0);
   });
+
 
   it('free_village reserves 60 days of community grain need from market supply (docs/04 §"Village ration discipline")', () => {
     const s = baseSettlement('village-ration-discipline');

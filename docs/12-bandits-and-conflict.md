@@ -393,7 +393,8 @@ the cities. Specifically:
 
 - **Fences**: in every city of size ≥small, there's a small
   bandit-aligned faction (a "merchant" who buys stolen goods at
-  60% price, no questions). Faction is procgen-named (often
+  80% price, no questions; this matches `FENCE_PRICE_FRACTION = 0.8`
+  in `src/sim/phases/bandit.ts`). Faction is procgen-named (often
   associated with the docks or a specific minor patrician
   family). Fences pay in coin from their own treasury; coin is
   laundered back into the legitimate market.

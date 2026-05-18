@@ -490,8 +490,8 @@ const findFactionForActor = (world: WorldState, actor: ActorId) => {
   for (const [fid, f] of world.factions) {
     if (f.actor === actor) return fid;
   }
-  // Synthesize a stable id when the owner has no faction (e.g., an
-  // off-map merchant house). Persons still need *some* faction tag so
+  // Synthesize a stable id when the owner has no faction (e.g., a
+  // synthetic off-map endpoint). Persons still need *some* faction tag so
   // future reputation queries don't crash.
   return `faction:${String(actor)}` as Person['faction'];
 };

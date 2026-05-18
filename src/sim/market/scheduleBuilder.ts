@@ -1166,6 +1166,17 @@ const subsistenceSources = (
         inputs.ownerKindByActor,
       );
       if (segmentWealth <= 0) continue;
+      // docs/10 §47 (v1.9): subsistence demand is deliberately NOT
+      // satiation-capped on quantity. The reason: subsistence bids
+      // do double duty as (a) market-trade signal AND (b) the trigger
+      // for the same-tick consumption draw on stockpile. Capping the
+      // quantity at 0 when communal stock is high suppresses the
+      // consumption mechanism, causing famine in poorly-supplied
+      // neighboring settlements that depend on the bid signal for
+      // caravan dispatch. Stockpile-bloat-driven equilibrium is
+      // instead enforced on the SUPPLY side: production stock-target
+      // gate (see productionOutputInventoryCapacityForRecipe) caps
+      // how much grain a settlement accumulates before farms idle.
       out.push(
         subsistenceDemandDirect(
           `subsistence:${String(inputs.settlement.id)}:${klass}:${i}:${resourceKey}`,

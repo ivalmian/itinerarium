@@ -28,10 +28,10 @@
  * because it was a synthetic transfer with no real economic story.
  * The proper inbound coin flow from off-map is the export-caravan
  * path: cities ship surplus → cargo crosses the map edge →
- * global-market coin credits the source actor's treasury via
- * `completeOffMapExportIfArrived`. Off-map houses still accumulate
- * treasury from import sales, but they don't bid on-map for
- * anything, so that growth is a benign sink.
+ * global-market coin credits the export caravan, then remits home.
+ * Inbound import visitor treasury is carried by the caravan and leaves
+ * the economy when the synthetic visitor returns to the edge; it is not
+ * remitted to an on-map actor.
  *
  * Each transfer emits a `fiscal_redistribution` event so the viewer
  * and burn-in instrumentation can audit the flows.

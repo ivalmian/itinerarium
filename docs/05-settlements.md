@@ -287,7 +287,7 @@ costs. The same model handles both:
 
 - A famine inland (no port) is more likely to be solved by local
   pastoral expansion than by sea-shipped grain.
-- A spike in tool prices in a coastal city near iron mines triggers
+- A spike in tool prices in a water-adjacent city near iron mines triggers
   a smithy locally rather than waiting for tools to be shipped from
   the inland metalworking center.
 - A spike in luxury textile demand in a small inland town is more
@@ -439,7 +439,8 @@ For each tradable resource, the settlement tracks:
 - Last clearing price.
 - Standing buy/sell intents from local actors (granary keepers
   buying for patron families, consumers bidding for bread, vintners
-  buying amphorae, off-map merchants offering exports, etc.).
+  buying amphorae, synthetic off-map edge visitors offering imports,
+  etc.).
 
 When a caravan arrives, it sees this market and posts its own
 intents. The day's **market clearing** runs (math in

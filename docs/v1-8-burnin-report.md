@@ -1,6 +1,6 @@
-# v1.6 burn-in analysis — 10-year final
+# v1.8 burn-in analysis — 10-year final
 
-Generated from `burnin-final-10y/` after pass 23 (recipe-yield calibration).
+Generated from `burnin-final-10y-v18/`.
 
 ## 1. Run overview
 

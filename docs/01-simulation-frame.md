@@ -160,9 +160,9 @@ economy is concentrated and where the long, risky trade routes lie.
   moving. If bandits take the carts, the capital doesn't get fed.
 - **Imports from beyond the map are real caravans** — see edge-hub
   caravans in [06 — Caravans](06-caravans.md).
-- **Exports beyond the map are also real caravans** — long-haul NPC
-  merchant houses send goods off-map to an abstract global market;
-  the on-map portion of the journey is fully simulated.
+- **Exports beyond the map are also real caravans** — patrician
+  families and merchant guilds send goods off-map to an abstract
+  global market; the on-map portion of the journey is fully simulated.
 - **Disease is carried by caravans** — see
   [04 — Population](04-population.md). Trade routes are also
   epidemic routes.

@@ -45,9 +45,10 @@ these.
    market.** No resource lives outside the price ladder. If a pasture
    produces equines, those equines have a bid and an ask. If a caravan
    owner needs them, that need is a real demand source the CDA can
-   match. The same uniformity holds for petty merchants, off-map
-   houses, bandit fences, and every other transaction site: they all
-   emit asks or bids that flow through the per-settlement continuous
+   match. The same uniformity holds for same-hex local trade,
+   villager carts, synthetic off-map edge visitors, bandit fences, and
+   every other transaction site: they all emit asks or bids that flow
+   through the per-settlement continuous
    double auction, and every executed trade writes the price into the
    settlement's ladder. There are no "owner-internal" workarounds, no
    stockpile-fetch bypasses, no direct transfers at synthesized
