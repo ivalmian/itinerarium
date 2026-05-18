@@ -141,6 +141,20 @@ export const DEFAULT_GLOBAL_PRICES: ReadonlyMap<ResourceId, number> = new Map<Re
   [resourceId('food.olive_oil'), 750],
   [resourceId('food.wine'), 1000],
   [resourceId('food.cheese'), 25],
+  // Livestock capital goods (per docs/00 Pillar 8 — every good has a
+  // market). Equines, cattle, sheep, pigs are produced on rural
+  // pasture and bought by urban actors (caravan owners need equines,
+  // city kitchens buy cattle for slaughter, etc.). Without an off-map
+  // reference the scarcity ceiling pegs both seller and buyer
+  // settlements to the same maxPrice, killing the spread that local
+  // trade arbitrage needs. Values are 5×-scaled Roman pastoral prices.
+  [resourceId('livestock.equines'), 3000],
+  [resourceId('livestock.cattle'), 1200],
+  [resourceId('livestock.sheep'), 250],
+  [resourceId('livestock.pigs'), 200],
+  // Carts are caravan capital. A new light cart fetches roughly the
+  // same as a small ox to acquire.
+  [resourceId('goods.cart'), 1500],
   // Manufactured ordinary
   [resourceId('goods.cloth'), 60],
   [resourceId('metal.iron'), 60],

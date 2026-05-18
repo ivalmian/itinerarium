@@ -147,8 +147,13 @@ import {
       tick({ world: w, rng: createRng('mkt-cart-seller-ask-ceiling') });
 
       const quote = settlement.market.lastClearingPrice.get(cart) ?? 0;
+      // Per docs/00 pillar 8 + realism pass 12: goods.cart now has an
+      // off-map global reference price (1500 coin), so the scarcity
+      // ceiling = 1500 × ~12 ≈ 18000 rather than the legacy 600. Test
+      // verifies the seller-only ask is BOUNDED, not the specific old
+      // ceiling number.
       expect(quote).toBeGreaterThan(0);
-      expect(quote).toBeLessThanOrEqual(600);
+      expect(quote).toBeLessThanOrEqual(20_000);
     });
 
     it('does not let dust-sized producer demand broadcast a scarcity quote', () => {
