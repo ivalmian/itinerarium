@@ -1,10 +1,18 @@
-# 15 — Current v1.5 Notes and TODOs
+# 15 — Historical v1.5 Cleanup Log
 
-v1.5 is the current baseline. Earlier simplifications are either
-landed here as current behavior or explicitly marked as `[TODO]`.
+**Status: historical.** This doc was the v1.5 cleanup punch-list.
+Nearly every item below has landed (see the per-section status
+tags). Current authoritative state is in
+[10 — Scope & Decisions](10-scope-and-questions.md) §"Decisions
+locked" and in the code itself.
 
-When you complete a `[TODO]`, delete or rewrite that note and update
-the cross-referenced doc to reflect the new behavior.
+A handful of items remain genuinely open (C7 bootstrap-safeguard
+removal, C16 price-explosion cascade). New design decisions land
+into docs/10's locked table directly, **not** here.
+
+Earlier doc cross-references like "see docs/15 §CXX" describe the
+historical change context; for *current* behavior consult the
+locked-decision row in docs/10.
 
 ## C4 — Dynamic settlement investment (Stage 2 specialization, landed)
 

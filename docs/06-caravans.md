@@ -21,9 +21,13 @@ A caravan is a unit with:
 - **Treasury**: coin or barter goods.
 - **Knowledge**: prices observed at hexes recently visited (decays
   with time).
-- **Owner**: a named actor (the player, a patrician family, the
-  governor's office, an off-map merchant house). Cargo belongs to
-  the owner.
+- **Owner**: a named domestic actor (the player, a patrician
+  family, the governor's office, a procgen-seeded `caravan_owner`
+  warm-start, or a `free_village` / `hamlet_household` for short-
+  haul villager carts). Cargo belongs to the owner. **No on-map
+  caravan is owned by an off-map merchant house** — the
+  `off_map_house` actor kind is only the per-edge-gate synthetic
+  endpoint for inbound visits (docs/10 §45).
 - **Disease state**: healthy / exposed / infectious. See
   [04 — Population](04-population.md). An infectious caravan can
   start an outbreak in any settlement it visits.
@@ -166,7 +170,7 @@ modified by the mover's equipment / animals / load. Higher difficulty
 | Hex                         | Roman road | Dirt road  | Off-road   |
 | --------------------------- | ---------- | ---------- | ---------- |
 | Plains / fertile valley     | 1          | 1.25       | 5          |
-| Coast / steppe / urban      | 1          | 1.25       | 5          |
+| Steppe / urban              | 1          | 1.25       | 5          |
 | Hills / desert              | 1          | 1.5        | 7          |
 | Forest                      | 1          | 1.5        | 8          |
 | Dense forest                | 1          | 2          | 12         |
@@ -245,11 +249,14 @@ counter (integer, 0 at procgen for un-roaded hexes). Every day:
    event.
 4. **Roman roads are engineered, not worn in.** Hexes with
    `road === 'roman'` don't gain wear (no upgrade target above
-   them) and their wear-counter doesn't decay because the road is
+   them) and their wear-counter doesn't decay while the road is
    maintained — both behaviors landed in `addRoadWear`/
-   `trailWearTickPhase`. Modeling a real labor + materials cost
-   for the maintenance (so a defunded province eventually loses
-   its roads) is tracked in docs/15 §C11.
+   `trailWearTickPhase`. **Maintenance has a real cost**:
+   quarterly (every 91 days) `roadMaintenancePhase` drains 0.1
+   coin per Roman-road hex from the governor's treasury. After 4
+   consecutive unfunded quarters the hex demotes to `dirt`
+   (`roadWear` reseeds to 100 so it doesn't immediately decay
+   further); the demote emits `road_unmaintained`.
 5. **Dirt roads can downgrade.** A `dirt` hex whose roadWear
    falls below 20 (sustained low traffic) reverts to
    `road = 'none'`. The dirt-road decay rate scales **exponentially
@@ -348,10 +355,13 @@ abstract (see [08 — Money & Trade](08-money-and-trade.md)) but every
 on-map step is fully simulated.
 
 There is **no fixed dispatch cadence** for international caravans
-and **no exogenous import "houses" that spawn at the map edge**.
-Imports and exports are the SAME mechanic: a venture dispatched by a
-patrician family or merchant guild in one of our cities, going out
-to the global market and coming back.
+dispatched from on-map cities. **No off-map merchant has a permanent
+on-map base**: there is no "import house" with an on-map
+`homeSettlement`. (See §"Edge-hub inbound visits" below for the
+counterpart — the off-map global market does send merchants who
+visit our markets temporarily; those visits do not constitute
+permanent presence and are owned by per-edge-gate synthetic
+endpoints, not on-map actors.)
 
 ### Who dispatches a venture
 

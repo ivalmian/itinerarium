@@ -152,8 +152,9 @@ deposit, quarry) is **owned by a specific actor**:
 - A village's grain fields, vineyard, and woodlot are similarly
   owned per the village's status.
 - A mining region's deposit hexes are owned by whichever actor
-  holds the mining rights — usually a patrician family, sometimes
-  the city, the governor, or an off-map merchant house.
+  holds the mining rights — a patrician family, the city, or the
+  governor. **Off-map merchants are never permanent on-map owners**
+  (docs/10 §45) — they visit, sell, buy return cargo, leave.
 - A managed forest near a settlement may be communal (city-owned),
   private (family-owned), or governor-owned (imperial estate).
 - **Wilderness hexes are typically unowned.** First-come extraction
@@ -416,12 +417,17 @@ This is the realistic constraint that makes warehouses + granaries
 matter as buildings — without them, a city's traders can't
 accumulate enough stockpile to weather a bad season.
 
-**Current implementation status (planned, tracked in docs/15 §C10).**
-Capacity discipline is not yet enforced anywhere — neither at
-bootstrap nor in the tick loop. Stockpiles grow without bound. This
-is fine for current burn-ins (no settlement holds an absurd amount)
-but the realistic gameplay constraint above does not yet bite.
-See docs/15 §C10 for the full follow-up plan.
+**Landed (v1.5).** Each building catalog entry carries
+`storageCapacity: ReadonlyMap<ResourceId, Quantity>` (per-resource
+caps) + `wildcardCapacityKg` (a generic in-process pool). Granary
+adds 5,000 modii grain capacity + 1,000 kg wildcard; warehouse
+adds 10,000 kg wildcard; other buildings default to 50 kg. Per-
+capita household baseline of 50 kg/adult covers buildingless
+hamlets. Overflow triggers `storage_spoilage` per
+`storageSpoilagePhase`. Files: `src/sim/buildings/catalog.ts`
+(`storageCapacity`), `src/sim/world/settlement.ts`
+(`computeStorageCapacity`), `src/sim/tick.ts`
+(`storageSpoilagePhase`).
 
 ## Market state per settlement
 

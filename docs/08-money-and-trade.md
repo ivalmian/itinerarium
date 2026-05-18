@@ -628,15 +628,16 @@ at **quantity = 2.0 modii per forum-capacity-unit** and a
 **maxPriceMultiplier of 12** above local clearing. With one forum per
 town/city, that's a structurally high civic bid for staple food.
 
-The effect, working through the existing local-trade pass:
+The effect, working through real caravan units (per docs/10 §43,
+the abstract local-trade daily-pass is deleted — every cross-
+settlement trade is a real unit on the map):
 
 1. The forum's bid pulls the city's clearing price for grain well
    above the rural village's clearing price.
-2. The local-trade pass (docs/06 §"Local trade between nearby
-   settlements") arbitrages the spread: a petty merchant takes grain
-   from the village's free_village / hamlet_household stockpile, walks
-   it to the city's market, and the buy-side actor (city corp / forum
-   owner) pays at the city's clearing price minus transport cost.
+2. The village's `free_village` steward dispatches a **villager
+   caravan** (handcart, 2-4 mules, 1 drover + 1 guard) carrying
+   grain to the city. On arrival the caravan sells at the city's
+   clearing price (per the bid/ask book).
 3. Coin flows from city corp → village household. Grain flows the
    other way. The spread closes to roughly the per-hex transport
    cost (~0.005–0.02 coin/kg), but the village still nets a real
@@ -652,7 +653,7 @@ the rural population for feeding them.
 
 The CDA at each settlement is the canonical clearing engine, but
 several transaction paths execute *outside* it (caravan arrival,
-off-map import/export, local-trade petty merchant, bandit fence).
+off-map import/export, bandit fence).
 Per docs/08 §"Bid-ask book" the residual price ladder is supposed
 to reflect every participant — that fails if a caravan unloads
 1000 amphorae of wine at the city forum and no price record updates.
@@ -662,10 +663,9 @@ the trade's execution price into `lastClearingPrice` for the
 relevant settlement(s)**, even when the trade itself didn't go
 through the CDA. Specifically:
 
-- Local-trade petty merchant — writes the integer midprice to both
-  settlements (the seller settlement and the buyer settlement).
-- Caravan trade-on-arrival — writes the trade's per-unit price into
-  the settlement's clearing-price map for each resource sold/bought.
+- Caravan trade-on-arrival (handcart, villager, standing, edge-hub
+  inbound) — writes the trade's per-unit price into the settlement's
+  clearing-price map for each resource sold/bought.
 - Off-map import / export caravan — same; an import landing at city
   price P writes P into that resource's price ladder.
 - Bandit fence — quotes 80% of going market price (the 20% spread
@@ -805,17 +805,15 @@ with its own aggregate demand + aggregate supply schedules. There
 is no shared "regional clearing price"; if the village runs short
 of grain its price will spike before the neighbor hamlets feel it.
 
-What pulls those four markets back into rough alignment is the
-**local-trade pass** specified in
-[06 — Caravans](06-caravans.md) §"Local trade between nearby
-settlements": after every settlement clears, petty merchants move
-small household loads between settlements within 3 hexes of each
-other, including fresh local foods such as milk, fish, and game.
-Livestock capital walks in small herd-unit fractions over the same
-local radius. Workshop/industrial cartage can move tools, ore,
-charcoal, metals, and construction materials out to 6 hexes when the
-spread pays the heavier transport cost. Both arbitrage price spreads
-down to roughly the transport-cost band.
+What pulls those four markets back into rough alignment is **real
+caravan traffic** (per docs/10 §43). Short-haul **handcart and
+villager caravans** (1-2 drovers + a few mules, ≤ 6 hex round trip,
+≤ 3 days) carry household-sized loads between nearby settlements
+including fresh local foods such as milk, fish, and game. Standing
+merchant caravans handle the longer arbitrages. The abstract
+daily-pass "local trade petty merchant" model that previously
+teleported goods between adjacent settlements is deleted; every
+trade is a real unit subject to ambush, weather, and road wear.
 
 So:
 
