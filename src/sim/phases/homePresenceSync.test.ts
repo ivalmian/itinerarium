@@ -11,7 +11,7 @@ import { createReputationTable } from '../reputation/table.js';
 
 const emptyWorld = (): WorldState => ({
   day: 0 as Day,
-  grid: createGrid(10, 10),
+  grid: createGrid(),
   settlements: new Map(),
   actors: new Map(),
   factions: new Map(),
