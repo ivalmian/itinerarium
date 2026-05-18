@@ -27,7 +27,7 @@
  */
 
 import { DEFAULT_GLOBAL_PRICES } from '../caravan/edgeHub.js';
-import { getStockAt, removeStockAt, type Actor } from '../politics/actor.js';
+import { addCoin, getStockAt, removeStockAt, subtractCoin, type Actor } from '../politics/actor.js';
 import type { Day, ResourceId } from '../types.js';
 import { resourceId } from '../types.js';
 import {
@@ -185,8 +185,8 @@ const buyFallbackRationsFromOwner = (
       if (buyerPaysSeller) {
         const coin = buyerUnits * price;
         if (coin > 0) {
-          buyer.treasury -= coin;
-          seller.treasury += coin;
+          subtractCoin(buyer, coin);
+          addCoin(seller, coin);
         }
       }
       unitsConsumed += buyerUnits;

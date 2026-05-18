@@ -42,7 +42,7 @@ import {
 import { integerCoinClearing, wholeUnitsForTransaction } from '../market/wholeUnits.js';
 import { edictPriceCapFor } from './civilUnrest.js';
 import { DEFAULT_GLOBAL_PRICES } from '../caravan/edgeHub.js';
-import { actorStockEntriesAt, getStockAt, type Actor } from '../politics/actor.js';
+import { actorStockEntriesAt, addCoin, getStockAt, subtractCoin, type Actor } from '../politics/actor.js';
 import { getResource } from '../resources/catalog.js';
 import type { LaborClassContext } from '../jobs/laborEconomics.js';
 import {
@@ -593,8 +593,8 @@ export const tradePhase = (
         if (!serviceTrade) decreaseStockpile(seller, settlement.id, resId, qty);
         if (buyerPaysSeller) {
           if (coin > 0) {
-            concreteBuyer.treasury -= coin;
-            seller.treasury += coin;
+            subtractCoin(concreteBuyer, coin);
+            addCoin(seller, coin);
           }
         }
         if (demandSource?.buyerDisposition === 'stockpile' && !serviceTrade) {

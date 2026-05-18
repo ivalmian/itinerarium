@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { actorId, caravanId, resourceId, settlementId, type Day } from '../types.js';
-import { createActor } from '../politics/actor.js';
+import { addCoin, createActor } from '../politics/actor.js';
 import { createCaravan } from '../caravan/caravan.js';
 import { createReputationTable } from '../reputation/table.js';
 import { createSettlement } from '../world/settlement.js';
@@ -131,7 +131,7 @@ describe('off-map sojourn (Phase 25)', () => {
     // (a unit not at full Roman scale, just the smoke arithmetic).
     const before = c.treasury;
     // Walk through the handler's price * qty math directly.
-    c.treasury += 100 * 7.5;
+    addCoin(c, 100 * 7.5);
     c.cargo.delete(grain);
     expect(c.treasury - before).toBe(750);
     expect(c.cargo.size).toBe(0);

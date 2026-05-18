@@ -27,12 +27,7 @@ import {
   wageEarningWorkerDaysByClassForLaborForOwner,
   wageEarningWorkerDaysForLaborForOwner,
 } from '../jobs/laborEconomics.js';
-import {
-  addStockAt,
-  getStockAt,
-  removeStockAt,
-  type Actor,
-} from '../politics/actor.js';
+import { addCoin, addStockAt, getStockAt, removeStockAt, subtractCoin, type Actor } from '../politics/actor.js';
 import type { CharacterClass } from '../population/types.js';
 import type { RecipeDef } from '../production/recipes.js';
 import type { JobId, Quantity, ResourceId, SettlementId } from '../types.js';
@@ -492,8 +487,8 @@ export const payProductionWagesForWorkerDaysByClass = (
     let remaining = wageBill;
     const paidCoin = Math.min(remaining, payer.treasury);
     if (paidCoin > 0) {
-      payer.treasury -= paidCoin;
-      recipient.treasury += paidCoin;
+      subtractCoin(payer, paidCoin);
+      addCoin(recipient, paidCoin);
       remaining -= paidCoin;
       wagePaidCoinTotal += paidCoin;
     }

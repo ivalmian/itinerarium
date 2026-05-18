@@ -55,7 +55,7 @@ import { isGoalComplete, peekGoal, popGoal, type Goal } from '../caravan/goal.js
 import { MAX_ACTIVE_WORLD_CARAVANS } from '../caravan/limits.js';
 import { wholeUnitsForTransaction } from '../market/wholeUnits.js';
 import { syncCaravanWithLocalGuild } from '../politics/guildLedger.js';
-import { getStockAt, type Actor } from '../politics/actor.js';
+import { addCoin, getStockAt, subtractCoin, type Actor } from '../politics/actor.js';
 import { getResource } from '../resources/catalog.js';
 import type { Rng } from '../rng.js';
 import {
@@ -414,8 +414,8 @@ const sellCaravanCargoAtLocalMarkets = (
     // Whole-unit cargo: residue under 1 unit is unsellable — drop it.
     if (remaining >= 1) caravan.cargo.set(resource, remaining);
     else caravan.cargo.delete(resource);
-    caravan.treasury += coin;
-    buyer.actor.treasury -= coin;
+    addCoin(caravan, coin);
+    subtractCoin(buyer.actor, coin);
     if (buyer.disposition === 'consume') recordConsumption(buyer.settlement, resource, qty);
     else increaseStockpile(buyer.actor, buyer.settlement.id, resource, qty);
     // Caravan sold cargo to the settlement: import for the settlement.
@@ -470,8 +470,8 @@ const buyPlannedCargoAtLocalMarkets = (
       decreaseStockpile(seller.actor, seller.settlement.id, resource, qty);
       increaseCaravanCargo(caravan, resource, qty);
       if (!sameOwner) {
-        caravan.treasury -= coin;
-        seller.actor.treasury += coin;
+        subtractCoin(caravan, coin);
+        addCoin(seller.actor, coin);
       }
       // Caravan picked up cargo from this settlement: export.
       recordExport(seller.settlement, resource, qty);
@@ -552,8 +552,8 @@ const buyCaravanRationsAtLocalMarkets = (
     decreaseStockpile(quote.seller.actor, quote.seller.settlement.id, quote.resource, qty);
     increaseCaravanCargo(caravan, quote.resource, qty);
     if (!sameOwner) {
-      caravan.treasury -= coin;
-      quote.seller.actor.treasury += coin;
+      subtractCoin(caravan, coin);
+      addCoin(quote.seller.actor, coin);
     }
     recordClearingPrice(quote.seller.settlement, quote.resource, quote.seller.price);
     // Caravan loaded cargo at this settlement: export.
@@ -653,8 +653,8 @@ const remitStandingCaravanProfitAtHome = (
 
   const coin = Math.floor(surplus * MERCHANT_CARAVAN_HOME_REMITTANCE_RATE);
   if (coin <= 0) return 0;
-  caravan.treasury -= coin;
-  owner.treasury += coin;
+  subtractCoin(caravan, coin);
+  addCoin(owner, coin);
   events.push({
     type: 'caravan_profit_remitted',
     caravan: caravan.id,
@@ -705,7 +705,7 @@ const completeOffMapExportIfArrived = (
     // operating treasury (the cash travels with the caravan during the
     // sojourn, not magically into the owner's pocket). The owner gets
     // the surplus on home arrival via the standard home-market remit.
-    caravan.treasury += coin;
+    addCoin(caravan, coin);
     void owner;
     caravan.cargo.delete(resource);
     exportedAny = true;
@@ -936,8 +936,8 @@ const buyOwnerAssemblyStockAtLocalMarket = (
     const coin = qty * seller.price;
     decreaseStockpile(seller.actor, seller.settlement.id, resource, qty);
     increaseStockpile(buyer, settlement.id, resource, qty);
-    buyer.treasury -= coin;
-    seller.actor.treasury += coin;
+    subtractCoin(buyer, coin);
+    addCoin(seller.actor, coin);
     remaining -= qty;
     bought += qty;
   }
@@ -1047,7 +1047,7 @@ const createReplacementMerchantCaravan = (
   if (lightCartCount > 0) {
     decreaseStockpile(owner, origin.id, MERCHANT_CARAVAN_CART_RESOURCE, lightCartCount);
   }
-  owner.treasury -= operatingTreasury;
+  subtractCoin(owner, operatingTreasury);
   buyCaravanRationsAtLocalMarkets(world, caravan, [origin], events);
   return caravan;
 };
@@ -1327,7 +1327,7 @@ const createVillagerCaravan = (
     return null;
   }
   decreaseStockpile(owner, origin.id, MERCHANT_CARAVAN_EQUINES_RESOURCE, equineUnitsNeeded);
-  owner.treasury -= operatingTreasury;
+  subtractCoin(owner, operatingTreasury);
   buyCaravanRationsAtLocalMarkets(world, caravan, [origin], events);
   return caravan;
 };
@@ -1879,7 +1879,7 @@ const disbandUnprofitableCaravan = (
 const refundCaravanToOwner = (world: WorldState, c: Caravan): void => {
   const owner = world.actors.get(c.ownerActor);
   if (owner === undefined) return;
-  owner.treasury += Math.max(0, c.treasury);
+  addCoin(owner, Math.max(0, c.treasury));
   c.treasury = 0;
   // Cargo + livestock + carts refund to the owner's slice at their home
   // settlement (per docs/15 §C30 — inventory must land at a specific

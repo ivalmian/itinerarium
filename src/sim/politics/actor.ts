@@ -142,6 +142,45 @@ export const createActor = (input: CreateActorInput): Actor => {
   };
 };
 
+// --- Integer-coin treasury helpers (v1.6 pass 27) --------------------------
+//
+// Per docs/08 §"Integer-coin prices" + user direction (2025-05-17):
+// treasury is ALWAYS integer coin. Every mutation rounds at the
+// assignment so floating-point drift can't accumulate. Use these
+// helpers at every call site; direct `treasury += x` is being
+// migrated out.
+
+interface CoinHolder {
+  treasury: Coin;
+}
+
+/** Increase `holder`'s treasury by `delta` (rounded). Negative `delta` allowed (becomes subtract). */
+export const addCoin = (holder: CoinHolder, delta: number): void => {
+  if (!Number.isFinite(delta)) return;
+  holder.treasury = Math.max(0, Math.round(holder.treasury + delta));
+};
+
+/** Decrease `holder`'s treasury by `delta` (rounded). Clamps to ≥0. */
+export const subtractCoin = (holder: CoinHolder, delta: number): void => {
+  if (!Number.isFinite(delta)) return;
+  holder.treasury = Math.max(0, Math.round(holder.treasury - delta));
+};
+
+/** Set the treasury directly (rounded, clamped ≥0). */
+export const setCoin = (holder: CoinHolder, value: number): void => {
+  if (!Number.isFinite(value)) {
+    holder.treasury = 0;
+    return;
+  }
+  holder.treasury = Math.max(0, Math.round(value));
+};
+
+/** Whole-coin integer of any number (rounds, clamps ≥0). */
+export const intCoin = (n: number): number => {
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.round(n));
+};
+
 // --- Per-settlement stockpile accessors (docs/15 §C30) ---------------------
 
 /** Quantity an actor holds of `resource` at `settlement`. 0 if absent. */

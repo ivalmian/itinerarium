@@ -24,7 +24,7 @@
  * Emits a `tribute_paid` event per transfer for telemetry.
  */
 
-import type { Actor } from '../politics/actor.js';
+import { addCoin, subtractCoin, type Actor } from '../politics/actor.js';
 import type { WorldState } from '../../procgen/seed.js';
 import type { TickEvent } from '../tick.js';
 
@@ -61,8 +61,8 @@ export const tributePhase = (world: WorldState, events: TickEvent[]): void => {
     const tribute = Math.floor(spendable * TRIBUTE_FRACTION);
     if (tribute <= 0) continue;
 
-    steward.treasury -= tribute;
-    patron.treasury += tribute;
+    subtractCoin(steward, tribute);
+    addCoin(patron, tribute);
     events.push({
       type: 'tribute_paid',
       fromSettlement: settlement.id,
