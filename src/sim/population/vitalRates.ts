@@ -33,9 +33,21 @@ export interface VitalRates {
   readonly elderMortalityPer1000PerYear: number;
 }
 
+// v1.8 pass 32: infant mortality calibrated to historical Roman lower
+// end (~25-30 % cumulative by age 5, per Garnsey + Frier). Pre-pass-32
+// used 0.09 / yr which compounds to ~37 % over 5 yr — well above the
+// documented 25-30 % band, dragging steady-state pop into decline.
+// 0.06 / yr → ~26.5 % cumulative, mid-historical.
+//
+// Child mortality 5-14 stays at 0.012 (~11 % cumulative over 10 yr,
+// matches historical 10-15 %). Adult / elder unchanged.
+//
+// Birth rate stays at 40 / 1000 / yr (mid of documented 38-42 band).
+// Pop loss in v1.7 burn-ins was death-side not birth-side: 22k famine
+// over 10y is the larger driver, not insufficient natality.
 export const ROMAN_VITAL_RATES: VitalRates = {
   crudeBirthRatePer1000PerYear: 40,
-  infantMortalityPerYearAge0_4: 0.09,
+  infantMortalityPerYearAge0_4: 0.06,
   childMortalityPerYearAge5_14: 0.012,
   adultMortalityPer1000PerYear: 12,
   elderMortalityPer1000PerYear: 60,
