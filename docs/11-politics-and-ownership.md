@@ -223,9 +223,10 @@ forest hex, quarry, river weir) is owned by a specific actor:
 - A patron-client village's catchment is owned by the patron
   family (which is one of the city families).
 - A mining region's deposit hexes are owned by whoever holds
-  mining rights — usually a patrician family, sometimes the city
-  corporation, the governor, or even an off-map merchant house
-  (concession-holder).
+  mining rights — a patrician family, the city corporation, or
+  the governor. **Off-map merchants do not hold concessions**
+  (docs/10 §45); foreign trade flows through transient inbound
+  visits only.
 - A managed forest near a settlement may be communal (city-owned),
   private (family-owned), or imperial / governor-owned.
 - **Wilderness hexes are typically unowned.** First-come

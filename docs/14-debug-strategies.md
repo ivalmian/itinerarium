@@ -11,23 +11,22 @@ reveal.
 These exist (or should exist) in `src/burnin/` and are wired into the
 CLI runner so any burn-in can dump them.
 
-### Per-settlement, per-resource time series (planned, docs/15 §C15)
+### Per-settlement, per-resource time series (landed, partial)
 
 For each (settlement, resource), record at every tick:
 
 - `stockpile` (sum across all owners present in the settlement)
-- `inflows` from production + caravan deliveries
-- `outflows` to consumption + caravan loadings
+- `inflow` from production + caravan deliveries
+- `outflow` to consumption + caravan loadings
 - `lastClearingPrice`
-- `unmetDemandAtClearingPrice` (from market clearing)
+- `unmetDemandAtClearingPrice` (from market clearing — TODO,
+  currently emitted as 0 pending plumbing)
 
-Dump as CSV per settlement (`outDir/settlement-X-resource-Y.csv`)
-with one row per tick. Not yet implemented; current debug telemetry
-in `scripts/debug-activity.ts` is global yearly aggregates only.
-A spreadsheet or quick `chart` script over the planned per-settlement
-CSV would reveal collapses (line going to zero), runaway prices
-(line going up exponentially), or production starvation (inflow=0
-for many days).
+Dumps one CSV per settlement (`outDir/settlement-X-resource-Y.csv`)
+with one row per tick. Enable with `--instruments=time-series`.
+Writes thousands of files on a realistic burn-in — intended for
+manual debug invocations only, not the watchdog. The remaining gap
+is wiring `unmetDemandAtClearingPrice` through the market layer.
 
 ### Global aggregates
 

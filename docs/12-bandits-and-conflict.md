@@ -355,9 +355,11 @@ inputs)` (T16). Translate the action:
      settlement now actively misinforms patrols looking for the
      camp
    - `fence_loot(through)` → camp-to-settlement loot transfer at
-     60% local clearing price; settlement's actor pays coin, gets
-     stolen goods. Bandit-aligned cities retain the goods quietly;
-     others may actually be undercover patrol fronts.
+     **80% of local clearing price** (the 20% spread is the fence's
+     fee, matching `FENCE_PRICE_FRACTION = 0.8` in
+     `src/sim/phases/bandit.ts`). Settlement's actor pays coin,
+     gets stolen goods. Bandit-aligned cities retain the goods
+     quietly; others may actually be undercover patrol fronts.
 5. **Initial seeding**: procgen places 1 small bandit camp per
    settled cluster in a forest/hills hex within 6–12 hexes of a
    city. They're already there at day 0; the world doesn't have to

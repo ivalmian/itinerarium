@@ -1,10 +1,11 @@
 # 10 — Current Scope, Decisions, Risks, Next Steps
 
 All design questions raised so far have been resolved. This doc
-describes the current v1.5 scope, the main risks, and
-what to build first.
+describes the **current v1.9 scope**, the main risks, and the
+locked-decision log. The locked-decisions table is the source of
+truth when other docs disagree.
 
-## Current Scope (v1.5)
+## Current Scope (v1.9)
 
 **Goal of the current scope:** the smallest world that meaningfully demonstrates
 the no-hidden-hands economy, with realistic Roman-style social

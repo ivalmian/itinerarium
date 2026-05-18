@@ -1,8 +1,10 @@
 # 02 — Resources
 
-A bounded enumerated set. Goal: ~40–50 items — enough for rich
-production chains, few enough that the player can hold them in their
-head.
+A bounded enumerated set. Catalog currently lists ~75 items — most
+were a single resource per real-world commodity at v1.0, but the
+weapon-archetype split (v1.5/v1.6) and the bronze-chain split (v1.5)
+turned several single rows into multiple. Still bounded; still
+chooseable in a player-facing menu.
 
 Naming convention: `category.name`. Categories are lowercase tags
 only — they don't restrict gameplay.
@@ -14,7 +16,7 @@ only — they don't restrict gameplay.
 | `food.grain`         | Plains, fertile valleys                | Wheat/barley/spelt aggregated. Subsistence backbone. Seasonal: planted spring, harvested late summer.                   |
 | `food.olives`        | Mediterranean climate, hills           | Annual harvest in autumn. Trees take years to mature.                                                                   |
 | `food.grapes`        | Mediterranean climate, hills           | Annual autumn harvest. Vines take years.                                                                                |
-| `food.fish`          | Coast, river, lake hexes               | Continuous, depletable if over-fished.                                                                                  |
+| `food.fish`          | River, lake hexes (water-adjacent)     | Continuous, depletable if over-fished. There is no separate `coast` terrain — sea-adjacent hexes are `lake` per docs/07. |
 | `food.game`          | Forest, hills                          | Limited supply per hex; mostly subsistence in marginal regions.                                                         |
 | `food.milk`          | Dairy herds                            | Daily, highly perishable local flow. Sold fresh nearby or processed into cheese.                                        |
 | `food.legumes`       | Plains                                 | Fallback crop, rotation partner with grain.                                                                             |
@@ -56,7 +58,7 @@ only — they don't restrict gameplay.
 | `material.pottery`     | clay + fuel + potter                  | Storage, daily use.                                                                                                                                                                         |
 | `material.amphora`     | clay + fuel + potter                  | Specialized — required to ship liquids.                                                                                                                                                     |
 | `metal.iron`           | iron_ore + charcoal + smelter         | Bar stock. Strategic input; local smelters are primary, but off-map caravans can import bars when scarcity covers transport.                                                                |
-| `metal.bronze`         | copper/tin ore + charcoal + smelter   | Bar stock; Roman-era still common for fittings. The current `alloy_bronze` recipe takes ore directly; whether to add `metal.copper` / `metal.tin` intermediates is tracked in docs/15 §C13. |
+| `metal.bronze`         | `metal.copper` + `metal.tin` + charcoal + smelter | Bar stock; Roman-era still common for fittings. The bronze chain is split: smelters refine ore → `metal.copper` / `metal.tin` first, then `alloy_bronze` combines the two. |
 | `metal.lead`           | lead_ore + charcoal                   | Plumbing, weights, sling bullets.                                                                                                                                                           |
 | `metal.silver`         | silver_ore + lead + cupellation labor | Coinage, plate.                                                                                                                                                                             |
 | `metal.gold`           | gold_ore + labor                      | Coinage, status.                                                                                                                                                                            |
