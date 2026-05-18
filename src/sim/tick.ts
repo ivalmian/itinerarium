@@ -42,6 +42,7 @@ import { consumptionPhase } from './phases/consumption.js';
 import { demographicsPhase } from './phases/demographics.js';
 import { demolitionPhase } from './phases/demolition.js';
 import { fiscalRedistributionPhase } from './phases/fiscalRedistribution.js';
+import { homePresenceSyncPhase } from './phases/homePresenceSync.js';
 import { investmentPhase } from './phases/investment.js';
 import { movementPhase } from './phases/movement.js';
 import { edgeHubPhase } from './phases/edgeHub.js';
@@ -590,6 +591,14 @@ export const tick = (inputs: TickInputs): TickResult => {
   // This is what keeps ~8000 separate markets aligned into a regional
   // price gradient instead of 8000 disconnected wells.
   localTradePhase(world, season, today, events, subsistenceAccess, laborContextForSettlement);
+
+  // --- Phase 4c: Resident-presence price sync -----------------------------
+  // After all markets clear, every actor that physically lives at a
+  // settlement records a fresh MarketObservation into its knownPrices map
+  // for that settlement (docs/06 §"All knowledge comes from syncs",
+  // docs/10 decision 38). Not magic — literally "I live here, I see the
+  // forum prices today." Caravan/meeting/guild syncs land in Phase 23.
+  homePresenceSyncPhase(world, today);
 
   // --- Phase 4b: Consumption / famine pressure -----------------------------
   consumptionPhase(world, today, events, stats, subsistenceAccess);

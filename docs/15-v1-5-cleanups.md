@@ -595,7 +595,18 @@ characters" (the common-household actor concept), `src/sim/politics/
 actor.ts` `ActorKind`, `src/procgen/seed.ts` household seeding,
 `src/sim/tick.ts` wage routing.
 
-## C22 — Off-map coin flow via exports, not synthetic residual (landed)
+## C22 — Off-map coin flow via exports, not synthetic residual (landed; superseded in v1.6)
+
+> **v1.6 update:** the two-channel model below (off_map_house spawns
+> imports + city actor spawns separate export caravan via a fixed
+> cadence) is replaced by **patrician + merchant-guild international
+> ventures**: a single round-trip caravan dispatched on-demand when
+> `expected_profit ≥ 3 × transport_cost`, with a 20-tick off-map
+> sojourn at the edge hex. See decisions 37–41 in
+> [10 — Scope](10-scope-and-questions.md), [06 — Caravans](06-caravans.md)
+> §"International ventures", and [08 — Money & Trade](08-money-and-trade.md)
+> §"The off-map global market". The historical C22 text below
+> documents the v1.5 mechanic for audit-trail purposes.
 
 **Pre-§C22 hack (C20 channel 3):** every quarter, each `off_map_house`
 actor paid back `OFF_MAP_HOUSE_RESIDUAL_FRACTION = 0.06` of its
@@ -1049,7 +1060,20 @@ not in re-introducing the hidden hand.
 ownership", `src/sim/politics/actor.ts`,
 `docs/15-v1-5-cleanups.md` §C29.
 
-## C31 — Villager caravans (landed)
+## C31 — Villager caravans (landed; extended in v1.6)
+
+> **v1.6 extension (locked, decision 43):** the abstract daily-pass
+> `localTradePhase` is deleted; villager caravans become the
+> general-purpose vehicle for **all** local inter-settlement trade,
+> not just village→nearest-city. Dispatcher logic is extended to
+> consider adjacent villages, hamlets, and towns within ≤6 hex as
+> candidate destinations whenever the steward's `knownPrices`
+> identifies a spread that beats round-trip transport cost +
+> reluctance margin. A new smaller "handcart" tier (1 person, ≤50
+> kg, no animals) sits below the existing 2-4-mule villager cart
+> for very short and very light arcs. All tiers share the SAME
+> movement / food / ambush / disease machinery as long-haul
+> caravans.
 
 **Motivation:** after §C30 the famine regression revealed that the
 trade system wasn't moving enough food and other rural production

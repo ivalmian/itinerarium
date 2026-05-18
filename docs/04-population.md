@@ -260,6 +260,59 @@ Children consume ~0.5×, elders ~0.8×.
 **Slaves**: subsistence calories + minimal salt + minimal
 clothing only. No comfort/status demand.
 
+### Per-capita consumption sanity ranges (Roman reference, locked v1.6)
+
+Beyond the subsistence floor above, **comfort demand** for non-staple
+goods (wine, oil, cheese, salted meat/fish, cloth, clothing,
+pottery, furniture) must be calibrated to plausible Roman per-
+capita ranges. Burn-in stockpile bloat (cities holding 5+ years of
+salted meat, oil, wine at Q8) is the symptom of consumption rates
+set far below the historical band. Production rates calibrated to
+real recipes (one cattle slaughter = 60 kg salted_meat) only make
+sense if downstream demand is also calibrated.
+
+The historical reference per adult per year (citations: Garnsey,
+_Food and Society in Classical Antiquity_, 1999; Erdkamp,
+_The Grain Market in the Roman Empire_, 2005; Jongman,
+_The Economy and Society of Pompeii_, 1988):
+
+| Good          | Roman per-capita / yr | Per-day equivalent | Notes |
+|---------------|-----------------------|---------------------|-------|
+| Grain (mixed staple) | 200–250 kg | 0.55–0.68 kg | Already approx via 0.4 kg/day grain-equivalent floor. |
+| Salt          | ~2.5 kg              | ~7 g                | Already locked. |
+| Wine          | 50–150 L (≈ kg)      | 0.14–0.41 kg        | Plebeian to lower-class urban range; soldiers got ~1 L/day. |
+| Olive oil     | 10–25 kg             | 0.027–0.068 kg      | Cooking + lamps + soap. Plebs lower; patricians higher. |
+| Cheese        | 3–6 kg               | 0.008–0.016 kg      | Mostly rural / soldier ration. |
+| Salted meat   | 5–15 kg              | 0.014–0.041 kg      | Plebs low; military / patrician higher. |
+| Salted fish (incl. garum) | 4–10 kg | 0.011–0.027 kg | Coastal cities higher; inland lower. |
+| Cloth         | 1.5–3 kg             | 0.004–0.008 kg      | Replacement for clothing + household textile wear. |
+| Clothing      | 1–2 garments         | n/a                 | Garment-units of ~0.5 kg each. ~0.003–0.005 kg/day cloth-equivalent. |
+| Pottery       | 3–6 vessels          | n/a                 | Breakage rate; ~0.01 units/day. |
+| Furniture     | 0.05–0.15 pieces     | n/a                 | Replacement lifetime ~10 years. |
+
+These ranges are **per ADULT**; children/elders apply the same
+0.5×/0.8× scaling as the subsistence row. Class modifiers:
+
+- **Slaves**: subsistence calories + minimal salt + 1 garment / 2 yr
+  only. No comfort/status demand.
+- **Plebeian / foreigner**: low-end of range.
+- **Freedman**: mid-range (typically urban, with some discretionary
+  income).
+- **Patrician**: high-end + status demand layer (luxury textiles,
+  silver, gold, fine pottery) per docs/08 §"Consumer status demand".
+
+**When current rates fall below the historical range and stockpiles
+balloon over time, the calibration is wrong, not the production.**
+Phase 28 audits each per-capita rate against this table and bumps
+consumption to land inside the range. Where a recipe is plausibly
+over-yielding (e.g. cattle slaughter producing 60 kg per run when
+historical yields were closer), we trim the recipe output instead.
+
+This calibration table is the source of truth for the comfort demand
+arm in `src/sim/market/scheduleBuilder.ts` and the per-capita rates
+in `src/procgen/seed.ts` `grantStarterMarketInventory`. The two must
+agree.
+
 Implementation note: daily staple consumption is settled through the
 local market as a mixed ration: grain remains the backbone, but bread
 and legumes also appear as direct subsistence demand. Rural settlements

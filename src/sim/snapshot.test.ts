@@ -167,7 +167,7 @@ describe('serializeWorld → JSON-friendly snapshot', () => {
   it('records schemaVersion=1 and capturedAtDay', () => {
     const w = buildTinyWorld();
     const snap = serializeWorld(w, 99);
-    expect(snap.schemaVersion).toBe(1);
+    expect(snap.schemaVersion).toBe(2);
     expect(snap.capturedAtDay).toBe(99);
     expect(snap.world.day).toBe(7);
   });
@@ -437,7 +437,7 @@ describe('writeSnapshot / readSnapshot', () => {
       const path = join(tmp, 'snap.json');
       await writeSnapshot(snap, path);
       const back = await readSnapshot(path);
-      expect(back.schemaVersion).toBe(1);
+      expect(back.schemaVersion).toBe(2);
       expect(back.capturedAtDay).toBe(w.day);
       expect(back.world.gridTiles.length).toBe(snap.world.gridTiles.length);
     } finally {

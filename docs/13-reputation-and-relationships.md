@@ -235,6 +235,50 @@ So **pure stealth slows reputation propagation but doesn't
 eliminate it**. The world doesn't forget that caravans are
 disappearing.
 
+## News-carrier price piggyback (locked, v1.6)
+
+The same news-carrier channel that propagates reputation events
+**also propagates market prices**. Per docs/06 §"Caravan
+information model", every actor carries a `knownPrices` map
+keyed by settlement, holding one `MarketObservation` per
+settlement. Per-settlement, the merge rule is **newer
+observedDay wins, whole snapshot replaces** — there is no
+per-resource merge.
+
+Update channels are physical-sync events:
+
+1. **Meeting sync between two moving units (any pair, friendly
+   or neutral):** when two caravans / news-carriers / patrols
+   share a hex on a tick, each owner's `knownPrices` is merged
+   with the other owner's, per-settlement newer wins. Hostile
+   pairs refuse to share. The reputation/relationship layer
+   decides; the sync layer just executes.
+2. **Co-presence at a settlement:** two units at the same
+   settlement on the same day merge their owners' maps the same
+   way. This is the channel that gets most prices around —
+   caravans stay in cities for a day or two to trade, and during
+   that day every visiting party's map syncs against every other.
+3. **Guild ledger:** guilds are themselves resident actors with
+   their own `knownPrices`. A member visiting the guild merges
+   against the guild's map; the guild's resident-presence sync
+   keeps its map fresh as long as any member is on-site. See
+   docs/08 §"Communicated price discovery via guilds".
+
+All shared observations are **authoritative** — there is no
+"hostile actors deliberately misinform" path. Hostile actors
+withhold; they don't lie. Real Roman merchants who got caught
+lying about prices lost their trade network, so the model treats
+withholding as the only available defection.
+
+The same locality rule that makes reputation slow also makes
+price propagation slow. A patrician dispatcher in City A learns
+the grain price in City Q only when a real chain of units has
+walked the news there. This binds the "no hidden hands" pillar
+(docs/00 Pillar 1) on prices, not just on actions.
+
+A `MarketObservation` older than 180 days is dropped on read; see
+docs/06 §"Information decay".
+
 ## Decay and aging
 
 - All reputation decays toward 0 slowly. Half-life: ~1 in-game
@@ -267,12 +311,14 @@ disappearing.
 
 ### Information
 
-- **Friendly**: shares accurate intel, warns of bandits, tips
-  off patrol movements, gives true prices.
-- **Neutral**: standard merchant courtesy (price-book exchange
-  for small fee).
-- **Hostile**: misinforms (deliberately bad prices, lures into
-  ambushes), refuses to talk.
+- **Friendly**: shares everything — sync runs fully, including
+  bandit-density observations, route hints, and `knownPrices`.
+- **Neutral**: standard merchant courtesy — sync runs by default.
+- **Hostile**: **refuses to share** (no piggyback exchange, no
+  guild-ledger access). Hostile actors never feed false data —
+  per v1.6 there is no deceptive-information channel — they
+  simply withhold. The model relies on real merchants having
+  burned anyone who got caught lying.
 
 ### Help in extremis
 

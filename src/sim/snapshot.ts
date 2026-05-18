@@ -30,6 +30,7 @@ import type { Caravan, CrewMember, PriceObservation } from './caravan/caravan.js
 import { createCaravan } from './caravan/caravan.js';
 import type { Actor } from './politics/actor.js';
 import { createActor } from './politics/actor.js';
+import type { MarketObservation, ResourceQuote } from './politics/knownPrices.js';
 import type { Faction } from './politics/faction.js';
 import { createFaction } from './politics/faction.js';
 import type { NamedCharacter } from './politics/character.js';
@@ -65,7 +66,10 @@ import type { SettlementSite } from '../procgen/settlements.js';
 
 // --- Serialized shapes ------------------------------------------------------
 
-const SCHEMA_VERSION = 1 as const;
+// v2 (v1.6 realism pass): Actor.knownPrices added per docs/06 §"Caravan
+// information model". Old v1 snapshots are intentionally rejected — no
+// silent-default shim per CLAUDE.md no-backwards-compat rule.
+const SCHEMA_VERSION = 2 as const;
 
 interface SerializedHex {
   readonly q: number;
@@ -163,6 +167,22 @@ interface SerializedActor {
    * as `[settlementId, [[resourceId, quantity], ...]][]`.
    */
   readonly stockpile: ReadonlyArray<readonly [string, ReadonlyArray<readonly [string, number]>]>;
+  /**
+   * Per docs/06 §"Caravan information model": one MarketObservation per
+   * settlement. Serialized as `[settlementId, { observedDay, quotes:
+   * [[resourceId, {bestAsk, bestBid}], ...] }][]`. Required in schema v2+.
+   */
+  readonly knownPrices: ReadonlyArray<
+    readonly [
+      string,
+      {
+        readonly observedDay: number;
+        readonly quotes: ReadonlyArray<
+          readonly [string, { readonly bestAsk: number; readonly bestBid: number }]
+        >;
+      },
+    ]
+  >;
   readonly treasury: number;
 }
 
@@ -534,12 +554,32 @@ const serializeActor = (a: Actor): SerializedActor => {
     for (const [r, q] of slice) entries.push([String(r), q] as const);
     stockpile.push([String(sId), entries] as const);
   }
+  const knownPrices: Array<
+    readonly [
+      string,
+      {
+        readonly observedDay: number;
+        readonly quotes: ReadonlyArray<
+          readonly [string, { readonly bestAsk: number; readonly bestBid: number }]
+        >;
+      },
+    ]
+  > = [];
+  for (const [sId, obs] of a.knownPrices) {
+    const quotes: Array<readonly [string, { readonly bestAsk: number; readonly bestBid: number }]> =
+      [];
+    for (const [r, q] of obs.quotes) {
+      quotes.push([String(r), { bestAsk: q.bestAsk, bestBid: q.bestBid }] as const);
+    }
+    knownPrices.push([String(sId), { observedDay: obs.observedDay, quotes }] as const);
+  }
   return {
     id: String(a.id),
     kind: a.kind,
     name: a.name,
     ...(a.homeSettlement !== undefined ? { homeSettlement: String(a.homeSettlement) } : {}),
     stockpile,
+    knownPrices,
     treasury: a.treasury,
   };
 };
@@ -557,6 +597,17 @@ const deserializeActor = (a: SerializedActor): Actor => {
     const slice = new Map<ResourceId, number>();
     for (const [r, n] of entries) slice.set(resourceId(r), n);
     if (slice.size > 0) actor.stockpile.set(sId, slice);
+  }
+  for (const [sIdStr, ser] of a.knownPrices) {
+    const sId = settlementId(sIdStr);
+    const quotes = new Map<ResourceId, ResourceQuote>();
+    for (const [r, q] of ser.quotes) {
+      quotes.set(resourceId(r), { bestAsk: q.bestAsk, bestBid: q.bestBid });
+    }
+    if (quotes.size > 0) {
+      const obs: MarketObservation = { quotes, observedDay: ser.observedDay as Day };
+      actor.knownPrices.set(sId, obs);
+    }
   }
   return actor;
 };
