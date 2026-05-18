@@ -279,6 +279,48 @@ patricians and enslaved dependents. A cashless common household still
 cannot take an unrelated patrician's private granary without a wage,
 ration entitlement, or other explicit transfer.
 
+### Community self-provision (locked)
+
+The model treats a `free_village` or `hamlet_household` actor's
+stockpile as a **communal subsistence pool** for the
+`plebeian_household` / `freedman_household` / `foreigner_household`
+actors at the same settlement. When a household's subsistence demand
+matches against the village's grain (or any other staple) the trade
+still flows through the CDA — the bid and the price ladder are honest
+— but **no coin transfer** occurs. The village's grain is the
+village's food; it doesn't require the eater to also hold the coin to
+"buy" it back from the headman.
+
+Without this rule, a free village that sold its harvest to a wealthy
+city would accumulate coin at the village-actor level while its own
+households remained cashless and starved beside full collective
+granaries — historically Roman in some respects (village landlords
+rich, peasants poor) but mechanically too harsh, because the model
+doesn't have the informal redistribution mechanisms that real villages
+used. Community self-provision approximates that redistribution
+without simulating elder councils, kin networks, and gift cycles
+individually.
+
+Specifically:
+
+- **Beneficiary kinds** that get the credit: `plebeian_household`,
+  `freedman_household`, `foreigner_household`. These are the
+  wage-earning, common-class actors at a settlement.
+- **Provider kinds** whose stockpile counts toward the credit:
+  `free_village`, `hamlet_household`. The village's own community
+  stores.
+- **NOT included**: `patrician_family`, `city_corporation`,
+  `governor_office`, `temple`. These actors hold private or
+  institutional stocks; common households need an explicit wage,
+  ration entitlement, or other transfer to draw from them.
+- **CDA still runs.** The household's demand source is a normal
+  subsistence bid, capped at `treasury + community_stockpile_value`.
+  When it matches against the village's supply source, the trade
+  fires at the clearing price but `buyerPaysSeller = false` so
+  the village doesn't receive phantom coin from itself.
+
+Cross-reference: docs/08 §"Communal subsistence pool".
+
 Free workers receive coin income when production recipes run. The wage
 is the local subsistence basket, priced through the same market-price
 maps used by marginal cost. Enslaved workers do not receive wages; their

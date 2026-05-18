@@ -1548,3 +1548,80 @@ describe('buildSettlementSchedules — market making (docs/15 §C26)', () => {
     expect(mmBid.maxWillingnessToPay).toBeLessThan(comfortBid.maxWillingnessToPay);
   });
 });
+
+describe('buildSettlementSchedules — community self-provision (docs/04 §"Community self-provision")', () => {
+  const VILLAGE = actorId('actor:free-village');
+
+  it('plebeian household at a free-village settlement gets a subsistence budget credit from the village stockpile', () => {
+    const s = baseSettlement('community-village');
+    setSegment(s, 'plebeian', 50);
+    // Plebeian household has minimal treasury but the village stores
+    // 1000 modii of grain. Community-self-provision should credit the
+    // household's subsistence budget against the village stockpile so
+    // its bid clears even though it has no coin.
+    const stockpilesByOwner = new Map([
+      [PLEBEIAN, new Map<ResourceId, number>()],
+      [VILLAGE, new Map<ResourceId, number>([[RES.grain, 1000]])],
+    ]);
+    const result = buildSettlementSchedules({
+      settlement: s,
+      stockpilesByOwner,
+      resources: [RES.grain],
+      recentLocalPrices: new Map([[RES.grain, 8]]),
+      today: 0 as Day,
+      season: 'spring',
+      ownerKindByActor: new Map([
+        [PLEBEIAN, 'plebeian_household'],
+        [VILLAGE, 'free_village'],
+      ]),
+      actorTreasuryByActor: new Map([
+        [PLEBEIAN, 0], // no coin
+        [VILLAGE, 100],
+      ]),
+    });
+    const pair = result.schedulesByResource.get(RES.grain);
+    if (!pair) throw new Error('missing grain schedule');
+    const subsBid = pair.demand.sources.find(
+      (src) => src.curve === 'subsistence' && src.buyerActor === PLEBEIAN,
+    );
+    if (!subsBid) throw new Error('expected plebeian subsistence bid');
+    // With ZERO treasury but 1000 modii × 8 coin community stock = 8000
+    // coin credit, the bid quotes a real budget. Without community
+    // self-provision the bid would be capped at 0 and excluded by
+    // effectiveMarketBudget.
+    expect(subsBid.curveBudget ?? 0).toBeGreaterThan(0);
+  });
+
+  it('patrician stockpile does NOT count toward common-household community self-provision', () => {
+    const s = baseSettlement('patrician-no-community');
+    setSegment(s, 'plebeian', 50);
+    const stockpilesByOwner = new Map([
+      [PLEBEIAN, new Map<ResourceId, number>()],
+      [PATRICIAN, new Map<ResourceId, number>([[RES.grain, 1000]])],
+    ]);
+    const result = buildSettlementSchedules({
+      settlement: s,
+      stockpilesByOwner,
+      resources: [RES.grain],
+      recentLocalPrices: new Map([[RES.grain, 8]]),
+      today: 0 as Day,
+      season: 'spring',
+      ownerKindByActor: new Map([
+        [PLEBEIAN, 'plebeian_household'],
+        [PATRICIAN, 'patrician_family'],
+      ]),
+      actorTreasuryByActor: new Map([
+        [PLEBEIAN, 0],
+        [PATRICIAN, 100],
+      ]),
+    });
+    const pair = result.schedulesByResource.get(RES.grain);
+    if (!pair) throw new Error('missing grain schedule');
+    const subsBid = pair.demand.sources.find(
+      (src) => src.curve === 'subsistence' && src.buyerActor === PLEBEIAN,
+    );
+    // The plebeian's subsistence bid is filtered out because their
+    // budget is 0 (no coin, no community credit from a patrician).
+    expect(subsBid).toBeUndefined();
+  });
+});

@@ -33,6 +33,7 @@ import { clearMarket } from '../market/clear.js';
 import type { DemandSource } from '../market/demand.js';
 import {
   buildSettlementSchedules,
+  isCommunityFoodPool,
   createSettlementDemandSourceBuilder,
   institutionalProcurementResourcesForBuilding,
   serviceMarketResources,
@@ -562,7 +563,15 @@ export const tradePhase = (
         if (buyerActorId === undefined) continue;
         if (buyer === undefined) continue;
         const concreteBuyer = buyer;
-        const buyerPaysSeller = concreteBuyer.id !== seller.id;
+        // Per docs/04 §"Community self-provision" + docs/08
+        // §"Communal subsistence pool": a plebeian/freedman/foreigner
+        // household at this settlement consuming the free_village or
+        // hamlet_household's stock is the village feeding its own
+        // people — no coin transfer required. The trade still flows
+        // through the CDA (and updates the price ladder) so the
+        // subsistence demand is honest in the bid-ask book.
+        const isCommunityProvision = isCommunityFoodPool(concreteBuyer.kind, seller.kind);
+        const buyerPaysSeller = concreteBuyer.id !== seller.id && !isCommunityProvision;
         const maxByBuyerTreasury =
           buyerPaysSeller && trade.price > 0
             ? concreteBuyer.treasury / trade.price
