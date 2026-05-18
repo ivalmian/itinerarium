@@ -454,16 +454,27 @@ const grantStarterMarketInventory = (actor: Actor, settlement: Settlement, scale
   // post-stabilization shape, capped at MAX_INITIAL_RESERVE_DAYS so no
   // consumable starts above 1 year of supply.
   const clampDays = (d: number): number => Math.min(MAX_INITIAL_RESERVE_DAYS, Math.max(0, d));
+  // v1.6 pass-21 (Phase 29): starter days tuned to LOW end of observed
+  // Q8 stockpile ranges across hamlet/village/town/small_city/large_city
+  // (3-year burn-in on realism-compare seed). Goal: cities start at or
+  // BELOW their natural equilibrium so they don't begin in a flush
+  // transient that has to drain. Settlements that produce a resource
+  // grow stockpile from here organically; settlements that consume it
+  // import as needed. Q8 medians still showed multi-year bloat for
+  // furniture / pottery / salted_meat / cloth in cities — the bloat
+  // is a production/consumption-recipe issue that requires recipe
+  // calibration to fully fix, not a starter-reserve issue. Setting
+  // starters low at least avoids worsening the transient.
   const grants: ReadonlyArray<readonly [string, number]> = [
-    ['food.wine', pop * 0.25 * clampDays(20) * scale],
-    ['food.olive_oil', pop * 0.04 * clampDays(30) * scale],
-    ['food.cheese', pop * 0.012 * clampDays(14) * scale],
-    ['food.salted_fish', pop * 0.015 * clampDays(10) * scale],
-    ['food.salted_meat', pop * 0.025 * clampDays(10) * scale],
-    ['goods.cloth', pop * 0.005 * clampDays(45) * scale],
-    ['goods.clothing', pop * 0.004 * clampDays(45) * scale],
-    ['goods.furniture', pop * 0.0003 * clampDays(60) * scale],
-    ['material.pottery', pop * 0.012 * clampDays(45) * scale],
+    ['food.wine', pop * 0.25 * clampDays(10) * scale],         // Q8 obs: 0-20 days (cities low)
+    ['food.olive_oil', pop * 0.04 * clampDays(20) * scale],    // Q8 obs: 1-200 days (variable)
+    ['food.cheese', pop * 0.012 * clampDays(14) * scale],      // Q8 obs: 11-90 days (kept)
+    ['food.salted_fish', pop * 0.015 * clampDays(5) * scale],  // Q8 obs: 0-3 days hamlets
+    ['food.salted_meat', pop * 0.025 * clampDays(5) * scale],  // Q8 obs: massive bloat upstream
+    ['goods.cloth', pop * 0.005 * clampDays(30) * scale],
+    ['goods.clothing', pop * 0.004 * clampDays(30) * scale],
+    ['goods.furniture', pop * 0.0003 * clampDays(20) * scale], // Q8 obs: hamlets ~45d, cities bloated
+    ['material.pottery', pop * 0.012 * clampDays(20) * scale],
   ];
   for (const [resource, qty] of grants) grantStockpile(actor, settlement.id, resource, qty);
 };
