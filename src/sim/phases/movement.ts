@@ -61,8 +61,29 @@ export const movementPhase = (
     });
   }
 
-  // 2. Move every caravan.
+  // 2. Move every caravan. Off-map caravans (docs/06 §"The 20-tick
+  //    off-map sojourn") are conducting trade beyond the world edge —
+  //    they don't move on the map and don't expose themselves to ambush
+  //    until their sojourn timer expires. Rations and wages still tick
+  //    via the consumption pass that runs for every caravan; only the
+  //    spatial / movement piece is paused. When the sojourn ends the
+  //    caravan re-emerges at its current (edge-hex) position and
+  //    routes home to originSettlement.
   for (const [cId, c] of world.caravans) {
+    if (c.offMapUntil !== undefined) {
+      if (c.offMapUntil > today) continue;
+      // Sojourn ended — re-emerge. Clear the flag, route home.
+      delete (c as { offMapUntil?: Day }).offMapUntil;
+      if (c.originSettlement !== undefined) {
+        const home = world.settlements.get(c.originSettlement);
+        if (home !== undefined) {
+          c.destination = { q: home.anchor.q, r: home.anchor.r };
+        }
+      }
+      // No event emitted for re-emergence by design; the caravan is
+      // back on the map and the normal movement / arrival lifecycle
+      // takes over from here.
+    }
     let previousHex = { q: c.position.q, r: c.position.r };
     const result = tickCaravanMovement({ caravan: c, grid: world.grid, season, today });
     for (const e of result.events) {
