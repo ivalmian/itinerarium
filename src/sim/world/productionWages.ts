@@ -261,22 +261,43 @@ export interface RecipeWageContext {
   readonly marginalProductPerWorkerDay: number;
 }
 
+/**
+ * Build a recipe's wage context.
+ *
+ * `subsistenceWagePerDay` is computed from the wage basket (bread,
+ * salt, fuel, etc.) — that's the wage floor.
+ *
+ * `marginalProductPrices` should be the FULL local market price map
+ * (settlement.market.lastClearingPrice), not just the basket. The
+ * basket alone reports 0 for any output not in the basket (luxury
+ * textiles, equines, etc.), so weavers and equine herders would see
+ * mp = 0 and get only subsistence even when their recipe is
+ * extremely profitable.
+ */
 export const buildRecipeWageContext = (
   recipe: RecipeDef,
-  prices: ReadonlyMap<ResourceId, number>,
+  marginalProductPrices: ReadonlyMap<ResourceId, number>,
   subsistenceWagePerDay: number,
 ): RecipeWageContext => ({
   subsistenceWagePerDay,
-  marginalProductPerWorkerDay: marginalProductPerWorkerDay(recipe, prices),
+  marginalProductPerWorkerDay: marginalProductPerWorkerDay(recipe, marginalProductPrices),
 });
 
+/**
+ * `wageBasketPrices` — used to value in-kind staple wage payments.
+ * `marginalProductPrices` — used to compute the recipe's per-day
+ * marginal product so high-margin recipes are gated on a realistic
+ * affordability ceiling, not the wage-basket subset that returns 0
+ * for non-basket outputs like luxury textiles or equines.
+ */
 export const wageAffordableCapacityForRecipe = (
   world: WorldState,
   settlement: Settlement,
   recipe: RecipeDef,
   laborClassContext: LaborClassContext,
   payer: Actor,
-  prices: ReadonlyMap<ResourceId, number>,
+  wageBasketPrices: ReadonlyMap<ResourceId, number>,
+  marginalProductPrices: ReadonlyMap<ResourceId, number>,
   subsistenceWagePerDay: number,
 ): number => {
   if (subsistenceWagePerDay <= 0) return Infinity;
@@ -290,10 +311,10 @@ export const wageAffordableCapacityForRecipe = (
   // Conservative cap: assume the highest class-share applies so the
   // owner doesn't authorize more runs than they can pay for once the
   // class mix is resolved.
-  const mp = marginalProductPerWorkerDay(recipe, prices);
+  const mp = marginalProductPerWorkerDay(recipe, marginalProductPrices);
   const expectedWage = conservativeWagePerWorkerDay(subsistenceWagePerDay, mp);
   if (expectedWage <= 0) return Infinity;
-  const liquidBudget = payer.treasury + inKindWageBudget(payer, settlement.id, prices);
+  const liquidBudget = payer.treasury + inKindWageBudget(payer, settlement.id, wageBasketPrices);
   return Math.max(0, liquidBudget / (paidWorkerDaysPerRun * expectedWage));
 };
 

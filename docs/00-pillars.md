@@ -41,7 +41,22 @@ these.
    to walk there with their own observations. Same for reputation
    propagation, news of battles, and price discovery.
 
+8. **Every good is tradeable; every transaction goes through the
+   market.** No resource lives outside the price ladder. If a pasture
+   produces equines, those equines have a bid and an ask. If a caravan
+   owner needs them, that need is a real demand source the CDA can
+   match. The same uniformity holds for petty merchants, off-map
+   houses, bandit fences, and every other transaction site: they all
+   emit asks or bids that flow through the per-settlement continuous
+   double auction, and every executed trade writes the price into the
+   settlement's ladder. There are no "owner-internal" workarounds, no
+   stockpile-fetch bypasses, no direct transfers at synthesized
+   prices. If you need to move a good, you submit a bid and clear at
+   the going price.
+
 These pillars are also the test for new feature ideas: if a proposed
 feature requires breaking one (e.g. a global price ticker that everyone
 sees instantly, or a guild ledger that magically syncs across cities
-even when no caravan made the trip), the answer is no, find another way.
+even when no caravan made the trip, or a caravan-assembly stockpile
+fetch that bypasses the equine market), the answer is no, find another
+way.

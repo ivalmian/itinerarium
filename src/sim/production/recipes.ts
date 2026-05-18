@@ -154,7 +154,11 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'raise_equines',
-    inputs: { 'food.grain': 8 },
+    // Horses + mules + donkeys graze on pasture year-round; the
+    // 8-modii/day grain input was wrong by ~8× and made the recipe
+    // structurally loss-making at any plausible market price. Real
+    // pastoralism is small winter supplement only.
+    inputs: { 'food.grain': 1 },
     labor: { cattle_herder: 0.3 },
     building: 'pasture',
     outputs: { 'livestock.equines': 0.002 },

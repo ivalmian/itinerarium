@@ -127,9 +127,16 @@ export const productionPhase = (
             buildings,
           );
           if (inventoryCapacity <= 0) continue;
+          // Wage context: subsistence floor from the wage basket, but
+          // the marginal-product calculation uses FULL local prices
+          // so non-basket recipe outputs (luxury textiles, equines,
+          // tools, etc.) feed the worker's share of surplus per
+          // docs/08 §"Marginal-product wages". Without this, weavers
+          // of luxury fabric and herders of equines collapse to
+          // subsistence wages even at high recipe profitability.
           const recipeWageContext = buildRecipeWageContext(
             recipe,
-            wagePriceSignal,
+            settlement.market.lastClearingPrice,
             wagePerWorkerDay,
           );
           const wageAffordableCapacity = wageAffordableCapacityForRecipe(
@@ -139,6 +146,7 @@ export const productionPhase = (
             laborClassContext,
             ownerActor,
             wagePriceSignal,
+            settlement.market.lastClearingPrice,
             wagePerWorkerDay,
           );
           if (wageAffordableCapacity <= 0) {
@@ -230,8 +238,13 @@ export const productionPhase = (
             // output value, input value, wage paid, and the residual
             // owner take so burn-in instruments can audit where the
             // surplus is going (worker vs owner per class per recipe).
-            const outputValue = recipeOutputValueAtPrices(recipe, fraction, wagePriceSignal);
-            const inputValue = recipeInputValueAtPrices(recipe, fraction, wagePriceSignal);
+            // Use the settlement's full local price map (not the
+            // wage-basket signal) — wagePriceSignal only knows the
+            // subsistence basket, so for capital goods like equines
+            // or specialty outputs like luxury textiles it reports 0.
+            const economicsPrices = settlement.market.lastClearingPrice;
+            const outputValue = recipeOutputValueAtPrices(recipe, fraction, economicsPrices);
+            const inputValue = recipeInputValueAtPrices(recipe, fraction, economicsPrices);
             const wagePaidTotal =
               wageEconomics.wagePaidCoinTotal + wageEconomics.wagePaidInKindValueTotal;
             events.push({
