@@ -52,6 +52,10 @@ import {
   createRecipeEconomicsInstrument,
   type RecipeEconomicsInstrument,
 } from './instruments/recipeEconomicsCsv.js';
+import {
+  createEventsJsonlInstrument,
+  type EventsJsonlInstrument,
+} from './instruments/eventsJsonl.js';
 import type { Day } from '../sim/types.js';
 
 // --- Public types -----------------------------------------------------------
@@ -77,7 +81,7 @@ export type SnapshotFrequency = 'never' | 'month' | 'year';
  *   docs/14 §"Per-recipe economics CSV". Single output file
  *   `outDir/recipe-economics.csv`.
  */
-export type Instrument = 'time-series' | 'recipe-economics';
+export type Instrument = 'time-series' | 'recipe-economics' | 'events';
 
 export interface BurnInOpts {
   readonly seed: string;
@@ -237,9 +241,14 @@ export const runBurnIn = async (opts: BurnInOpts): Promise<BurnInReport> => {
   if (instruments.includes('recipe-economics')) {
     recipeEconomicsInstrument = createRecipeEconomicsInstrument({ outDir: opts.outDir });
   }
-  // Recipe-economics needs TickEvents; collect them only when the
-  // instrument is on so the watchdog's hot path stays event-free.
-  const collectEvents = recipeEconomicsInstrument !== null;
+  let eventsJsonlInstrument: EventsJsonlInstrument | null = null;
+  if (instruments.includes('events')) {
+    eventsJsonlInstrument = createEventsJsonlInstrument({ outDir: opts.outDir });
+  }
+  // recipe-economics and events both consume TickEvents; collect them only
+  // when at least one such instrument is on so the watchdog's hot path
+  // stays event-free.
+  const collectEvents = recipeEconomicsInstrument !== null || eventsJsonlInstrument !== null;
 
   const summaryAtStart: BurnInSummary = {
     totalSettlementsAtStart: world.settlements.size,
@@ -348,6 +357,9 @@ export const runBurnIn = async (opts: BurnInOpts): Promise<BurnInReport> => {
     if (recipeEconomicsInstrument !== null) {
       recipeEconomicsInstrument.tick(world, checkDay as Day, result.events);
     }
+    if (eventsJsonlInstrument !== null) {
+      eventsJsonlInstrument.tick(checkDay as Day, result.events);
+    }
 
     // Yield to the event loop occasionally so very long runs don't stall it.
     if ((dayCount + 1) % yieldEvery === 0) {
@@ -402,6 +414,9 @@ export const runBurnIn = async (opts: BurnInOpts): Promise<BurnInReport> => {
   }
   if (timeSeriesInstrument !== null) {
     await timeSeriesInstrument.flush();
+  }
+  if (eventsJsonlInstrument !== null) {
+    await eventsJsonlInstrument.flush();
   }
 
   if (abortReason !== null && opts.silent !== true) {

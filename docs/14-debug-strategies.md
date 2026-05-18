@@ -55,6 +55,26 @@ you *which* input is the bottleneck. If `mill_grain` is missing
 `food.grain` 90% of days, the upstream `harvest_grain` is the real
 problem (not the mill).
 
+### Raw tick-event log (`events.jsonl`)
+
+The `events` instrument streams every emitted `TickEvent` to
+`outDir/events.jsonl`, one JSON object per line, day-stamped. Useful
+when a failure mode is class-of-event rather than aggregate (e.g.
+"why are zero `caravan_robbed` events firing despite bandit camps
+existing"). Without this instrument, only summary-level statistics
+survive a burn-in — class-of-event bugs are invisible by construction.
+
+Format:
+
+```jsonl
+{"day": 5, "type": "caravan_arrived", "caravan": "...", "at": [...]}
+{"day": 5, "type": "market_cleared", "settlement": "...", "resource": "...", "price": 12, "volume": 80}
+```
+
+Enable: `--instruments=events`. Cost: one line per emitted event;
+a 10y burn-in produces millions of lines. Use grep / jq to filter
+by `type` for diagnosis.
+
 ### Per-named-character reputation slate (planned)
 
 Helpful when the political layer behaves oddly. Dump every named

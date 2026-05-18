@@ -50,6 +50,7 @@ interface ParsedFlags {
 const SUPPORTED_INSTRUMENTS = [
   'time-series',
   'recipe-economics',
+  'events',
 ] as const satisfies readonly Instrument[];
 
 const parseInstruments = (raw: string): readonly Instrument[] => {
