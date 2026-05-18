@@ -1219,13 +1219,20 @@ const eligibleVillagerCaravanOwners = (
 ): { readonly actor: Actor; readonly settlement: Settlement }[] => {
   const out: { actor: Actor; settlement: Settlement }[] = [];
   for (const actor of world.actors.values()) {
-    if (actor.kind !== 'free_village') continue;
+    // v1.7 cleanup (pass 29): hamlet_household actors at hamlet-tier
+    // settlements also dispatch villager-style caravans. Per the 10y
+    // burn-in report v1.7, hamlets showed 0 days of supply for nearly
+    // every consumable - they had no outbound dispatch path so the
+    // few that produced surplus couldn't sell it and the rest couldn't
+    // buy what they needed. Same villager-caravan machinery, smaller
+    // owner / settlement scale.
+    if (actor.kind !== 'free_village' && actor.kind !== 'hamlet_household') continue;
     if ((activeByOwner.get(actor.id) ?? 0) >= VILLAGER_CARAVAN_OWNER_CAP) continue;
     if (actor.treasury < VILLAGER_CARAVAN_MIN_OPERATING_TREASURY) continue;
     if (actor.homeSettlement === undefined) continue;
     const settlement = world.settlements.get(actor.homeSettlement);
     if (settlement === undefined) continue;
-    if (settlement.tier !== 'village') continue;
+    if (settlement.tier !== 'village' && settlement.tier !== 'hamlet') continue;
     if (!villageWantsCaravan(settlement, actor)) continue;
     out.push({ actor, settlement });
   }
