@@ -51,6 +51,7 @@ import {
 import {
   buildRecipeWageContext,
   payProductionWagesForWorkerDaysByClass,
+  recipeGrossMarginPerRun,
   wageAffordableCapacityForRecipe,
   wagePriceSignalForSettlement,
 } from '../world/productionWages.js';
@@ -159,6 +160,44 @@ export const productionPhase = (
               });
             }
             continue;
+          }
+          // v1.6 pass 25 profitability gate (user-direction
+          // 2025-05-17): production must cover its cost. If the
+          // expected output revenue at local bids/last-clearing
+          // does NOT cover input cost + subsistence wage bill,
+          // block the recipe. Loss-making subsidies (where city
+          // corp ran make_cheese, salt_meat, weave_linen at
+          // billions in cumulative negative owner-take) come
+          // from running recipes nobody is bidding for.
+          //
+          // Bootstrap exception: if NO output of this recipe has
+          // a known price yet (no bid AND no last clearing), the
+          // recipe runs unguarded - we need someone to produce
+          // the first batch so the market can discover a price.
+          // recipeGrossMarginPerRun returns null in that case.
+          const grossMargin = recipeGrossMarginPerRun(
+            recipe,
+            settlement.market.bestBid,
+            settlement.market.lastClearingPrice,
+            settlement.market.lastClearingPrice,
+            DEFAULT_GLOBAL_PRICES,
+          );
+          if (grossMargin !== null) {
+            let totalLaborDays = 0;
+            for (const d of recipe.labor.values()) totalLaborDays += d;
+            const subsistenceWageBill =
+              recipeWageContext.subsistenceWagePerDay * totalLaborDays;
+            if (grossMargin < subsistenceWageBill) {
+              if (finalPass) {
+                events.push({
+                  type: 'recipe_blocked',
+                  settlement: settlement.id,
+                  recipe: recipe.id,
+                  reason: 'unprofitable',
+                });
+              }
+              continue;
+            }
           }
           const result = planRecipeRun({
             recipe,
