@@ -193,7 +193,13 @@ const DEFS: readonly RecipeInput[] = [
     inputs: { 'livestock.cattle': 0.02, 'mineral.salt': 2 },
     labor: { dairy_worker: 0.5 },
     building: 'dairy',
-    outputs: { 'food.salted_meat': 60, 'material.hides': 3 },
+    // v1.6 pass-23 (historical-realism calibration):
+    //   0.02 herd × 4500 kg/herd = 90 kg live cattle per run.
+    //   Dressed yield ~55 % = ~50 kg; cure loss ~15 % = ~42 kg salted = 4.2 units.
+    //   0.02 herd × 10 head = 0.2 cattle slaughtered; ~1 hide per cow × 12 kg
+    //   ~30 kg / 12 = ~2.5 units of hides per cow → 0.5 units per recipe run.
+    //   Pre-calibration: 60 units salted + 3 hides (15× and 6× over).
+    outputs: { 'food.salted_meat': 4, 'material.hides': 0.5 },
     notes:
       'One slaughter event yields salted meat + hides. Modeled here on cattle; analog applies to other livestock.',
   },
@@ -202,7 +208,11 @@ const DEFS: readonly RecipeInput[] = [
     inputs: { 'livestock.sheep': 0.03, 'mineral.salt': 1.5 },
     labor: { shepherd: 0.4 },
     building: 'pasture',
-    outputs: { 'food.salted_meat': 42, 'material.hides': 2 },
+    // v1.6 pass-23: 0.03 herd × 1500 kg/herd = 45 kg live sheep per run.
+    //   Dressed yield ~50 % × cure loss 15 % = ~19 kg salted = ~2 units.
+    //   0.03 herd × 30 head = 0.9 sheep slaughtered → ~0.7 units hides
+    //   (sheep hide ~10 kg / 12 kg-per-unit).
+    outputs: { 'food.salted_meat': 2, 'material.hides': 0.7 },
     notes: 'Cull sheep into salted meat and hides; unlike shearing, this consumes herd stock.',
   },
   {
@@ -210,7 +220,10 @@ const DEFS: readonly RecipeInput[] = [
     inputs: { 'livestock.pigs': 0.05, 'mineral.salt': 1.5 },
     labor: { swineherd: 0.4 },
     building: 'pasture',
-    outputs: { 'food.salted_meat': 48, 'material.hides': 1.5 },
+    // v1.6 pass-23: 0.05 herd × 1200 kg/herd = 60 kg live pigs per run.
+    //   Dressed yield ~60 % (pigs higher than ruminants) × cure 15 % = ~35 kg
+    //   salted = 3.5 units. 0.05 herd × 12 head = 0.6 pigs → ~0.4 units hides.
+    outputs: { 'food.salted_meat': 3.5, 'material.hides': 0.4 },
     notes: 'Turns pig herds into storable pork and hides so pigs have a real buyer path.',
   },
 
@@ -448,14 +461,22 @@ const DEFS: readonly RecipeInput[] = [
     inputs: { 'material.clay': 2, 'material.wood': 0.5 },
     labor: { potter: 1 },
     building: 'pottery',
-    outputs: { 'material.pottery': 4 },
+    // v1.6 pass-23: 1 potter-day → 1 unit (15 kg crate of ware).
+    //   Historical Roman potter: ~30-50 small pieces/day (cups, plates,
+    //   small bowls) at ~0.3-0.5 kg each = 10-25 kg = ~1 unit. Pre-
+    //   calibration: 4 units/day = 60 kg/day was 3-4× over a sustainable
+    //   single-potter throughput.
+    outputs: { 'material.pottery': 1 },
   },
   {
     id: 'throw_amphorae',
     inputs: { 'material.clay': 3, 'material.wood': 0.5 },
     labor: { potter: 1 },
     building: 'pottery',
-    outputs: { 'material.amphora': 3 },
+    // v1.6 pass-23: 1 potter-day → 2 amphorae (large vessels).
+    //   Historical Roman amphora workshop: 1-3 amphorae/potter-day at 30 kg
+    //   each; the larger Dressel-1 trade amphora took ~1 day each.
+    outputs: { 'material.amphora': 2 },
   },
   {
     id: 'smelt_iron',
@@ -550,7 +571,11 @@ const DEFS: readonly RecipeInput[] = [
     inputs: { 'goods.cloth': 1 },
     labor: { tailor: 1 },
     building: 'tailor_shop',
-    outputs: { 'goods.clothing': 2 },
+    // v1.6 pass-23: 1 tailor-day → 1 garment (2 kg).
+    //   Historical hand-sewing: a tunic took 1-2 days; an elaborate garment
+    //   3-5 days. The pre-calibration 2 garments/tailor-day was 2-4× over
+    //   realistic single-tailor throughput.
+    outputs: { 'goods.clothing': 1 },
   },
   {
     id: 'forge_tools',
@@ -665,7 +690,11 @@ const DEFS: readonly RecipeInput[] = [
     inputs: { 'material.lumber': 3 },
     labor: { carpenter: 1 },
     building: 'cart_wright',
-    outputs: { 'goods.furniture': 1 },
+    // v1.6 pass-23: 1 carpenter-day → 0.5 furniture pieces.
+    //   Historical Roman carpenter: a chest/table/bench took 2-5 days each.
+    //   0.5/day = one piece per 2 days, mid-range. Pre-calibration 1/day was
+    //   ~2× over realistic single-carpenter throughput.
+    outputs: { 'goods.furniture': 0.5 },
   },
   {
     id: 'weave_luxury',
