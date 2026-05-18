@@ -1592,6 +1592,61 @@ describe('buildSettlementSchedules — community self-provision (docs/04 §"Comm
     expect(subsBid.curveBudget ?? 0).toBeGreaterThan(0);
   });
 
+  it('free_village reserves 60 days of community grain need from market supply (docs/04 §"Village ration discipline")', () => {
+    const s = baseSettlement('village-ration-discipline');
+    setSegment(s, 'plebeian', 100);
+    // 100 plebeians × 0.04 modii/day × 60 days = 240 modii reserve.
+    // With 500 modii of village grain, only ~260 should be sellable.
+    const stockpilesByOwner = new Map([
+      [VILLAGE, new Map<ResourceId, number>([[RES.grain, 500]])],
+    ]);
+    const result = buildSettlementSchedules({
+      settlement: s,
+      stockpilesByOwner,
+      resources: [RES.grain],
+      recentLocalPrices: new Map([[RES.grain, 8]]),
+      today: 0 as Day,
+      season: 'spring',
+      ownerKindByActor: new Map([[VILLAGE, 'free_village']]),
+      actorTreasuryByActor: new Map([[VILLAGE, 100]]),
+    });
+    const pair = result.schedulesByResource.get(RES.grain);
+    if (!pair) throw new Error('missing grain schedule');
+    const villageSupply = pair.supply.sources.find((src) => src.ownerActor === VILLAGE);
+    if (!villageSupply) throw new Error('expected village supply source');
+    // Reserve formula: 60 days × Σ_class (adult-equivalents × per-adult
+    // grain need including the tier-sensitive baking shift). For a town
+    // with 100 plebeians (~75-100 adult-equivalents) at ~0.042 modii/day
+    // the reserve lands near 200-260 modii — sellable surplus is 240-300.
+    expect(villageSupply.availableToSell).toBeLessThan(500);
+    expect(villageSupply.availableToSell).toBeGreaterThan(100);
+    expect(villageSupply.availableToSell).toBeLessThan(300);
+  });
+
+  it('patrician stockpile does NOT reserve community grain (only profit-max participation)', () => {
+    const s = baseSettlement('patrician-no-reserve');
+    setSegment(s, 'plebeian', 100);
+    const stockpilesByOwner = new Map([
+      [PATRICIAN, new Map<ResourceId, number>([[RES.grain, 500]])],
+    ]);
+    const result = buildSettlementSchedules({
+      settlement: s,
+      stockpilesByOwner,
+      resources: [RES.grain],
+      recentLocalPrices: new Map([[RES.grain, 8]]),
+      today: 0 as Day,
+      season: 'spring',
+      ownerKindByActor: new Map([[PATRICIAN, 'patrician_family']]),
+      actorTreasuryByActor: new Map([[PATRICIAN, 100]]),
+    });
+    const pair = result.schedulesByResource.get(RES.grain);
+    if (!pair) throw new Error('missing grain schedule');
+    const patricianSupply = pair.supply.sources.find((src) => src.ownerActor === PATRICIAN);
+    if (!patricianSupply) throw new Error('expected patrician supply source');
+    // Full 500 modii sellable — no community-reserve carve-out.
+    expect(patricianSupply.availableToSell).toBeCloseTo(500, 0);
+  });
+
   it('patrician stockpile does NOT count toward common-household community self-provision', () => {
     const s = baseSettlement('patrician-no-community');
     setSegment(s, 'plebeian', 50);
