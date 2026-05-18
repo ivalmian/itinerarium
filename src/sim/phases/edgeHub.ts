@@ -25,7 +25,7 @@
  *     these because they have hard-coded routes)
  */
 
-import { createActor, removeStockAt, type Actor } from '../politics/actor.js';
+import { createActor, removeStockAt } from '../politics/actor.js';
 import { MAX_ACTIVE_WORLD_CARAVANS } from '../caravan/limits.js';
 import {
   tickEdgeHubs,
@@ -49,12 +49,23 @@ import type { TickEvent } from '../tick.js';
 export const EDGE_HUB_IMPORT_CARAVAN_PREFIX = 'import-';
 export const EDGE_HUB_EXPORT_CARAVAN_PREFIX = 'export-';
 const OFF_MAP_HOUSE_OWNER_PREFIX = 'off-map-house-';
-const EDGE_HUB_MAX_ACTIVE_IMPORT_CARAVANS = 12;
-const EDGE_HUB_MAX_ACTIVE_EXPORT_CARAVANS = 8;
-const EDGE_HUB_DISPATCH_INTERVAL_DAYS = 3;
+// Per docs/10 decision 41 (v1.6): the global market is an infinite-demand
+// sink at the edge hex. The old fixed-cadence + tiny-cap throttles
+// (12 imports, 8 exports worldwide, dispatch every 3 days, 1 caravan
+// per dispatch) were the proximate cause of the multi-year stockpile
+// bloat measured in Q8 burn-ins — cities accumulated 25,000+ t of
+// grain while the export pipeline could drain ~180 t/year worldwide.
+//
+// Caps below are intentionally large but still finite so the world
+// caravan ceiling MAX_ACTIVE_WORLD_CARAVANS remains the binding
+// constraint when the network saturates. Daily dispatch (interval 1)
+// + many spawns/day let real arbitrage flow through.
+const EDGE_HUB_MAX_ACTIVE_IMPORT_CARAVANS = 200;
+const EDGE_HUB_MAX_ACTIVE_EXPORT_CARAVANS = 300;
+const EDGE_HUB_DISPATCH_INTERVAL_DAYS = 1;
+const EDGE_HUB_MAX_IMPORT_SPAWNS_PER_DAY = 20;
+const EDGE_HUB_MAX_EXPORT_SPAWNS_PER_DAY = 30;
 const EDGE_HUB_GATE_COUNT = 8;
-
-const EMPTY_RESOURCE_MAP: ReadonlyMap<ResourceId, Quantity> = new Map();
 
 export const isEdgeHubImportCaravan = (caravan: Caravan): boolean =>
   String(caravan.id).startsWith(EDGE_HUB_IMPORT_CARAVAN_PREFIX) &&
@@ -181,31 +192,42 @@ export const edgeHubPhase = (
     availableForExport: ReadonlyMap<ResourceId, Quantity>;
   }[] = [];
   for (const s of world.settlements.values()) {
-    if (s.tier !== 'small_city' && s.tier !== 'large_city') continue;
-    cityImportTargets.push({
-      settlementId: s.id,
-      hex: s.anchor,
-      localPrices: s.market.lastClearingPrice,
-    });
-    // Pick the wealthiest patrician/city-corp owner as the export source.
-    let owner: Actor | undefined;
-    let bestTreasury = -1;
+    // Import targets: cities + towns (settlements with enough urban demand
+    // and cash reserves to absorb arriving import cargo). Villages and
+    // hamlets are too small as direct import destinations; their
+    // city/town neighbors absorb the imports and pass goods inland via
+    // local-trade flows.
+    if (s.tier === 'large_city' || s.tier === 'small_city' || s.tier === 'town') {
+      cityImportTargets.push({
+        settlementId: s.id,
+        hex: s.anchor,
+        localPrices: s.market.lastClearingPrice,
+      });
+    }
+    // Export sources: per docs/10 decision 41, ALL settlement tiers can
+    // export to the global market — cities, towns, villages, hamlets.
+    // For each settlement, iterate EVERY stockpile owner (not just the
+    // wealthiest patrician/city_corp) so the export pipeline sees the
+    // full surplus, not a fraction of it. Each owner with material stock
+    // at this settlement becomes its own export source; tickEdgeHubs
+    // picks the best margin among them.
     for (const oId of s.stockpileOwners) {
       const a = world.actors.get(oId);
       if (a === undefined) continue;
-      if (a.kind !== 'patrician_family' && a.kind !== 'city_corporation') continue;
-      if (a.treasury <= bestTreasury) continue;
-      owner = a;
-      bestTreasury = a.treasury;
+      // Skip owners that cannot rationally dispatch a long-haul venture:
+      // off-map houses are the import counterparty (they already get
+      // their goods from us), and bandit camps don't run trade routes.
+      if (a.kind === 'off_map_house' || a.kind === 'bandit_camp') continue;
+      const slice = a.stockpile.get(s.id);
+      if (slice === undefined || slice.size === 0) continue;
+      cityExportSources.push({
+        settlementId: s.id,
+        hex: s.anchor,
+        ownerActor: a.id,
+        localPrices: s.market.lastClearingPrice,
+        availableForExport: slice,
+      });
     }
-    if (owner === undefined) continue;
-    cityExportSources.push({
-      settlementId: s.id,
-      hex: s.anchor,
-      ownerActor: owner.id,
-      localPrices: s.market.lastClearingPrice,
-      availableForExport: owner.stockpile.get(s.id) ?? EMPTY_RESOURCE_MAP,
-    });
   }
   if (cityImportTargets.length === 0 && cityExportSources.length === 0) return;
 
@@ -220,9 +242,12 @@ export const edgeHubPhase = (
       baseExportSpawnProbPerDay: 0.01,
       activeImportCaravans: activeEdgeCaravans.imports,
       activeExportCaravans: activeEdgeCaravans.exports,
-      maxImportSpawnsPerDay: 1,
-      maxExportSpawnsPerDay: 1,
-      maxTotalSpawnsPerDay: Math.min(1, worldRoom),
+      maxImportSpawnsPerDay: EDGE_HUB_MAX_IMPORT_SPAWNS_PER_DAY,
+      maxExportSpawnsPerDay: EDGE_HUB_MAX_EXPORT_SPAWNS_PER_DAY,
+      maxTotalSpawnsPerDay: Math.min(
+        EDGE_HUB_MAX_IMPORT_SPAWNS_PER_DAY + EDGE_HUB_MAX_EXPORT_SPAWNS_PER_DAY,
+        worldRoom,
+      ),
       maxActiveImportCaravans: EDGE_HUB_MAX_ACTIVE_IMPORT_CARAVANS,
       maxActiveExportCaravans: EDGE_HUB_MAX_ACTIVE_EXPORT_CARAVANS,
       importPalette: DEFAULT_IMPORT_PALETTE,

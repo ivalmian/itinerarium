@@ -134,7 +134,14 @@ import {
       expect(mill!.capacity).toBe(7);
     });
 
-    it('blocks paid-labor production when the owner cannot pay wages', () => {
+    it('allows in-kind wage payment when owner has no cash but the recipe output has value', () => {
+      // Per v1.6 Pillar 8 + pass 10 marginal-product wages: the owner with
+      // 0 treasury can still pay wages out of the just-produced output as
+      // long as the output has a known global price (which gives the
+      // recipe a positive marginal product). Bread now has a global ref
+      // price, so this scenario produces bread paid in-kind to workers
+      // rather than blocking on 'cash'. A blocked-on-cash test below uses
+      // a non-productive scenario instead.
       const w = buildOneSettlementWorld({
         populationByClass: { plebeian: 200 },
         flourSacks: 50,
@@ -165,8 +172,11 @@ import {
       const r = tick({ world: w, rng: createRng('cash-blocks-paid-production') });
       const after = owner !== undefined ? getStock(owner, bread) : 0;
 
-      expect(after).toBe(before);
-      expect(eventsOfType(r.events, 'recipe_blocked').some((e) => e.reason === 'cash')).toBe(true);
+      // In-kind wages let production run even with 0 owner treasury.
+      expect(after).toBeGreaterThan(before);
+      // No 'cash' block — the recipe ran (paying workers in bread).
+      expect(eventsOfType(r.events, 'recipe_blocked').some((e) => e.reason === 'cash')).toBe(false);
+      void r;
     });
 
     it('can pay production wages in staple food when coin is exhausted', () => {
