@@ -384,22 +384,33 @@ const COMFORT_WANTS: ReadonlySet<string> = new Set([
   'material.pottery',
 ]);
 
-/** Per-adult comfort want intensity (units per day). Coarse v1 numbers. */
+/**
+ * Per-adult comfort want intensity (units per day). Calibrated against
+ * the historical Roman per-capita reference table in docs/04 §"Per-
+ * capita consumption sanity ranges" (Garnsey, Erdkamp, Jongman).
+ *
+ * Pre-v1.6 numbers were ~10x too low for wine, oil, pottery and
+ * caused cities to accumulate multi-year stockpiles by Q8: production
+ * outran the modeled demand. The values below land inside the
+ * documented ranges (low-end for the working-class default; comfort-
+ * budget shares + class multipliers raise the actual spend for richer
+ * actors).
+ */
 const COMFORT_WANT_QTY: Readonly<Record<string, number>> = Object.freeze({
-  'food.milk': 0.03,
-  'food.fish': 0.01,
-  'food.game': 0.006,
-  'food.grapes': 0.003,
-  'food.olives': 0.001,
-  'food.wine': 0.02, // a small fraction of an amphora — each adult wants a sip a day
-  'food.olive_oil': 0.005,
-  'food.cheese': 0.01,
-  'food.salted_meat': 0.01,
-  'food.salted_fish': 0.01,
-  'goods.cloth': 0.00025, // households mostly replace finished clothing; cloth remains a smaller direct want
-  'goods.clothing': 0.0014,
-  'goods.furniture': 0.0001,
-  'material.pottery': 0.001,
+  'food.milk': 0.03,                  // unchanged — rural / soldier ration
+  'food.fish': 0.012,                 // 4-10 kg/yr fresh fish band, low-end
+  'food.game': 0.006,                 // unchanged
+  'food.grapes': 0.003,               // seasonal raw produce
+  'food.olives': 0.001,               // seasonal raw produce
+  'food.wine': 0.25,                  // 90 L/yr ~ low-end plebeian (docs/04: 50-150 L)
+  'food.olive_oil': 0.04,             // 15 kg/yr ~ mid plebeian (docs/04: 10-25 kg)
+  'food.cheese': 0.012,               // 4.4 kg/yr (docs/04: 3-6 kg)
+  'food.salted_meat': 0.025,          // 9 kg/yr ~ mid plebeian (docs/04: 5-15 kg)
+  'food.salted_fish': 0.015,          // 5.5 kg/yr (docs/04: 4-10 kg)
+  'goods.cloth': 0.005,               // 1.8 kg/yr (docs/04: 1.5-3 kg)
+  'goods.clothing': 0.004,            // ~1.5 garments/yr (docs/04: 1-2)
+  'goods.furniture': 0.0003,          // 0.11 pieces/yr (docs/04: 0.05-0.15)
+  'material.pottery': 0.012,          // 4.4 vessels/yr replacement (docs/04: 3-6)
 });
 
 const COMFORT_BUDGET_SHARE: Readonly<Record<string, number>> = Object.freeze({

@@ -445,24 +445,25 @@ const grantStockpile = (
 const grantStarterMarketInventory = (actor: Actor, settlement: Settlement, scale = 1): void => {
   const pop = settlement.population.total();
   if (pop <= 0 || scale <= 0) return;
-  // Per realism pass 9: starter market inventories are roughly halved
-  // vs. the pre-pass baseline because cities began the burn-in with
-  // multi-month wine/oil/cloth heaps that suppressed downstream
-  // production economics. Each entry is `pop × per-capita-daily-need
-  // × days × scale`; `days` are clamped to MAX_INITIAL_RESERVE_DAYS so
-  // no consumable starts above 1 year of supply in any settlement
-  // (the user's explicit cap).
+  // Per realism pass 18: per-capita consumption rates re-calibrated to
+  // the historical Roman reference in docs/04 §"Per-capita consumption
+  // sanity ranges". Daily rates here MUST match
+  // src/sim/market/scheduleBuilder.ts COMFORT_WANT_QTY so the procgen-
+  // seeded stockpile and the per-day demand reference the same units.
+  // Days-of-supply are tuned to land starter quantities near the Q8
+  // post-stabilization shape, capped at MAX_INITIAL_RESERVE_DAYS so no
+  // consumable starts above 1 year of supply.
   const clampDays = (d: number): number => Math.min(MAX_INITIAL_RESERVE_DAYS, Math.max(0, d));
   const grants: ReadonlyArray<readonly [string, number]> = [
-    ['food.wine', pop * 0.02 * clampDays(20) * scale],
-    ['food.olive_oil', pop * 0.005 * clampDays(30) * scale],
-    ['food.cheese', pop * 0.01 * clampDays(14) * scale],
-    ['food.salted_fish', pop * 0.01 * clampDays(10) * scale],
-    ['food.salted_meat', pop * 0.01 * clampDays(10) * scale],
-    ['goods.cloth', pop * 0.0014 * clampDays(60) * scale],
-    ['goods.clothing', pop * 0.0014 * clampDays(45) * scale],
-    ['goods.furniture', pop * 0.0001 * clampDays(60) * scale],
-    ['material.pottery', pop * 0.001 * clampDays(45) * scale],
+    ['food.wine', pop * 0.25 * clampDays(20) * scale],
+    ['food.olive_oil', pop * 0.04 * clampDays(30) * scale],
+    ['food.cheese', pop * 0.012 * clampDays(14) * scale],
+    ['food.salted_fish', pop * 0.015 * clampDays(10) * scale],
+    ['food.salted_meat', pop * 0.025 * clampDays(10) * scale],
+    ['goods.cloth', pop * 0.005 * clampDays(45) * scale],
+    ['goods.clothing', pop * 0.004 * clampDays(45) * scale],
+    ['goods.furniture', pop * 0.0003 * clampDays(60) * scale],
+    ['material.pottery', pop * 0.012 * clampDays(45) * scale],
   ];
   for (const [resource, qty] of grants) grantStockpile(actor, settlement.id, resource, qty);
 };
