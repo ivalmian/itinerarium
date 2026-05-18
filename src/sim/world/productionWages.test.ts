@@ -83,8 +83,8 @@ describe('wagePerWorkerDayForClass', () => {
     expect(wagePerWorkerDayForClass('foreigner', subsistence, mp)).toBe(45);
     // plebeian: 100 × 0.35 = 35.
     expect(wagePerWorkerDayForClass('plebeian', subsistence, mp)).toBe(35);
-    // freedman: 100 × 0.25 = 25.
-    expect(wagePerWorkerDayForClass('freedman', subsistence, mp)).toBe(25);
+    // freedman: 100 × 0.35 = 35 (v1.8 pass 33: parity with pleb).
+    expect(wagePerWorkerDayForClass('freedman', subsistence, mp)).toBe(35);
     // patrician: 100 × 0.5 = 50.
     expect(wagePerWorkerDayForClass('patrician', subsistence, mp)).toBe(50);
   });
@@ -127,7 +127,8 @@ describe('conservativeWagePerWorkerDay (affordability cap)', () => {
 describe('SURPLUS_SHARE_BY_CLASS ordering', () => {
   it('respects the docs/08 mobility ordering', () => {
     expect(SURPLUS_SHARE_BY_CLASS.slave).toBe(0);
-    expect(SURPLUS_SHARE_BY_CLASS.freedman).toBeLessThan(SURPLUS_SHARE_BY_CLASS.plebeian);
+    // v1.8 pass 33: freedman ≤ plebeian (was strictly less, now parity).
+    expect(SURPLUS_SHARE_BY_CLASS.freedman).toBeLessThanOrEqual(SURPLUS_SHARE_BY_CLASS.plebeian);
     expect(SURPLUS_SHARE_BY_CLASS.plebeian).toBeLessThan(SURPLUS_SHARE_BY_CLASS.foreigner);
   });
 });
