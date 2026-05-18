@@ -840,11 +840,18 @@ const MERCHANT_CARAVAN_PREFERRED_EQUINE_UNITS = 2;
  * them with patron-owned long-haul merchant trains.
  */
 const VILLAGER_CARAVAN_PREFIX = 'villager-';
-const VILLAGER_CARAVAN_ASSEMBLY_INTERVAL_DAYS = 14;
-const VILLAGER_CARAVAN_MAX_DISPATCHED_PER_INTERVAL = 4;
+// v1.6 pass-22: villager caravan dispatch made faster + more aggressive
+// to absorb cross-settlement trade flow that the v1.6 deletion of the
+// localTradePhase abstraction (Phase 24c) leaves uncarried. Pre-v1.6
+// these ran every 14 days with cap 1 per village; now they run every
+// 3 days with cap 3 per village so the village->city food flow (and
+// adjacent-village arbitrage) has real bandwidth instead of relying
+// on the abstract daily-pass teleportation.
+const VILLAGER_CARAVAN_ASSEMBLY_INTERVAL_DAYS = 3;
+const VILLAGER_CARAVAN_MAX_DISPATCHED_PER_INTERVAL = 20;
 const VILLAGER_CARAVAN_TARGET_PER_VILLAGE = 0.5;
 const VILLAGER_CARAVAN_TARGET_MAX = 120;
-const VILLAGER_CARAVAN_OWNER_CAP = 1;
+const VILLAGER_CARAVAN_OWNER_CAP = 3;
 const VILLAGER_CARAVAN_MIN_OPERATING_TREASURY = 30;
 const VILLAGER_CARAVAN_MIN_STARTER_RATION_DAYS = 4;
 const VILLAGER_CARAVAN_MIN_PACK_ANIMALS = 2;
