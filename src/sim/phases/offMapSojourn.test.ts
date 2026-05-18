@@ -36,10 +36,11 @@ describe('off-map sojourn (Phase 25)', () => {
       for (let r = -2; r <= 2; r++) {
         world.grid.set(hex(q, r), {
           terrain: 'plains',
+          climate: 'mediterranean',
+          elevation: 100,
+          hasRiver: false,
           ownerActor: null,
           road: 'roman',
-          roadWear: 100,
-          romanQuartersUnmaintained: 0,
         });
       }
     }
@@ -69,10 +70,11 @@ describe('off-map sojourn (Phase 25)', () => {
       for (let r = -2; r <= 2; r++) {
         world.grid.set(hex(q, r), {
           terrain: 'plains',
+          climate: 'mediterranean',
+          elevation: 100,
+          hasRiver: false,
           ownerActor: null,
           road: 'roman',
-          roadWear: 100,
-          romanQuartersUnmaintained: 0,
         });
       }
     }

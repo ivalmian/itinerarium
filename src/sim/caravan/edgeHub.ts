@@ -612,6 +612,21 @@ const bestExportFor = (
   return best;
 };
 
+/**
+ * v1.6 venture dispatch threshold per docs/06 §"Venture dispatch
+ * criterion (3× transport cost)" and docs/10 decision 39.
+ *
+ * A venture dispatches only when expected gross margin (qty × per-unit
+ * margin) covers the round-trip transport cost three times over. The
+ * 3× reflects real Roman merchant reluctance to commit capital +
+ * months of time + cargo-loss risk to long-haul trade unless the
+ * upside is well above bare break-even. The check uses the same
+ * estimateExportMargin numbers the legacy spawn path used, but now
+ * gates dispatch on the cumulative-over-cargo margin rather than the
+ * per-unit margin being positive.
+ */
+const VENTURE_PROFIT_MULTIPLIER = 3;
+
 const trySpawnExport = (
   source: CityExportSource,
   inputs: EdgeHubTickInputs,
@@ -636,6 +651,22 @@ const trySpawnExport = (
   const maxUnits = Math.max(1, Math.floor(maxKg / def.weightKgPerUnit));
   const qty = Math.min(available, maxUnits);
   if (qty <= 0) return null;
+
+  // v1.6 3× transport-cost dispatch threshold (docs/06 §"Venture
+  // dispatch criterion", docs/10 decision 39). estimateExportMargin
+  // returns per-unit margin = global - local - transport_per_unit;
+  // total expected profit = qty × (global - local) - qty × transport.
+  // Round-trip transport cost is qty × transportCostPerUnit. Dispatch
+  // requires gross_profit >= 3 × transport_cost, i.e. the per-unit
+  // margin must be >= 3 × transport_per_unit MINUS the savings from
+  // already pricing transport into margin. Equivalent rearrangement:
+  //   global - local >= 4 × transport_per_unit
+  // which is what we check below. Without this gate any positive-
+  // margin route would fire, including razor-thin opportunities that
+  // don't justify the multi-month round trip.
+  const tCostPerUnit = transportCostPerUnit(choice.resource, oneWay);
+  const grossPerUnit = choice.margin + tCostPerUnit; // = global - local
+  if (grossPerUnit < (VENTURE_PROFIT_MULTIPLIER + 1) * tCostPerUnit) return null;
 
   const totalKg = def.weightKgPerUnit * qty;
   const muleCount = Math.max(6, Math.ceil((totalKg * 1.3) / 100));
