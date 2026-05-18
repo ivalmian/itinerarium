@@ -339,71 +339,285 @@ a specific hex who took your specific cargo and now have to do
 something with it (sell it locally, carry it elsewhere, eat it,
 ransom it).
 
-## Edge-hub caravans (imports & exports beyond the map)
+## International ventures (locked, v1.6)
 
 Some goods come from beyond the mapped world. Some go to it. Both
-move on **real caravans** that enter or leave at edge hexes. The
-off-map destination is abstract — an abstract global market, see
-[08 — Money & Trade](08-money-and-trade.md) — but the on-map portion
-is fully simulated.
+move on **real caravans dispatched by named actors in our cities**
+who decide each trip is worth the risk. The off-map destination is
+abstract (see [08 — Money & Trade](08-money-and-trade.md)) but every
+on-map step is fully simulated.
 
-### Imports
+There is **no fixed dispatch cadence** for international caravans
+and **no exogenous import "houses" that spawn at the map edge**.
+Imports and exports are the SAME mechanic: a venture dispatched by a
+patrician family or merchant guild in one of our cities, going out
+to the global market and coming back.
 
-- Periodically (driven by a stochastic schedule that respects
-  seasonality), an external caravan spawns at one of a small number
-  of designated off-map-trade-route gates with cargo. The palette
-  includes exotics (spices, silk, incense, dyes), strategic staples
-  (salt), and high-value finished goods (tools, cloth, weapons, armor).
-  The exact choice is price-responsive: if a target city shows a local
-  price above off-map price plus landed transport cost, that good gets
-  weighted ahead of unprofitable cargo. Import houses choose the city
-  with the strongest positive landed margin before choosing cargo; they
-  do not send scarce tools to the nearest gate city while another city
-  is bidding far more. The launch cadence is also price-responsive:
-  extreme landed margins raise the chance that an edge gate sends a
-  convoy that day. If no target has a positive landed margin, no import
-  convoy launches. The sim must cap daily edge-hub spawns and the
-  number of still-active edge-hub convoys; trade enters as a paced,
-  demand-driven flow, never as a discontinuous wave from every perimeter
-  hex or a backlog of stuck visitors.
-- Import convoys carry both food and operating coin. The coin is for
-  post-delivery rations and road expenses, not profit; an established
-  off-map house does not send a loaded convoy into the province with
-  an empty purse.
-- It walks to the nearest large city, sells, often buys local goods
-  for the return (wine, oil, iron, slaves, silver), and walks back
-  off the map.
-- If the import cargo sells out, the convoy returns to its original
-  edge gate and exits the map. If the city cannot absorb the cargo
-  for immediate coin that day, the remainder is consigned to a local
-  city factor/merchant stockpile and the convoy still returns. It does
-  **not** fall into the normal local NPC scouting loop. Off-map imports
-  are transient provincial visitors, not a hidden permanent source of
-  hundreds of wandering caravans.
+### Who dispatches a venture
 
-### Exports
+**Patrician families** and **merchant guilds** at large/small cities
+are the only dispatchers. Each evaluates routes daily using its own
+`knownPrices` map (see §"Caravan information model" below) and its
+own treasury. Other actors (city-corp, governor, household actors)
+do not run international caravans.
 
-- Symmetrically, NPC long-haul merchant houses based in cities
-  periodically assemble export caravans heading to off-map
-  destinations. A city-based merchant house is a named stockpile owner
-  at its home market, so its equines, carts, cash, and cargo are bought
-  and sold through the same local market schedules as other actors.
-- They buy high-value low-weight goods at local prices (luxury
-  cloth, silver, fine pottery, slaves, surplus oil/wine in good
-  years) and walk to an edge hex, exiting the map.
-- Some days/weeks later, a counterpart inbound caravan arrives with
-  return cargo and/or coin.
-- The off-map portion is not simulated step by step; it is treated
-  as a known time + food cost and a known global-market price.
+### Venture dispatch criterion (3× transport cost)
 
-Both import and export caravans are **just caravans**: same code,
-same vulnerabilities. The player or bandits can intercept them. A
-governor can tax them. A war can close their route. Other merchants
-can compete with them on price.
+For every (resource, destination) pair an actor knows a remote price
+for, it computes:
 
-The **player cannot run off-map caravans** in the current scope. Long-haul export is
-the business of established merchant houses with the capital,
-network, and patience for multi-month round-trips.
+```
+expected_profit =
+    quantity × (remote_known_bid - home_known_ask)
+  - transport_cost
+expected_transport_cost =
+    crew_wages × total_days
+  + animal_feed_kg × total_days × feed_price
+  + cart_wear_coin
+  + bandit_loss_expectation × cargo_value
+  + tolls
+total_days = home→edge + 20 sojourn + edge→home
+```
+
+A venture dispatches when **expected_profit ≥ 3 × expected_transport_cost**.
+The 3× threshold reflects the real reluctance of Roman merchants to
+commit capital + months of time + cargo-loss risk to long-haul trade
+unless the upside is well above the bare break-even.
+
+The dispatcher debits the projected `transport_cost + home-market
+purchase price × cargo_qty` from its treasury when assembling the
+caravan. If the actor can't afford it, no dispatch. The dispatcher
+collects the caravan's profit when the caravan returns home and
+remits surplus cash at the home-market visit (per the standard
+lifecycle rule).
+
+### The 20-tick off-map sojourn (locked)
+
+A caravan dispatched to the global market follows this path:
+
+1. Walks from home settlement to its chosen edge hex (normal
+   on-map movement).
+2. **At the edge hex (day E):** sells outbound cargo to the global
+   market at the global reference price (paid in coin from the
+   global market — see [08](08-money-and-trade.md) §"The off-map
+   global market"). Optionally buys return cargo at the global
+   reference price.
+3. **Enters `off_map` state.** The caravan disappears from the
+   on-map grid; it is not rendered, cannot be ambushed, cannot
+   be intercepted, and does not appear in any spatial index. **It
+   is still ticking, though:** crew wages, animal fodder, and cart
+   wear continue to accrue against its operating treasury for **20
+   ticks** (days). No revenue accrues during the sojourn — this is
+   pure cost representing the off-map portion of the journey.
+4. **On day E + 20:** the caravan re-emerges at the same edge hex
+   with its return cargo intact (if any) and walks back to its
+   owner's home settlement. Bandit ambush risk applies normally on
+   the on-map return leg.
+5. At home: sells return cargo at the local market (bid/ask, just
+   like any other caravan); remits surplus to the dispatcher.
+
+Important: **provisioning at dispatch must cover the full trip,
+including the 20 sojourn days.** A caravan that leaves home with
+`(home→edge + 1) ration days` will starve in the off-map sojourn —
+the dispatcher's pre-flight loadout calculation must include `20`
+in `total_days` for both rations and fodder. Same goes for any
+carried bank of `goods.coin` the venture needs for its return-cargo
+purchase at the edge hex.
+
+A single 20-tick sojourn duration applies to every edge gate. We
+don't model destination diversity (Egypt vs. Britain vs. Gaul) in
+v1.6 — that's a procgen-flavor extension for later.
+
+### Global market is an infinite-demand sink
+
+The edge hex itself is the global-market venue. The global market
+has effectively infinite buying and selling capacity at the
+[global reference price](08-money-and-trade.md#the-off-map-global-market-locked) —
+a caravan arriving at the edge hex can dump its entire cargo and
+fill its capacity from the global market without slippage. This
+replaces the older "fixed daily-spawn import/export cap" model
+entirely.
+
+### What restrains volume
+
+Without per-day spawn caps and without aggregate active-caravan
+ceilings on the edge-hub pipeline, what keeps trade volumes from
+exploding is the **3× transport-cost threshold + bounded actor
+information**:
+
+- A patrician dispatcher in City A only knows the prices it has
+  seen via its own returning caravans + carrier-piggyback news. A
+  destination that no caravan has reached recently has unknown
+  remote prices — the actor cannot rationally dispatch a venture
+  there.
+- Once a route gets exploited, the local home-market ask price for
+  the exported good rises (because supply is being drained) and
+  the remote bid price falls (because the global market's
+  reference price doesn't drift, but the caravan that arrives and
+  competes for the local return cargo at the destination affects
+  the destination's local market). The 3× margin shrinks; further
+  ventures wait.
+- Real treasury constraints. A patrician with 20,000 coin can't
+  dispatch 50 simultaneous ventures.
+
+These three together produce the right shape: profitable routes
+attract a few ventures, prices converge, dispatch slows. No global
+throttle.
+
+### Player and international ventures
+
+The **player cannot dispatch international caravans** in the
+current scope (matches the existing rule). Long-haul export is the
+business of established patrician houses and guilds with the
+capital, network, and patience for multi-month round-trips. The
+player operates inside the map.
+
+## Caravan information model (locked, v1.6)
+
+Caravan dispatch + market participation depends on **what each actor
+knows about prices**. There is no global price oracle. Each
+**Actor** carries a per-settlement snapshot of the market state they
+last observed there:
+
+```
+Actor.knownPrices: Map<SettlementId, MarketObservation>
+
+MarketObservation {
+  quotes: Map<ResourceId, ResourceQuote>   // whole-ladder snapshot
+  observedDay: Day                          // when this snapshot was taken
+}
+
+ResourceQuote {
+  bestAsk: integer coin
+  bestBid: integer coin
+}
+```
+
+The granularity is **one observation per (actor, settlement)** — not
+per-resource. When you walk to city X and see the market, you see
+the WHOLE market on that day, not separate per-resource events.
+
+### Merge rule: newer date always wins, atomically
+
+Two observations of the same settlement reconcile as follows: the
+one with the higher `observedDay` wins **entirely**. The older
+observation — and every resource quote in it — is discarded. There
+is no per-resource merge. If today's snapshot is missing wine
+because the wine market didn't clear that day, the actor's wine
+quote is now "unknown" even if a 60-day-old observation had a wine
+quote. This matches the "what I last heard about city X" mental
+model.
+
+### No deception: shared observations are authoritative
+
+When two actors share their `knownPrices`, they transmit
+**authoritative quotes** — there is no deceptive-misinformation
+channel. Hostile reputation gates the **decision to share** (a
+hostile counterparty refuses to talk; see [13 — Reputation](13-reputation-and-relationships.md)),
+but it never causes one party to feed the other false numbers.
+Real merchants who got caught lying about market prices lost their
+trade network; the model reflects that.
+
+### All knowledge comes from syncs (no magical home channel)
+
+Every observation in `knownPrices` comes from a **physical sync
+event** — there is no "you implicitly know your home settlement"
+shortcut. The cases:
+
+1. **Resident-presence sync (daily, automatic).** Actors that
+   physically live at a settlement — patrician families, free
+   villages, hamlet households, plebeian / freedman / foreigner
+   households, governor's office, temple, city corporation,
+   merchant guild — are present at their home settlement every
+   day. Their `knownPrices[home]` is refreshed each tick with
+   that settlement's current market state, stamped to today. This
+   is **not magic**; it's literally "I live here, I see the forum
+   prices today." Bandit camps anchored to a hex with no
+   settlement don't get this; they have to send a real unit to
+   the nearest market.
+2. **Arrival sync.** When any mobile unit (caravan, news
+   carrier, patrol, migration column, the player) arrives at a
+   settlement on day D, the unit's owner gets a fresh
+   `MarketObservation` for that settlement stamped to D. The
+   unit and owner share the same map; the unit observes and
+   writes, the owner reads for dispatch decisions.
+3. **Meeting sync (piggyback).** When two friendly units share a
+   hex on the same day OR are both at the same settlement on the
+   same day, each owner merges in everything the other owner
+   knows. Per-settlement, newer day wins. This is the transitive
+   long-distance channel: A's day-30 observation of city X reaches
+   C several weeks later if A→B→C met on consecutive days.
+4. **Guild ledger sync.** A merchant guild is itself a resident
+   actor that holds a `knownPrices` map. Members visiting the
+   guild perform a meeting sync against the guild's map. The
+   guild's map gets refreshed whenever any member is on-site, so
+   it acts as a same-city aggregation of member knowledge. See
+   docs/08 §"Communicated price discovery via guilds".
+5. **Edge-hex observation.** A caravan that touches an edge hex
+   observes the **global reference price** as a full
+   `MarketObservation`, with `quotes` populated from the global
+   palette and stamped to today. The owner learns the global
+   prices when this caravan-owner sync happens. (Procgen seeds
+   guild-member maps with a day-0 global observation to model the
+   institutional consular-report channel.)
+
+### No deception, no provenance tracking
+
+Shared observations are always **authoritative** — there is no
+deceptive-misinformation channel. Hostile reputation gates the
+**decision to share** (hostile units refuse to talk; see
+docs/13), but never causes false numbers. By design we don't
+track who-told-whom: A→B→C transitive gossip means C's day-30
+observation of city X has no remaining record of going through B.
+Only `observedDay` survives, because that's what controls
+staleness and merge precedence.
+
+### Information decay
+
+A `MarketObservation` older than **180 days** is treated as
+missing on read. A 6-month-old price is too stale to commit a
+multi-month venture against. Stale entries are pruned lazily on
+read (not on store).
+
+### What gets written
+
+`knownPrices` is updated **only** by physical-unit events:
+caravan/patrol/news-carrier observations and meets. **It is
+NEVER updated by reading a global state directly.** A patrician
+in City A learns City B's market only because someone walked
+there and back, or because someone who walked there and back met
+someone the patrician's caravan later met. This is the "no
+hidden hands" rule, made literal for prices.
+
+### Snapshot
+
+`knownPrices` is part of every actor's snapshot. Schema version
+bumps when the type changes.
+
+### Initial state (procgen)
+
+At world generation, only physical-presence + institutional
+syncs run:
+
+- Every **resident actor** is at their home settlement on day 0,
+  so the day-0 resident-presence sync records a fresh
+  `MarketObservation` for home. (After day 0 this continues
+  automatically every tick as long as the actor remains a
+  resident.)
+- **Merchant guilds** are seeded with a day-0 `MarketObservation`
+  of the global reference prices at every edge hex — modeling the
+  consular trade reports / institutional intelligence that
+  historical guilds maintained. Guild **members** pick this up
+  through the next member-visits-guild meeting sync; non-members
+  don't get it.
+- Mobile units (any seeded standing caravans, villager carts,
+  patrols) carry whatever their owner knows at the moment of
+  dispatch. The owner has a day-0 home observation; the caravan
+  inherits it. As the caravan walks, it picks up arrival /
+  meeting syncs and the owner's map updates accordingly.
+- No actor knows any other settlement's prices at world start.
+  The first wave of seeded standing caravans + villager carts
+  propagates information across the map during Q1.
 
 ## Caravan lifecycle in the tick loop (locked)
 
@@ -411,45 +625,51 @@ Per-day, for every NPC caravan in `world.caravans`:
 
 1. **Movement phase**: if caravan has a destination, advance via A\*
    (already implemented). Emit `caravan_moved`/`caravan_arrived`.
-2. **Trade-on-arrival** (politics phase, after settlement markets
-   clear): if a caravan is at its destination AND has a settlement on
-   that hex, use the latest local clearing prices to sell cargo into
-   local stockpiles; then buy the cheapest available local food up to
-   the 21-day ration reserve, using the local clearing price when known
-   and a staple-derived fallback price for ration goods when stock exists
-   but that day's market did not clear the exact food; then buy whatever
-   the price book / NPC
-   heuristic deems most profitable and feasible to load for the next leg. The
-   caravan keeps that reserve, so it does not sell the food needed for
-   the next leg of travel. When a standing merchant caravan is back at
-   its owner's home market, it remits part of cash above operating
-   reserve to the owner while keeping working capital for rations and
-   the next cargo purchase. Profits therefore reach the merchant house
-   through a physical home-market visit instead of remaining trapped in
-   the caravan object.
-3. **Off-map import return**: if an import caravan has unloaded its
-   market cargo at the target city, set its destination back to its
-   originating edge gate. When it reaches that gate, remove it from
-   `world.caravans`.
-4. **Off-map export completion**: if an export caravan reaches an
-   edge hex with globally priced cargo, the cargo leaves the map and
-   the owning actor receives the global-market coin.
-5. **Re-plan** (same politics phase): after the trade, call
-   `planCaravanRoute` (T37) with the caravan's updated price book +
-   knownBetterDestinations. The plan returns `RoutePlan | null`. If
-   plan, set `caravan.destination` to its hex; if null, caravan scouts
-   for prices using the same known bandit-density map as route planning.
-   Low-ration caravans still bias toward nearby markets, but known
-   ambush corridors count as extra effective distance. Well-provisioned
-   scouts choose among low-risk nearby alternatives rather than rolling
-   blindly into a camp just because no profitable spread is visible yet.
-6. **Replacement assembly**: if the active standing merchant fleet is
-   below target, eligible owners can fund a small number of replacement
-   caravans from their own treasuries and transport-capital stockpiles.
-   A new caravan consumes equine herd stock for its starting animals and
-   consumes a cart if the owner has one available. Newly assembled
-   caravans start at the owner's home market and enter the same
-   arrival/re-plan logic on the next tick.
+2. **Trade-on-arrival** (politics phase): if a caravan is at its
+   destination AND has a settlement on that hex, the caravan
+   **participates in the settlement's market as a regular actor**:
+   it submits **asks** for goods in its cargo and **bids** for
+   goods it intends to buy (rations to top up to its provisioning
+   target, plus any next-leg cargo identified by its planner). All
+   asks and bids are integer-coin per docs/08 §"Integer-coin
+   prices"; the caravan owns its asks and the trades clear through
+   the standard CDA market alongside resident actors. There is no
+   "direct stockpile transfer" path — a caravan moves goods into a
+   settlement's stockpile only by selling them on the market and
+   conversely it acquires goods only by buying them. The owner's
+   home-market visit similarly remits surplus cash by selling
+   accumulated cargo through the market, not by mailing coin to
+   the owner's treasury. Caravan-as-market-participant applies
+   uniformly to standing merchants, villager carts, replacement
+   caravans, edge-hub returning ventures, and the player. See
+   docs/08 §"Caravans transact via local markets, never stockpile".
+3. **Edge-hex global-market transaction**: if a caravan arrives at
+   an edge hex with cargo destined for the global market, it sells
+   the cargo at the global reference price (paid in coin from the
+   global market — an unbounded buyer) and optionally fills its
+   capacity with return cargo at the global reference price. Then
+   it enters `off_map` state for 20 ticks (see §"International
+   ventures" → §"The 20-tick off-map sojourn").
+4. **Re-plan** (same politics phase): after the trade, the
+   caravan's planner re-evaluates routes using its owner's
+   `knownPrices` map (caravans share the owner's map — they
+   observe and update it; the owner reads it for venture
+   decisions). The planner returns `RoutePlan | null`. If plan,
+   set `caravan.destination` to its hex; if null, caravan scouts
+   for prices using the same known bandit-density map as route
+   planning. Low-ration caravans still bias toward nearby markets,
+   but known ambush corridors count as extra effective distance.
+   Well-provisioned scouts choose among low-risk nearby
+   alternatives rather than rolling blindly into a camp.
+5. **Replacement assembly**: if the active standing merchant fleet
+   is below target, eligible owners can fund a small number of
+   replacement caravans from their own treasuries and
+   transport-capital stockpiles. The owner first **buys carts and
+   equines on its home market** (a regular bid alongside other
+   buyers), then loads outbound cargo by **buying it on the home
+   market** (not draining its own stockpile). New caravans start
+   at the owner's home market and enter the same arrival/re-plan
+   logic on the next tick.
 
 **Disbanding**: a caravan with empty cargo + zero coin + no
 profitable route for 30 consecutive days disbands; crew + animals
@@ -462,35 +682,46 @@ still forever (the old baseline before this section was added).
 
 ## NPC caravan AI
 
-NPC merchants run a simple expected-profit calculation:
+NPC merchants run an expected-profit calculation against their
+**owner's `knownPrices` map** — not against a global oracle:
 
 ```
 expected_profit =
-    sum_over_cargo (price_at_destination - price_at_origin)
-  - travel_cost_in_rations_and_wear
+    sum_over_cargo (
+        owner.knownPrices[destination][resource].bestBid
+      - owner.knownPrices[origin][resource].bestAsk
+    ) × cargo_qty
+  - travel_cost_full_operating
   - expected_loss_from_risk
   - tolls_and_tariffs
 ```
 
-…weighted by their own risk appetite, capital, and information. They
-choose routes that maximize this; ties broken by familiarity.
-The `travel_cost_in_rations_and_wear` term uses the same 1.5
-provisioning convention as movement: full crew rations plus the carried
-fodder reserve share, not full theoretical animal fodder, because pack
-animals graze where terrain and season allow. Otherwise the planner
-would reject routes that are profitable under the actual movement model.
+Destinations whose `knownPrices` entry is `undefined` or older than
+180 days are simply not eligible as candidates — the merchant
+cannot rationally plan a trip to a city it has no recent
+intelligence on. This is what makes the "no hidden hands" rule
+actually constrain dispatch.
 
-Cargo planning is not an unconstrained "fill the cart" rule. It is a
-microeconomic feasible-set problem: the merchant ranks goods by
-expected margin per kg, then caps the load by carrying capacity
-already occupied, missing ration-reserve capacity, cash available
-after survival reserves, and stock actually available in the origin
-market. Fresh perishables are only planned for routes whose estimated
-travel time fits inside their shelf life; milk, fresh fish, and game
-therefore remain local/nearby flows while cheese, salted foods, wine,
-oil, metals, and exotics can support longer hauls. This keeps planned
-demand consistent with the local market the caravan can really buy
-from.
+`travel_cost_full_operating` is the **full operating cost** of the
+trip: crew wages × days + carried-fodder share × days + cart wear
++ expected bandit-loss × cargo value + tolls. International
+ventures additionally include the 20-day off-map sojourn in `days`.
+The 3× threshold (§"Venture dispatch criterion") applies only to
+**international** dispatches — domestic ventures use the standard
+positive-margin filter.
+
+Cargo planning is a microeconomic feasible-set problem: the
+merchant ranks goods by expected margin per kg, then caps the
+load by carrying capacity already occupied, missing ration-reserve
+capacity, **cash available after survival + the home-market
+purchase cost** (because cargo is acquired through a market bid,
+not pulled from owner stockpile), and stock-actually-clearing-at-a-bid-the-owner-can-afford
+in the origin market. Fresh perishables are only planned for routes
+whose estimated travel time fits inside their shelf life; milk,
+fresh fish, and game therefore remain local/nearby flows while
+cheese, salted foods, wine, oil, metals, and exotics can support
+longer hauls. This keeps planned demand consistent with the local
+market the caravan can really buy from.
 
 When the expected-profit calculation returns no plan, scouting is still
 economic behavior rather than Brownian motion. The caravan is buying
@@ -576,57 +807,122 @@ a Vibian grain caravan doesn't redecide its destination each day
 re-evaluates if conditions change materially. Goal stacks are
 serialized as part of the WorldState snapshot.
 
-## Local trade between nearby settlements (locked)
+## Local trade between nearby settlements (locked, v1.6)
 
-Long-haul caravans (the rest of this doc) are not the only way
-goods move. The thick layer underneath them is **petty merchants
-and villager pickup carts** that walk between neighboring
-settlements daily, arbitraging local price spreads with small
-loads.
+Local trade is **not** a daily-pass abstraction. The old
+`localTradePhase` that teleported goods between settlement pairs
+based on spread calculation is **deleted**. Realism rule (per user
+direction): a villager walking a cart of grain to the next pagus is
+exposed to the **same ambush, weather, disease, and food-supply
+risks** as a 50-mule merchant train walking the same road. A grain
+cart cannot pass through a bandit ambush corridor unscathed just
+because the model abstracts the trip away. Therefore every inter-
+settlement trade flow goes through a **real caravan unit** with a
+position on the map, a goal stack, food consumption, ambush
+exposure, and a snapshot identity.
 
-This is what makes the no-aggregation entity model
-(docs/04 §"Sizing the realistic hinterland") produce a coherent
-regional economy: each village's market clears separately, but
-the price differentials don't drift far before petty trade pulls
-them back together.
+The existing **villager caravan** subsystem (docs/15 §C31) — small
+handcart units rendered with the handcart glyph in the viewer — is
+the right vehicle for local trade. It already exists, has all the
+right machinery, and just needs to be extended to cover the
+village-to-village and village-to-town arcs that the old daily-pass
+abstraction used to handle.
 
-### Mechanics
+### Caravan size tiers (locked, v1.6)
 
-After every settlement clears its daily market (per docs/08), a
-local-trade pass runs:
+All caravans share the SAME machinery (movement / food / ambush
+exposure / disease vector / snapshot identity). They differ only in
+size, dispatcher, and typical route length:
 
-For each ordered pair (sellerSettlement, buyerSettlement) where
-the two settlements are within the resource's local cartage range
-AND travel between them is feasible (not blocked by impassable terrain
-in the current season):
+| Tier | Cargo cap | Crew + animals | Typical dispatcher | Typical range |
+|------|-----------|----------------|---------------------|---------------|
+| **Handcart / basket** | ≤ 50 kg | 1 person, no animals | `hamlet_household`, `free_village`, individual peasant | 1–3 hex, ≤1 day |
+| **Villager cart** | ≤ 400 kg | 1 drover + 1 guard, 2–4 mules | `free_village` steward (docs/15 §C31), extended in v1.6 to also dispatch village↔village arcs | up to 6 hex, ≤3 days |
+| **Standing merchant** | 500 – 1,500 kg | full crew + escort, 10–50 mules or wagons | `patrician_family`, `city_corporation`, `governor_office`, `merchant_guild` | multi-cluster, multi-day |
+| **International venture** | 500 – 1,500 kg | full crew + escort | `patrician_family` or `merchant_guild` (v1.6) | home → edge hex → 20-tick sojourn → home |
 
-1. Look at every physical tradable resource with observed local
-   prices. Services are not cargo, people use separate population/cargo
-   systems, and coin is the settlement rail rather than a commodity in
-   this pass. Find the spread:
-   `spread = buyer.lastPrice - seller.lastPrice − transportCost`
-2. If the spread is positive, a petty merchant moves a resource-
-   appropriate quantity from a seller actor's stockpile in
-   `sellerSettlement` to a buyer actor's stockpile in
-   `buyerSettlement`. Household goods are capped at ~50 kg per
-   pair per day, including perishables like raw milk, fresh fish,
-   and game that can only plausibly move nearby. Herd capital
-   (sheep/cattle/pigs/equines) walks rather than riding in a basket:
-   nearby markets can move about a tenth of a herd unit per pair per
-   day. Strategic workshop goods (tools, weapons, armor,
-   shields, carts) use pickup-wagon lots capped around ~500 kg per
-   pair per day, so smith output can reach nearby farms, workshops,
-   and barracks without pretending it teleports. Bulky industrial
-   inputs (ore, salt, charcoal, wood/lumber, metal bars,
-   clay/stone/brick) use local cartage capped around ~3,000 kg per
-   pair per day and can reach up to 6 hexes, so mine, charcoal,
-   bloomery, and smithy districts can feed each other without waiting
-   for long-haul caravans. Coin moves
-   the other way at the midpoint price (split the spread).
-3. The merchant takes a small cut (~5%) for their effort. This
-   is what funds the merchant household — not modeled as a
-   separate stockpile in the current model; just absorbed into
-   the spread.
+Cargo class caps come from the loaded cart, NOT from a pair-wise
+daily flow rate. A village steward dispatching a handcart with 50 kg
+of cheese to the adjacent village creates ONE caravan unit. If the
+spread justifies it again the next day, a second unit dispatches.
+
+### Why all tiers see the same risk
+
+This is the user's direct realism call: **a peasant on a road carrying
+a cart of grain is as ambush-exposed as a senatorial merchant**.
+Bandits don't filter targets by abstraction layer. Plague carriers
+don't either. So the petty arc must use the same mechanics:
+
+- **Movement** uses the same per-hex / per-terrain / per-season cost
+  model (§"Movement").
+- **Food consumption** uses the same crew-rations + animal-fodder
+  rules. A villager handcart needs ~1 ration / day for the one
+  drover; a 4-mule villager cart needs additional mule fodder.
+- **Ambush exposure** uses the same bandit-density roll. Smaller,
+  lightly defended units are easier targets — the same ambush
+  formula naturally produces this (low `guardScore` × low
+  `weaponsScore`).
+- **Disease** uses the same caravan-as-vector rule. An infected
+  handcart entering a clean village can spark a local outbreak.
+- **Snapshot** carries the same `Caravan` fields. There is no
+  separate "petty" type — only different size parameters.
+
+### Dispatch triggers (locked, v1.6)
+
+A `free_village` or `hamlet_household` steward dispatches a handcart
+or villager cart when:
+
+1. **Local arbitrage** — observed `knownPrices` for an adjacent
+   settlement show a spread that beats round-trip transport cost
+   plus the steward's reluctance margin (~10–20 % above
+   break-even, lower than the patrician 3× because peasant
+   opportunity cost is low and they walk anyway).
+2. **Surplus run** — village has any exportable inventory above
+   reserve (existing §C31 trigger, extended to neighbors not just
+   the nearest city).
+3. **Import trip** — steward has accumulated cash to buy goods the
+   village can't make.
+4. **Hard-times resupply** — village staple stocks under reserve;
+   the steward drains cash to fetch food back.
+
+For the dispatcher's `knownPrices` to register an adjacent
+settlement as a candidate, **someone has to have walked the news
+back** — same rule as everywhere else (docs/13 §"News-carrier
+price piggyback"). A village with no recent caravan traffic
+in/out has stale information about its neighbors. This is what
+makes the "no hidden hands" rule bite at the local-arbitrage
+layer.
+
+### Same-hex coexistence is the ONLY zero-tick case
+
+Per docs/05 §"Same-hex coexistence": pagus + 1–4 dependent
+hamlets share a literal hex. Trade between THEM only is a 0-tick
+intra-hex transfer — but it still goes through each settlement's
+CDA market (the buyer's bid clears against the seller's ask at the
+clearing price). No unit is dispatched because no road crossing
+is involved.
+
+**Every other distance — even 1 hex — uses a real caravan unit**
+that walks the route, consumes rations, rolls for ambush, and may
+arrive sick.
+
+### Distance and cost (still useful as planner heuristics)
+
+| Hex distance | Days to walk (laden mule) | Approx round-trip operating cost |
+|--------------|-----|-----|
+| 0 (same hex) | 0 | 0 (intra-hex market clearing only) |
+| 1 (adjacent) | 1 each way | wages + fodder for 2 days + cart wear |
+| 2 | 1 each way | 2 days |
+| 3 | 1–2 each way | 3 days |
+| 4 | 2 each way | 4 days |
+| 5 | 2–3 each way | 5 days |
+| 6 | 3 each way | 6 days |
+| 7+ | use standing merchant / international rules | … |
+
+The handcart and villager-cart tiers normally restrict to ≤ 6 hex
+because longer hauls don't pay for the smaller carrying capacity.
+Past 6 hex the planner naturally selects a larger tier (or no
+dispatch at all).
 
 ### Distance and cost
 
@@ -649,46 +945,55 @@ asking price. If buyer's price doesn't beat seller's price + cost
 ### Why this matters
 
 - The pagus + dependent-hamlets cluster on the same hex shares
-  surplus instantly: a hamlet that produced extra wool sees it
-  reach the village's weaver with 0 ticks of travel.
+  surplus instantly via market clearing: a hamlet that produced
+  extra wool sees it reach the village's weaver same-tick.
 - A rich city's market spike for grain pulls grain from every
-  neighbor village within 3 hexes within a day or two — the
-  classic "city sucks the countryside dry" pattern.
-- A bloomery six hexes from an ore village can still buy ore by
-  cartage if the spread pays for the heavy haul. The same distance
-  does not move bread or grain through the petty-trade pass.
-- A village starting to starve sees its grain price spike, and
-  neighbors with surplus respond _before_ the long-haul caravan
-  AI notices the opportunity.
-- Famine still happens — but only when the WHOLE region's
-  surplus is exhausted, not because the village across the road
-  hadn't been visited by a caravan recently.
+  neighbor village within range — but each shipment is a real
+  villager handcart on the road, taking real days, exposed to
+  real bandits. The "city sucks the countryside dry" pattern
+  emerges, but slowly enough that interceptable rural ambushes
+  matter.
+- A village starting to starve sees its grain price spike; a
+  neighbor with surplus dispatches a real handcart that walks the
+  hex, arrives, and clears its bid at the famished market. The
+  cart can be ambushed en route — and IS, sometimes.
+- Famine still happens — but it can happen because the regional
+  surplus genuinely failed, OR because the road between two
+  settlements is unsafe and the cart never arrived.
 
-### Local trade vs. long-haul caravans
+### Local petty trade vs. long-haul caravans
 
-| Local trade                                                                                                                          | Long-haul caravan                                      |
-| ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
-| ≤3 hexes for household goods; ≤6 hexes for industrial/workshop cartage, daily                                                        | Beyond local-cartage range, multi-day                  |
-| Basket load for household goods; wagon lots for strategic workshop goods; cartage load for local industrial inputs                   | Large load (50–1500 kg)                                |
-| No persistent unit; abstracted as a daily pass                                                                                       | Persistent Caravan entity with crew/animals/goal stack |
-| Smooths regional spreads                                                                                                             | Connects regions that don't touch                      |
-| Can't be raided (too small, too dispersed)                                                                                           | Real ambush risk                                       |
-| Free same-hex (the canonical pagus case); heavy cartage pays steep coin/kg costs and only fires when the spread can support the haul | Same-hex moot — caravans are inter-region              |
+| Local petty / villager cart | Standing merchant / international |
+|-----------------------------|-----------------------------------|
+| Handcart or 2–4 mule cart | Large mule train or wagon, 10–50 animals |
+| Originates at village/hamlet; restricted route set (nearest cities + adjacent villages) | Any city-based dispatcher; route anywhere with information |
+| Dispatched by `free_village` / `hamlet_household` steward | Dispatched by `patrician_family`, `city_corporation`, `governor_office`, `merchant_guild` |
+| 1–6 hex round trip | Multi-cluster, multi-day, possibly international (with 20-tick off-map sojourn) |
+| **Real Caravan unit with full movement / food / ambush / disease machinery** | Same |
+| Buys + sells via the destination's CDA market (bid/ask) | Same |
+| Cheaper to lose (less capital exposed) but proportionally less defended | Bigger losses possible but proportionally better defended |
 
-Local-trade is a tick-loop pass over Settlement pairs (no separate
-unit). Long-haul caravans are full units with movement, cargo,
-crew, and risk. Both flow through the same actor stockpiles, so
-trade activity from EITHER source updates the same market state.
+Both transact through the same per-settlement markets via bid/ask;
+neither directly mutates stockpile. The only difference is size,
+dispatcher class, and typical route length. **There is no "local
+trade abstraction"** — every inter-settlement trade is a Caravan
+unit that walked the route.
 
 ### Same-hex coexistence (locked, cross-ref docs/05)
 
 Per docs/05 §"Same-hex coexistence": multiple settlement entities
 can share a hex (typically a _pagus_ + 1–4 dependent hamlets).
-Each keeps its own market and ledgers; local trade between them
-runs at the 0-hex / 0-tick rate above. They appear as offset
-glyphs in the viewer and are individually clickable.
+Each keeps its own market and ledgers. Because they're literally
+on the same hex (a few hundred meters apart, no road crossing
+involved), inter-settlement bids/asks between THEM clear in a
+zero-tick intra-hex market step — no caravan unit is dispatched
+because there is no road to walk. They appear as offset glyphs in
+the viewer and are individually clickable.
 
-This is the only case where "same hex" matters — adjacent and
-2-hex pairs walk one tick to deliver. It's also why the same-hex
-exception isn't a free aggregation: each settlement's stockpile
-owners, factions, and political reputation stay distinct.
+This is the **only** case where "same hex" matters. Adjacent
+(1-hex) and farther pairs always dispatch a real caravan unit,
+because a 1-km road crossing is enough exposure to ambush /
+weather / disease to count. The same-hex exception isn't a free
+aggregation: each settlement's stockpile owners, factions, and
+political reputation stay distinct, and the inter-settlement
+intra-hex clearing still respects per-actor bids/asks.

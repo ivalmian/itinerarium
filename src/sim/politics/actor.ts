@@ -22,6 +22,7 @@
  */
 
 import type { ActorId, Coin, Quantity, ResourceId, SettlementId } from '../types.js';
+import { createKnownPrices, type KnownPrices } from './knownPrices.js';
 
 /**
  * Kinds of Actor. See docs/11 §"Every faction has named characters".
@@ -105,6 +106,15 @@ export interface Actor {
    * twice because each key holds its own physical slice.
    */
   readonly stockpile: Map<SettlementId, Map<ResourceId, Quantity>>;
+  /**
+   * Per-actor information-asymmetric price map (docs/06 §"Caravan
+   * information model"). Outer key = settlement, inner key = resource;
+   * the observation records the best bid/ask seen there and the day
+   * it was stamped. There is no global price oracle — this map is the
+   * only thing the actor knows about prices anywhere. See
+   * `knownPrices.ts` for helpers and the 180-day staleness rule.
+   */
+  readonly knownPrices: KnownPrices;
   /** Liquid coin. Mutable by design; ledger movements are at the call site. */
   treasury: Coin;
 }
@@ -127,6 +137,7 @@ export const createActor = (input: CreateActorInput): Actor => {
     name: input.name,
     ...(input.homeSettlement !== undefined ? { homeSettlement: input.homeSettlement } : {}),
     stockpile: new Map(),
+    knownPrices: createKnownPrices(),
     treasury: input.treasury ?? 0,
   };
 };

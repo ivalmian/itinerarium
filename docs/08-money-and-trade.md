@@ -835,23 +835,85 @@ This is what makes the no-aggregation entity model
 markets still produce a regional price gradient, not 8,000
 disconnected wells.
 
-## Information
+## Information (locked, v1.6)
 
-Caravans don't see all prices. They remember what they've seen
-and pick up news from other caravans they meet.
+There is **no global price oracle.** Every actor carries:
 
-- Each caravan has a price book:
-  `{ resource: { hex_id: (price, observation_day) } }`.
-- Prices decay in confidence over time — a 6-month-old price is
-  very little signal.
-- When two caravans meet on the same hex, they exchange a subset
-  of their price books (for a fee, or as merchant courtesy).
-- News of major events (city fall, plague outbreak, war, banditry
-  surge) propagates the same way — only as fast as someone carries
-  it.
+```
+Actor.knownPrices: Map<SettlementId, MarketObservation>
 
-Arbitrage is **real labor**: finding the spread is part of the
-game, not a UI feature.
+MarketObservation {
+  quotes: Map<ResourceId, { bestAsk, bestBid }>
+  observedDay
+}
+```
+
+One observation per (actor, settlement) — captures the whole
+market state seen on a single day. Caravans operate against their
+**owner's** map: they observe markets on arrival and write a
+`MarketObservation` into the owner's map; the owner reads from the
+same map when deciding what to dispatch.
+
+See [06 — Caravans](06-caravans.md#caravan-information-model-locked-v16)
+for the full schema, merge rule, decay, and procgen seeding.
+
+### Merge rule: newer date always wins, whole-snapshot
+
+Two observations of the same settlement reconcile by `observedDay`:
+the newer one wins entirely, the older is discarded. There is no
+per-resource merge. If today's snapshot has no wine quote (the
+wine market didn't clear), the actor's wine knowledge is "unknown"
+even if a prior observation had one.
+
+### Update channels (all are physical syncs)
+
+1. **Resident-presence sync (daily).** Resident actors
+   (`patrician_family`, `free_village`, `hamlet_household`,
+   household actors, `governor_office`, `temple`, `city_corporation`,
+   `merchant_guild`) are physically at home every tick. Each
+   tick auto-refreshes `knownPrices[home]` from the home
+   settlement's current market state. Not magic — literal
+   physical presence.
+2. **Arrival sync.** Any mobile unit (caravan, news carrier,
+   patrol, migration column, player) arriving at a settlement on
+   day D writes a fresh `MarketObservation` for that settlement
+   into the unit's owner's map, stamped to D.
+3. **Meeting sync (piggyback).** Two friendly units sharing a hex
+   on the same day OR both at the same settlement on the same
+   day merge their owners' `knownPrices` (per-settlement, newer
+   wins). This is the transitive long-range channel.
+4. **Guild ledger sync.** Guilds are themselves resident actors
+   with their own `knownPrices`. A member visiting the guild
+   performs a meeting sync against the guild's map; the guild's
+   home-presence sync keeps its map fresh as long as members are
+   on-site.
+5. **Edge-hex observation.** A caravan touching an edge hex
+   records a `MarketObservation` with the global reference price
+   palette into its owner's map. Procgen seeds guild maps with a
+   day-0 global observation; non-members learn through guild
+   meeting syncs or by sending a caravan to the edge themselves.
+
+### No deception, no provenance tracking
+
+Shared observations are always authoritative — there is no
+deceptive-misinformation channel. Hostile actors refuse to share;
+they never feed false numbers. We don't track who-told-whom: only
+`observedDay` survives across transitive gossip.
+
+### Decay
+
+A `MarketObservation` older than **180 days** is treated as
+missing on read. 6-month-old prices are too stale to plan a
+multi-month venture against.
+
+### "No hidden hands" — made literal
+
+A patrician in City A learns City B's grain price only because
+**someone walked there and back**, or someone who walked there
+and back later met someone the patrician's caravan met. There is
+no broadcast price ticker, no all-knowing news feed, no UI
+affordance that shows prices in settlements no unit of the
+viewer's faction has touched. Arbitrage is **real labor**.
 
 ## Communicated price discovery via guilds (locked)
 
@@ -898,37 +960,67 @@ Guilds are also the network through which the player's reputation
 spreads among honest merchants (cross-ref
 [13 — Reputation](13-reputation-and-relationships.md)).
 
-## The off-map global market (locked)
+## The off-map global market (locked, v1.6)
 
 Beyond the playable map there is an abstract **global market**.
 
 It has:
 
-- Slowly drifting reference prices for all goods.
-- Effectively infinite buying and selling capacity (the rest of
-  the world is too big for one province to move it).
-- Reachable only via long, expensive caravans (see edge-hub
-  caravans in [06 — Caravans](06-caravans.md)).
+- Slowly drifting reference prices for all goods (see
+  `DEFAULT_GLOBAL_PRICES`). Per Pillar 8, **every catalog resource
+  has a global reference price** — there is no "non-tradeable
+  good." A missing entry is a bug.
+- **Infinite buying and selling capacity** at the global reference
+  price. A caravan arriving at an edge hex can dump arbitrary
+  cargo and fill its capacity from the global market without
+  slippage. The rest of the world is too big for one province to
+  move it.
+- Reachable only via long, expensive caravans dispatched by
+  patrician families and merchant guilds in our cities (see
+  [06 — Caravans](06-caravans.md#international-ventures-locked-v16)).
 
-In practice:
+### The edge hex is the global-market venue
 
-- **Imports**: external caravans periodically arrive at edge
-  hexes carrying goods bought at off-map global prices, looking
-  to sell at local prices. Their margin covers their costs. Cargo
-  and target selection are price-responsive: a tool shortage in one
-  city can make that city a better destination and tools a better
-  cargo than silk, and a severe iron shortage can pull in iron bars
-  despite their weight. Launch cadence is margin-responsive too, bounded
-  by daily and active-fleet caps so scarcity increases flow without
-  creating a perimeter burst. Cheap local tools or iron push the house
-  back toward exotics, salt, or other profitable cargo.
-- **Exports**: NPC long-haul merchant houses based in our cities
-  periodically assemble caravans of high-value low-weight goods
-  to ship out. Their margin (local price → global price) covers
-  their costs. Because these houses are stockpile owners in their
-  home markets, their transport capital demand for equines and carts
-  is funded by their own treasury and clears through the normal CDA
-  schedules rather than through a hidden spawn rule.
+An edge hex is treated as a market participant for the global
+market. A caravan that arrives at an edge hex with goods can:
+
+- **Sell to global**: every unit of cargo clears at the global
+  reference price. The global market pays from an infinite
+  treasury. The caravan's `operatingTreasury` is credited.
+- **Buy from global**: the caravan can spend its operating
+  treasury on any catalog resource at the global reference price,
+  loading return cargo up to its capacity.
+
+After transacting, the caravan enters the **20-tick off-map
+sojourn** (see [06 — Caravans](06-caravans.md#the-20-tick-off-map-sojourn-locked)).
+
+### No fixed dispatch cadence; no exogenous "import houses"
+
+The previous model — external caravans spawning from edge gates on
+a probability schedule with daily/fleet caps — is **deleted**.
+Imports and exports are the SAME mechanic now: ventures
+dispatched by our cities' patrician families and guilds, driven
+by their own information and treasury.
+
+What restrains volume is not a global throttle but **bounded
+information + real treasury + the 3× transport-cost dispatch
+threshold** (see [06](06-caravans.md#venture-dispatch-criterion-3-transport-cost)).
+A patrician dispatcher with limited cash and stale information
+about destination prices does not flood the network. As trade
+volume rises, the local home-market ask price for export goods
+rises and 3× margins shrink, throttling further dispatch
+organically.
+
+### Caravans transact via local markets, never stockpile
+
+Caravans are **market participants** in every settlement they
+visit. There is no path that pulls goods directly out of an
+owner's stockpile and stuffs them in a caravan; the caravan must
+**buy them on the home market** when assembling, just like any
+other buyer. Same for sales on arrival: the caravan posts an ask
+on the destination's market and clears with it. This rule applies
+to standing merchants, villager carts, replacement caravans,
+international ventures, and the player.
 
 ### Why imports and exports are dominated by luxuries (emergent)
 
