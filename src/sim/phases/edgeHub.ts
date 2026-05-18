@@ -204,20 +204,17 @@ export const edgeHubPhase = (
         localPrices: s.market.lastClearingPrice,
       });
     }
-    // Export sources: per docs/10 decision 41, ALL settlement tiers can
-    // export to the global market — cities, towns, villages, hamlets.
-    // For each settlement, iterate EVERY stockpile owner (not just the
-    // wealthiest patrician/city_corp) so the export pipeline sees the
-    // full surplus, not a fraction of it. Each owner with material stock
-    // at this settlement becomes its own export source; tickEdgeHubs
-    // picks the best margin among them.
+    // Export sources per docs/10 decision 39 + 41: only patrician
+    // families and merchant guilds dispatch international ventures.
+    // Other actor kinds (city_corp, governor, household actors) do not
+    // run long-haul trade — this is institutionally and historically
+    // accurate (Roman senatorial trade was clan-level; guild ventures
+    // were corporate). Each eligible owner with material stock at this
+    // settlement becomes its own export source.
     for (const oId of s.stockpileOwners) {
       const a = world.actors.get(oId);
       if (a === undefined) continue;
-      // Skip owners that cannot rationally dispatch a long-haul venture:
-      // off-map houses are the import counterparty (they already get
-      // their goods from us), and bandit camps don't run trade routes.
-      if (a.kind === 'off_map_house' || a.kind === 'bandit_camp') continue;
+      if (a.kind !== 'patrician_family' && a.kind !== 'merchant_guild') continue;
       const slice = a.stockpile.get(s.id);
       if (slice === undefined || slice.size === 0) continue;
       cityExportSources.push({
