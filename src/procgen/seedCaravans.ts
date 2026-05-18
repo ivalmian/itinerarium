@@ -35,7 +35,6 @@
 
 import { createRng, type Rng } from '../sim/rng.js';
 import {
-  actorId,
   caravanId,
   personId,
   resourceId,
@@ -51,7 +50,7 @@ import {
   generateLatinNomen,
 } from '../sim/politics/character.js';
 import { parseDemoKey } from '../sim/population/demographics.js';
-import { createActor, type Actor } from '../sim/politics/actor.js';
+import type { Actor } from '../sim/politics/actor.js';
 import { MAX_ACTIVE_WORLD_CARAVANS } from '../sim/caravan/limits.js';
 import {
   createCaravan,
@@ -81,11 +80,9 @@ export interface SeedCaravansOpts {
    * owners are scarce or the per-owner cap kicks in.
    */
   readonly totalCaravans?: number;
-  /** Default 0.7. */
+  /** Default 0.85. */
   readonly shareOwnedByFamilies?: number;
-  /** Default 0.2. Spawns synthetic off_map_house actors as needed. */
-  readonly shareOwnedByMerchantHouses?: number;
-  /** Default 0.1. */
+  /** Default 0.15. */
   readonly shareOwnedByGovernor?: number;
 }
 
@@ -95,18 +92,20 @@ const DEFAULT_WARM_START_PER_SETTLEMENT = 0.25;
 const DEFAULT_WARM_START_MIN = 4;
 const DEFAULT_WARM_START_MAX = 80;
 
-type OwnerKindShare = 'family' | 'merchant_house' | 'governor';
+type OwnerKindShare = 'family' | 'governor';
 
 const computeShares = (opts: SeedCaravansOpts): Map<OwnerKindShare, number> => {
-  const f = opts.shareOwnedByFamilies ?? 0.7;
-  const m = opts.shareOwnedByMerchantHouses ?? 0.2;
-  const g = opts.shareOwnedByGovernor ?? 0.1;
-  const total = f + m + g;
+  // docs/10 decision 45 (v1.9): the procgen "merchant_house" share is
+  // deleted. Off-map merchants have no permanent on-map presence; the
+  // warm-start fleet is owned exclusively by patrician families and the
+  // governor's office.
+  const f = opts.shareOwnedByFamilies ?? 0.85;
+  const g = opts.shareOwnedByGovernor ?? 0.15;
+  const total = f + g;
   // Renormalize so callers can pass weights instead of strict probabilities.
   const norm = total > 0 ? total : 1;
   return new Map<OwnerKindShare, number>([
     ['family', f / norm],
-    ['merchant_house', m / norm],
     ['governor', g / norm],
   ]);
 };
@@ -148,14 +147,6 @@ const findGovernor = (world: WorldState): Actor | undefined => {
     if (a.kind === 'governor_office') return a;
   }
   return undefined;
-};
-
-const cities = (world: WorldState): Settlement[] => {
-  const out: Settlement[] = [];
-  for (const s of world.settlements.values()) {
-    if (s.tier === 'small_city' || s.tier === 'large_city') out.push(s);
-  }
-  return out;
 };
 
 /** Sort settlements by hexKey of anchor for deterministic iteration. */
@@ -354,53 +345,6 @@ const pickGovernorOwner = (world: WorldState): OwnerSlot | undefined => {
   return { actor: gov, origin: home };
 };
 
-const ensureSettlementStockpileOwner = (settlement: Settlement, actor: ActorId): void => {
-  if (!settlement.stockpileOwners.includes(actor)) settlement.stockpileOwners.push(actor);
-};
-
-/**
- * Spawn (or re-use) a synthetic off_map_house actor. Each new house picks
- * a random city as its on-map base; this gives merchant houses an actual
- * place to operate from instead of being floating refs. City-based merchant
- * houses are also local stockpile owners so they can buy pack animals and
- * carts through the same market as every other actor.
- */
-const ensureMerchantHouseOwner = (
-  rng: Rng,
-  world: WorldState,
-  spawnedHouses: Actor[],
-): OwnerSlot | undefined => {
-  const cs = cities(world);
-  if (cs.length === 0) return undefined;
-  // 50% chance to reuse an existing spawned house under cap; otherwise spawn new.
-  const reusable = spawnedHouses.filter((h) => h.homeSettlement !== undefined);
-  if (reusable.length > 0 && rng.next() < 0.5) {
-    const i = rng.int(0, reusable.length - 1);
-    const house = reusable[i] as Actor;
-    if (house.homeSettlement === undefined) return undefined;
-    const home = settlementById(world, house.homeSettlement);
-    if (home === undefined) return undefined;
-    ensureSettlementStockpileOwner(home, house.id);
-    return { actor: house, origin: home };
-  }
-  const homeCity = cs[rng.int(0, cs.length - 1)] as Settlement;
-  const idx = world.actors.size + spawnedHouses.length;
-  const aId = actorId(`actor:house:${idx}`);
-  const houseName = `Merchant House ${idx}`;
-  const actor = createActor({
-    id: aId,
-    kind: 'off_map_house',
-    name: houseName,
-    homeSettlement: homeCity.id,
-    // 5× scaled per realism pass 8.
-    treasury: rng.int(5000, 25000),
-  });
-  world.actors.set(aId, actor);
-  ensureSettlementStockpileOwner(homeCity, actor.id);
-  spawnedHouses.push(actor);
-  return { actor, origin: homeCity };
-};
-
 const cloneHex = (h: Hex): Position => ({ q: h.q, r: h.r });
 
 const defaultWarmStartTarget = (settlementCount: number): number => {
@@ -448,8 +392,7 @@ export const seedCaravans = (opts: SeedCaravansOpts): void => {
   // callers with empty actor maps get a no-op rather than an error.
   const haveFamily = allFamilies(world).length > 0;
   const haveGov = findGovernor(world) !== undefined;
-  const haveCity = cities(world).length > 0; // needed for merchant houses
-  if (!haveFamily && !haveGov && !haveCity) return;
+  if (!haveFamily && !haveGov) return;
 
   const rng = createRng(opts.seed).derive('caravans');
   const explicitTarget = opts.totalCaravans !== undefined;
@@ -464,9 +407,6 @@ export const seedCaravans = (opts: SeedCaravansOpts): void => {
 
   const shares = computeShares(opts);
   const caravansByOwner = countExistingCaravansByOwner(world);
-  const spawnedHouses = Array.from(world.actors.values()).filter(
-    (a) => a.kind === 'off_map_house' && a.homeSettlement !== undefined,
-  );
   // Pre-seed the index counter from existing caravans so any deliberate
   // top-up uses fresh ids without turning a repeated warm-start into a
   // discontinuous second fleet.
@@ -481,9 +421,6 @@ export const seedCaravans = (opts: SeedCaravansOpts): void => {
         break;
       case 'governor':
         owner = pickGovernorOwner(world);
-        break;
-      case 'merchant_house':
-        owner = ensureMerchantHouseOwner(rng.derive(`house-${i}`), world, spawnedHouses);
         break;
     }
     if (owner === undefined) continue;

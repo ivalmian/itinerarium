@@ -50,7 +50,7 @@ import {
   type Caravan,
   type PriceObservation,
 } from '../caravan/caravan.js';
-import { expectedRiskOnApproximatePath, planCaravanRoute } from '../caravan/ai.js';
+import { expectedRiskOnApproximatePath, planCaravanRoute, travelCost } from '../caravan/ai.js';
 import { isGoalComplete, peekGoal, popGoal, type Goal } from '../caravan/goal.js';
 import { MAX_ACTIVE_WORLD_CARAVANS } from '../caravan/limits.js';
 import { wholeUnitsForTransaction } from '../market/wholeUnits.js';
@@ -731,11 +731,22 @@ const completeOffMapExportIfArrived = (
   return true;
 };
 
+/**
+ * Per docs/06 §"Edge-hub inbound visits" + docs/10 decision 45 (v1.9):
+ * an inbound off-map caravan has arrived back at its edge gate. Sell
+ * any remaining cargo to the global market at the global reference
+ * price (the caravan was either unable to clear it at the destination
+ * city or deliberately picked it up as profitable return cargo), then
+ * delete the caravan. **The caravan's entire treasury is destroyed
+ * along with it** — coin returning off-map physically leaves our
+ * economy. No remittance.
+ */
 const completeOffMapImportReturnIfArrived = (
   world: WorldState,
   caravanId: CaravanId,
   caravan: Caravan,
   edgeHexKeys: ReadonlySet<string>,
+  events: TickEvent[],
 ): boolean => {
   if (!isEdgeHubImportCaravan(caravan)) return false;
   if (caravan.destination === null) return false;
@@ -743,6 +754,31 @@ const completeOffMapImportReturnIfArrived = (
   if (homeGate === null) return false;
   if (!hexEquals(caravan.position, homeGate) || !hexEquals(caravan.destination, homeGate)) {
     return false;
+  }
+  // Sell remaining cargo at global reference prices before the caravan
+  // and its treasury both disappear. Each unit converts to coin, then
+  // coin disappears with the caravan delete below.
+  for (const [resource, rawQty] of Array.from(caravan.cargo.entries())) {
+    const price = DEFAULT_GLOBAL_PRICES.get(resource);
+    if (price === undefined || price <= 0 || rawQty <= 0) {
+      caravan.cargo.delete(resource);
+      continue;
+    }
+    const qty = wholeUnitsForTransaction(resource, rawQty);
+    if (qty <= 0) {
+      caravan.cargo.delete(resource);
+      continue;
+    }
+    const coin = qty * price;
+    addCoin(caravan, coin);
+    caravan.cargo.delete(resource);
+    events.push({
+      type: 'caravan_exported_off_map',
+      caravan: caravan.id,
+      resource,
+      quantity: qty,
+      coin,
+    });
   }
   world.caravans.delete(caravanId);
   return true;
@@ -772,47 +808,96 @@ const completeTaxShipmentIfArrived = (
   return true;
 };
 
-const importConsignmentFactor = (
-  world: WorldState,
-  settlements: readonly Settlement[],
+/**
+ * Per docs/06 §"Edge-hub inbound visits" + docs/10 decision 45 (v1.9):
+ * after an inbound off-map caravan finishes selling its import cargo at
+ * a destination city, it evaluates whether any locally-available resource
+ * has a positive arbitrage spread vs the off-map global reference price,
+ * net of the return leg's transport cost. If so, it buys the highest-
+ * margin-per-kg items at the local ask up to its remaining capacity and
+ * treasury. The cargo will then be sold off-map when the caravan reaches
+ * the edge gate.
+ *
+ * The local ask is taken from `representativeObservedPrice` — what a
+ * domestic seller would charge today. Transport cost back to the edge
+ * is the per-kg variable component of `travelCost(distance)`.
+ *
+ * Returns the total kg loaded. Caravan treasury is debited; the
+ * domestic seller's coin side is not affected by this function — we
+ * model the foreign-merchant purchase as paying the prevailing market
+ * ask (the existing market schedule absorbs the inverse side on the
+ * next clearing through normal supply/demand mechanics).
+ */
+const buyReturnCargoForOffMapExport = (
   caravan: Caravan,
-): { readonly settlement: Settlement; readonly actor: Actor } | null => {
-  let fallback: { settlement: Settlement; actor: Actor } | null = null;
-  for (const settlement of settlements) {
-    for (const ownerId of settlement.stockpileOwners) {
-      if (ownerId === caravan.ownerActor) continue;
-      const actor = world.actors.get(ownerId);
-      if (actor === undefined) continue;
-      const candidate = { settlement, actor };
-      if (actor.kind === 'city_corporation') return candidate;
-      if (fallback === null || actor.kind === 'patrician_family') fallback = candidate;
-    }
+  settlements: readonly Settlement[],
+  homeGate: Hex,
+): number => {
+  // Pick the on-map settlement at the caravan's current position to
+  // canvass for local asks. Use the first hosted settlement (the same
+  // policy local-sell uses).
+  const here = settlements[0];
+  if (here === undefined) return 0;
+
+  // Distance to the edge gate determines the return-leg transport cost.
+  const returnDistance = hexDistance(caravan.position, homeGate);
+  const transportCostPerKg = returnDistance > 0 ? travelCost(caravan, returnDistance) : 0;
+
+  const remainingKgInit = Math.max(0, totalCarryKg(caravan) - totalCargoWeightKg(caravan));
+  if (remainingKgInit < 1) return 0;
+
+  interface Candidate {
+    readonly resource: ResourceId;
+    readonly localAsk: number;
+    readonly globalAsk: number;
+    readonly weightKg: number;
+    readonly marginPerKg: number;
   }
-  return fallback;
+  const candidates: Candidate[] = [];
+  for (const resource of here.market.lastClearingPrice.keys()) {
+    const globalAsk = DEFAULT_GLOBAL_PRICES.get(resource);
+    if (globalAsk === undefined || globalAsk <= 0) continue;
+    const localAsk = representativeObservedPrice(here, resource);
+    if (!Number.isFinite(localAsk) || localAsk <= 0) continue;
+    const weightKg = weightKgPerUnitForResource(resource);
+    if (weightKg <= 0) continue;
+    // Per-kg arbitrage net of return transport: a unit costs localAsk
+    // to acquire, weighs weightKg, will sell for globalAsk off-map.
+    // Spread per kg = (globalAsk - localAsk) / weightKg.
+    const transportPerUnit = transportCostPerKg * weightKg;
+    const netSpreadPerUnit = globalAsk - localAsk - transportPerUnit;
+    if (netSpreadPerUnit <= 0) continue;
+    const marginPerKg = netSpreadPerUnit / weightKg;
+    candidates.push({ resource, localAsk, globalAsk, weightKg, marginPerKg });
+  }
+  if (candidates.length === 0) return 0;
+  candidates.sort((a, b) => b.marginPerKg - a.marginPerKg);
+
+  let remainingKg = remainingKgInit;
+  let remainingCoin = caravan.treasury;
+  let loadedKg = 0;
+  for (const c of candidates) {
+    if (remainingKg < c.weightKg || remainingCoin < c.localAsk) continue;
+    const maxByCapacity = Math.floor(remainingKg / c.weightKg);
+    const maxByCoin = Math.floor(remainingCoin / Math.max(1, c.localAsk));
+    const qty = Math.min(maxByCapacity, maxByCoin);
+    if (qty <= 0) continue;
+    increaseCaravanCargo(caravan, c.resource, qty as Quantity);
+    const spent = qty * c.localAsk;
+    subtractCoin(caravan, spent);
+    remainingKg -= qty * c.weightKg;
+    remainingCoin -= spent;
+    loadedKg += qty * c.weightKg;
+    // Selling the local supply to a departing foreign merchant is an
+    // export from this settlement's POV.
+    recordExport(here, c.resource, qty);
+  }
+  return loadedKg;
 };
 
-const consignOffMapImportCargo = (
-  world: WorldState,
-  caravan: Caravan,
-  settlements: readonly Settlement[],
-): number => {
-  const factor = importConsignmentFactor(world, settlements, caravan);
-  if (factor === null) return 0;
-
-  let consigned = 0;
-  for (const [resource, currentQty] of Array.from(caravan.cargo.entries())) {
-    const qty = caravanSellableQuantity(caravan, resource, currentQty);
-    // Whole-unit transaction (docs/08): sub-1-unit cargo isn't consignable.
-    if (qty < 1) continue;
-    const remaining = currentQty - qty;
-    if (remaining >= 1) caravan.cargo.set(resource, remaining);
-    else caravan.cargo.delete(resource);
-    increaseStockpile(factor.actor, factor.settlement.id, resource, qty);
-    // Off-map factor consignment lands at this settlement: import.
-    recordImport(factor.settlement, resource, qty);
-    consigned += qty;
-  }
-  return consigned;
+const weightKgPerUnitForResource = (resource: ResourceId): number => {
+  const w = getResource(resource).weightKgPerUnit;
+  return w > 0 ? w : 1;
 };
 
 // --- Merchant caravan assembly --------------------------------------------
@@ -891,11 +976,10 @@ const eligibleMerchantCaravanOwners = (
 ): { readonly actor: Actor; readonly settlement: Settlement }[] => {
   const out: { actor: Actor; settlement: Settlement }[] = [];
   for (const actor of world.actors.values()) {
-    if (
-      actor.kind !== 'patrician_family' &&
-      actor.kind !== 'caravan_owner' &&
-      actor.kind !== 'off_map_house'
-    ) {
+    // docs/10 decision 45 (v1.9): off_map_house is NEVER a standing-merchant
+    // owner. The kind exists only as the edge-gate synthetic endpoint. Any
+    // on-map standing caravan must be owned by a domestic actor.
+    if (actor.kind !== 'patrician_family' && actor.kind !== 'caravan_owner') {
       continue;
     }
     if ((activeByOwner.get(actor.id) ?? 0) >= MERCHANT_CARAVAN_OWNER_CAP) continue;
@@ -1497,7 +1581,7 @@ const fallbackScoutCandidate = (
 };
 
 const routeOffMapImportHomeIfDelivered = (
-  world: WorldState,
+  _world: WorldState,
   caravan: Caravan,
   settlements: readonly Settlement[],
   edgeHexKeys: ReadonlySet<string>,
@@ -1506,16 +1590,14 @@ const routeOffMapImportHomeIfDelivered = (
   const homeGate = edgeHubHomeGateForCaravan(caravan, edgeHexKeys);
   if (homeGate === null) return false;
 
-  // If local buyers could not absorb the cargo with immediate cash, consign
-  // the remainder to a local factor. The goods are still physically present
-  // in a city stockpile, but the off-map convoy does not become permanent
-  // provincial rolling storage.
-  consignOffMapImportCargo(world, caravan, settlements);
-
-  if (caravanHasMarketCargo(caravan)) {
-    caravan.destination = { q: caravan.position.q, r: caravan.position.r };
-    return true;
-  }
+  // Per docs/06 §"Edge-hub inbound visits" + docs/10 decision 45 (v1.9):
+  // before heading back to the edge, evaluate whether to load profitable
+  // return cargo. The arbitrage uses local ask vs the off-map reference
+  // price net of return transport cost. The pre-v1.9 free-consignment
+  // path was a coin-neutral resource leak (factor received free
+  // inventory); this version makes the foreign merchant *pay* for what
+  // they take out.
+  buyReturnCargoForOffMapExport(caravan, settlements, homeGate);
 
   caravan.destination = { q: homeGate.q, r: homeGate.r };
   caravan.goalStack = [{ type: 'return_home', home: { q: homeGate.q, r: homeGate.r } }];
@@ -1678,7 +1760,7 @@ export const caravanReplanPhase = (
   for (const s of world.settlements.values()) settlementAnchorByCity.set(s.id, s.anchor);
 
   for (const [cId, c] of Array.from(world.caravans.entries())) {
-    if (completeOffMapImportReturnIfArrived(world, cId, c, edgeHexKeys)) continue;
+    if (completeOffMapImportReturnIfArrived(world, cId, c, edgeHexKeys, events)) continue;
     if (completeOffMapExportIfArrived(world, cId, c, edgeHexKeys, today, events)) continue;
 
     // Per docs/15 §C18: if this caravan has a goalStack, advance it

@@ -110,7 +110,6 @@ describe('seedCaravans — basic seeding', () => {
       world: w,
       totalCaravans: 500,
       shareOwnedByFamilies: 1,
-      shareOwnedByMerchantHouses: 0,
       shareOwnedByGovernor: 0,
     });
 
@@ -243,7 +242,6 @@ describe('seedCaravans — owner mix', () => {
       world: w,
       totalCaravans: 10,
       shareOwnedByFamilies: 0,
-      shareOwnedByMerchantHouses: 0,
       shareOwnedByGovernor: 1,
     });
     for (const c of w.caravans.values()) {
@@ -252,50 +250,17 @@ describe('seedCaravans — owner mix', () => {
     }
   });
 
-  it('spawns synthetic merchant_house actors when the share is non-zero', () => {
-    const w = buildWorld('houses');
+  it('never seeds an off_map_house as a standing-caravan owner (docs/10 §45)', () => {
+    const w = buildWorld('no-off-map-houses');
     seedCaravans({
-      seed: 'houses-cs',
-      world: w,
-      totalCaravans: 10,
-      shareOwnedByFamilies: 0,
-      shareOwnedByMerchantHouses: 1,
-      shareOwnedByGovernor: 0,
-    });
-    expect(w.caravans.size).toBeGreaterThan(0);
-    let houses = 0;
-    for (const c of w.caravans.values()) {
-      const owner = w.actors.get(c.ownerActor);
-      if (owner?.kind === 'off_map_house') houses++;
-    }
-    expect(houses).toBeGreaterThan(0);
-  });
-
-  it('registers city-based merchant houses as stockpile owners at their home market', () => {
-    const w = buildWorld('house-stockpile-owner');
-    seedCaravans({
-      seed: 'house-stockpile-owner-cs',
+      seed: 'no-off-map-houses-cs',
       world: w,
       totalCaravans: 12,
-      shareOwnedByFamilies: 0,
-      shareOwnedByMerchantHouses: 1,
-      shareOwnedByGovernor: 0,
     });
-
-    const merchantHouseIds = new Set(
-      Array.from(w.caravans.values())
-        .map((c) => c.ownerActor)
-        .filter((ownerId) => w.actors.get(ownerId)?.kind === 'off_map_house'),
-    );
-
-    expect(merchantHouseIds.size).toBeGreaterThan(0);
-    for (const ownerId of merchantHouseIds) {
-      const owner = w.actors.get(ownerId);
-      expect(owner?.homeSettlement).toBeDefined();
-      const home =
-        owner?.homeSettlement === undefined ? undefined : w.settlements.get(owner.homeSettlement);
-      expect(home).toBeDefined();
-      expect(home?.stockpileOwners).toContain(ownerId);
+    expect(w.caravans.size).toBeGreaterThan(0);
+    for (const c of w.caravans.values()) {
+      const owner = w.actors.get(c.ownerActor);
+      expect(owner?.kind).not.toBe('off_map_house');
     }
   });
 });
@@ -321,7 +286,6 @@ describe('seedCaravans — per-owner cap', () => {
       world: w,
       totalCaravans: 3,
       shareOwnedByFamilies: 0,
-      shareOwnedByMerchantHouses: 0,
       shareOwnedByGovernor: 1,
     });
     const firstSize = w.caravans.size;
@@ -333,7 +297,6 @@ describe('seedCaravans — per-owner cap', () => {
       world: w,
       totalCaravans: 10,
       shareOwnedByFamilies: 0,
-      shareOwnedByMerchantHouses: 0,
       shareOwnedByGovernor: 1,
     });
 

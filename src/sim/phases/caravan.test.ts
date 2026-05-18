@@ -276,7 +276,10 @@ import {
       expect(settlement.market.recentConsumption.get(wine) ?? 0).toBeCloseTo(sale!.quantity, 6);
     });
 
-    it('consigns unsold off-map imports and routes them back to their edge gate', () => {
+    it('carries unsold off-map imports back to the edge and sells them off-map (docs/10 §45)', () => {
+      // Per docs/06 §"Edge-hub inbound visits" (v1.9): when a domestic
+      // buyer can't absorb the import cargo for cash, the goods STAY in
+      // the inbound caravan and ship back off-map. No free consignment.
       const w = buildOneSettlementWorld({ populationByClass: { plebeian: 100 } });
       const settlement = w.settlements.get(settlementId('settle-1'))!;
       const buyer = w.actors.get(actorId('city-corp-1'))!;
@@ -311,13 +314,16 @@ import {
 
       tick({ world: w, rng: createRng('import-return-route') });
 
-      expect(c.cargo.get(spices) ?? 0).toBe(0);
-      expect(getStock(buyer, spices)).toBeCloseTo(20, 6);
-      expect(c.treasury).toBe(0);
+      // Imports were NOT consigned: buyer stockpile remains 0; cargo
+      // remains in the caravan (will be sold off-map at the gate).
+      expect(getStock(buyer, spices)).toBe(0);
+      expect(c.cargo.get(spices) ?? 0).toBe(20);
       expect(c.destination).toEqual(edge);
 
       tick({ world: w, rng: createRng('import-return-exit') });
 
+      // After traveling to the gate, the caravan is deleted along with
+      // any residual treasury. Coin and goods exit our economy together.
       expect(w.caravans.has(cId)).toBe(false);
     });
 

@@ -472,6 +472,69 @@ business of established patrician houses and guilds with the
 capital, network, and patience for multi-month round-trips. The
 player operates inside the map.
 
+### Edge-hub inbound visits (locked, v1.9)
+
+In addition to domestic outbound ventures (above), the **off-map
+global market dispatches its own merchants who visit our province**.
+These are the "edge-hub inbound" caravans. They model the
+realistic counterpart: Syrian, Egyptian, and Gallic merchants who
+brought their wares to Italian markets, sold them, looked for
+something worth carrying home, and left.
+
+**No off-map merchant has a permanent on-map presence.** There is
+no `off_map_house` actor with an on-map `homeSettlement`. The only
+on-map actors that own caravans are domestic (`patrician_family`,
+`caravan_owner`, `governor_office`, `free_village`,
+`hamlet_household`). The per-edge-gate synthetic actor (kind
+`off_map_house`, no home settlement) exists solely as the
+accounting endpoint for inbound visits — it owns the inbound
+caravan while it is on-map and is the sink for value that returns
+off-map.
+
+**Lifecycle of an inbound off-map caravan:**
+
+1. **Spawned at an edge gate** by the edge-hub phase with an
+   import cargo loaded at off-map reference prices. The owner is
+   the synthetic `off_map_house` for that gate hex.
+2. **Walks to an on-map destination city** (chosen for high demand
+   on its cargo).
+3. **Sells imported cargo at the local market.** Local buyers pay
+   coin to the caravan's operating treasury.
+4. **Evaluates profitable return cargo** before turning around.
+   For each resource available at the local market, the caravan
+   compares `(global_reference_price − local_ask − transport_cost
+   per kg back to the edge)`. If positive on any resource, the
+   caravan buys it up to its capacity and treasury, prioritizing
+   highest margin per kg.
+5. **Walks back to the same edge gate.** May be ambushed on the
+   on-map leg.
+6. **At the edge gate (return):** sells any carried cargo to the
+   global market at the global reference price. **The caravan is
+   then deleted along with its entire operating treasury.** Coin
+   that returns off-map is physically destroyed from our economy —
+   it represents real wealth leaving the province with the
+   merchant. There is no remittance, no home-actor settlement,
+   no provincial savings account.
+
+The cash-deletion step is the load-bearing realism mechanic: it
+closes the foreign-trade loop. Imports physically arrive; goods
+physically leave; coin paid to foreign merchants physically leaves
+with them. Provincial treasuries equilibrate against the trade
+deficit/surplus naturally — coin only "stays" if exports out-earn
+imports, and vice versa.
+
+**Consequence**: there is no `consign` path for unsold imports.
+If the inbound caravan can't sell some of its imports in the
+destination city for coin, those goods stay in its cargo and ship
+back off-map at the end of the visit. The destination does not
+receive free inventory.
+
+**Owner kinds that may host standing merchant caravans**:
+`patrician_family`, `caravan_owner` (procgen-seeded warm-start
+houses with on-map home cities), `governor_office` (for tax + 
+imperial shipping). `off_map_house` is **never** a standing-
+merchant owner — only an edge-gate synthetic endpoint.
+
 ## Caravan information model (locked, v1.6)
 
 Caravan dispatch + market participation depends on **what each actor
