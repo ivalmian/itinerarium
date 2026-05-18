@@ -1122,7 +1122,7 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
   for (const site of opts.settlementSites) {
     const settlement = siteToSettlement.get(site);
     if (settlement === undefined) continue;
-    seedStarterBuildings(ctx, settlement);
+    seedStarterBuildings(ctx, settlement, site.kind);
   }
 
   // Phase 9b: assign each settlement's working-age adults to job roles
@@ -1854,7 +1854,11 @@ const claimNearbyMiningDeposits = (
  * Ties are broken by deterministic (q, r) order so seeded worlds stay
  * reproducible.
  */
-const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void => {
+const seedStarterBuildings = (
+  ctx: BuildContext,
+  settlement: Settlement,
+  siteKind: SettlementSite['kind'],
+): void => {
   const owner = pickBuildingOwner(ctx, settlement);
   if (owner === undefined) return;
   const tier = settlement.tier;
@@ -1988,13 +1992,15 @@ const seedStarterBuildings = (ctx: BuildContext, settlement: Settlement): void =
     placeBest('barracks', urbanCandidates, 1);
   }
 
-  // Mint: politically restricted (governor or large city). Per docs/08
-  // §"Mint output flows to treasury" the only way coin enters the
-  // province endogenously is through a running mint; without one,
-  // imports drain silver and the money supply contracts. Seed at
-  // large_city only — smaller cities depend on imported coin until the
-  // dynamic-investment loop (docs/15 §C4) builds out further.
-  if (settlement.tier === 'large_city') {
+  // Mint: per docs/10 decision 46 (v1.9), ONLY the capital hosts a mint.
+  // Other cities buy silver-denominated coin from the capital's mint
+  // through normal market trade (silver flows from mining sites to the
+  // capital because the capital is the only buyer with derived-input
+  // demand for silver). Without a mint, no coin enters the province
+  // endogenously and the money supply only declines (via off-map
+  // exits). Per docs/08 §"Mint output flows to treasury" the mint's
+  // output credits the owner's treasury directly.
+  if (siteKind === 'capital') {
     placeBest('mint', urbanCandidates, 1);
   }
 };
