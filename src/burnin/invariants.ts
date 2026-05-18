@@ -532,11 +532,6 @@ export interface DailySummary {
 /**
  * Lightweight structured snapshot for periodic logging by the burn-in CLI.
  *
- * `banditCamps` is currently 0 because WorldState (T26) does not yet
- * track a top-level bandit camps map; once the camp registry lands this
- * invariant module will be extended (no schema changes required at the
- * call site).
- *
  * `recentDeaths` is 0 unless the caller passes recentEvents from the
  * tick loop and a future revision of this function consumes them.
  */
@@ -545,6 +540,6 @@ export const summarizeForDay = (world: WorldState, day: Day): DailySummary => ({
   totalPop: totalPopulation(world),
   totalSettlements: world.settlements.size,
   activeCaravans: world.caravans.size,
-  banditCamps: 0,
+  banditCamps: world.banditCamps?.size ?? 0,
   recentDeaths: 0,
 });
