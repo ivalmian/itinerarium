@@ -1478,8 +1478,13 @@ const seedInitialBanditCamps = (
     addFaction(ctx, faction);
     addCharacter(ctx, leader);
 
-    const banditCount = rng.int(8, 18);
-    const hangersOnCount = rng.int(2, 6);
+    // v1.9 step 5: bumped from rng.int(8, 18) so seeded camps survive
+    // first patrol contact. A 24-strong governor garrison with kit
+    // 0.85/0.65 obliterated 8-bandit camps in days; 20-40 bandits
+    // gives them a fighting chance to grow toward the recruitment
+    // cap before being wiped.
+    const banditCount = rng.int(20, 40);
+    const hangersOnCount = rng.int(5, 12);
     // Demographics: bandits are recruited locally per docs/12 §"Banditry as
     // a fate" → draw from the city's working-age pool the camp shadows.
     // Hangers-on (children, captives, dependents) come from the same pool
