@@ -74,6 +74,40 @@ Enable: `--instruments=events`. Cost: one line per emitted event;
 a 10y burn-in produces millions of lines. Use grep / jq to filter
 by `type` for diagnosis.
 
+### Burn-in analysis report (`scripts/analyze-burnin.py`)
+
+Once a burn-in finishes, the analyzer turns its output directory
+into a markdown report covering: run overview, population by tier
+× year, stockpile days-of-supply by tier × resource × year,
+median clearing prices × year, caravan fleet composition × year,
+treasury concentration by actor kind × year, and (if
+`--instruments=recipe-economics` was passed) wage / owner-take /
+top + worst recipes.
+
+CLI:
+
+```bash
+python3 scripts/analyze-burnin.py \
+  --dir burnin/v1-9-resolved-10y \
+  --out docs/v1-9-burnin-report.md \
+  [--title "v1.9 10y burn-in"] \
+  [--max-years 9]
+```
+
+Inputs the analyzer reads from `--dir`:
+
+- `report.json` — always written by the burn-in CLI.
+- `snap-day-NNNNNN.json` — written when `--snapshots=year` was
+  passed. The analyzer auto-discovers every yearly boundary and
+  skips missing ones.
+- `recipe-economics.csv` — written when
+  `--instruments=recipe-economics` was passed. Optional; if
+  missing, recipe-economics sections are replaced by a one-line
+  notice and the rest of the report still generates.
+
+Output is a single markdown file. The analyzer is purely a
+post-processor — it does not modify the burn-in directory.
+
 ### Per-named-character reputation slate (planned)
 
 Helpful when the political layer behaves oddly. Dump every named
@@ -82,8 +116,8 @@ character's reputation toward every other actor at the end of a run
 the player) or implausible positives (the player is "everyone's
 friend" without effort). Today `scripts/debug-activity.ts` only
 reports the total number of reputation entries; the full
-character-by-character dump is the obvious next step (rolled into
-docs/15 §C15 alongside the per-settlement-resource CSV).
+character-by-character dump is the obvious next step alongside the
+per-settlement-resource CSV.
 
 ## Failure patterns and what they look like
 
@@ -200,7 +234,8 @@ remaining buyer.
 
 **Fix**: current behavior caps prices at a sane multiple of the base
 price (configurable). Modeling the cascading consequences (riots →
-edicts → mob looting) per docs/08 is tracked in docs/15 §C16.
+edicts → mob looting) belongs with the money and trade model in
+[08 — Money & Trade](08-money-and-trade.md).
 
 ## How to add a new instrument
 

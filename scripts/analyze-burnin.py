@@ -1,29 +1,81 @@
 #!/usr/bin/env python3
-"""Generate the v1.6 10-year burn-in analysis report.
+"""Generate a markdown analysis report from a burn-in output directory.
 
-Reads:
-  - burnin-final-10y/snap-day-{0365,0730,...,3285}.json
-  - burnin-final-10y/recipe-economics.csv  (stream-aggregated)
-  - burnin-final-10y/report.json           (per-day pop / caravans / famine)
+Per CLAUDE.md §"Burn-in output goes under ./burnin/", every burn-in
+run lives under `./burnin/<name>/`. This script takes that directory
+and produces a multi-section markdown report covering:
 
-Writes:
-  - docs/v1-6-burnin-report.md
+  1. Run overview (pop / famine / caravan / invariant counts).
+  2. Population by tier × year.
+  3. Stockpile days-of-supply per tier × resource × year.
+  4. Median clearing prices × year.
+  5. Caravan fleet composition × year.
+  6. Treasury concentration by actor kind × year.
+  7. Wage payments by hiring-owner-kind × year.
+  8. Owner take by class × year.
+  9. Top recipes by total output value.
+  10. Worst recipes (loss-makers).
+
+Inputs read from the burn-in directory:
+  - snap-day-NNNNNN.json (one per --snapshots boundary; the script
+    picks up all yearly boundaries it finds and skips missing ones)
+  - recipe-economics.csv (stream-aggregated; written when
+    --instruments=recipe-economics was passed to the burn-in)
+  - report.json (always written by the burn-in)
+
+CLI:
+  python3 scripts/analyze-burnin.py \\
+    --dir burnin/v1-9-resolved-10y \\
+    --out docs/v1-9-burnin-report.md \\
+    [--title "v1.9 10y burn-in"] \\
+    [--max-years 9]
+
+Both --dir and --out are required. If recipe-economics.csv is
+missing the script still generates sections 1-6 + a warning note
+in place of 7-10.
 """
 from __future__ import annotations
-import json, csv, statistics, os, sys
+import argparse, json, csv, statistics, os, re, sys
 from collections import defaultdict, Counter
-
-OUT = 'docs/v1-8-burnin-report.md'
-BURNIN_DIR = 'burnin-final-10y-v18'
-
-YEARS = [(i + 1, (i + 1) * 365) for i in range(9)]  # (year_label, day)
 
 # --- Snapshot loaders ------------------------------------------------------
 
-def load_snapshot(day: int) -> dict:
-    path = f'{BURNIN_DIR}/snap-day-{day:06d}.json'
+def load_snapshot(burnin_dir: str, day: int) -> dict:
+    path = os.path.join(burnin_dir, f'snap-day-{day:06d}.json')
     with open(path) as f:
         return json.load(f)
+
+
+def discover_yearly_snapshot_days(burnin_dir: str, max_years: int | None) -> list[tuple[int, int]]:
+    """Return [(year_label, day)] for every snap-day-N file at a 365-day
+    boundary that exists in the burn-in directory.
+
+    The burn-in CLI's `--snapshots=year` mode writes one snapshot per
+    year. We tolerate runs that wrote at different intervals by
+    accepting any file whose day is an exact multiple of 365 and that
+    exists on disk.
+    """
+    pattern = re.compile(r'^snap-day-(\d{6})\.json$')
+    available_days: list[int] = []
+    if not os.path.isdir(burnin_dir):
+        return []
+    for entry in sorted(os.listdir(burnin_dir)):
+        m = pattern.match(entry)
+        if m is None:
+            continue
+        day = int(m.group(1))
+        if day == 0:
+            continue  # day 0 = pre-tick state, not interesting
+        if day % 365 != 0:
+            continue  # only yearly boundaries
+        available_days.append(day)
+    out: list[tuple[int, int]] = []
+    for day in available_days:
+        year_label = day // 365
+        if max_years is not None and year_label > max_years:
+            continue
+        out.append((year_label, day))
+    return out
 
 # Per-capita daily consumption matching scheduleBuilder.ts COMFORT_WANT_QTY.
 KG_PER_MODIUS = 6.7
@@ -146,7 +198,7 @@ OWNER_KIND_CLASS = {
     'merchant_guild': 'guild',
 }
 
-def stream_recipe_economics():
+def stream_recipe_economics(burnin_dir: str):
     """Aggregate recipe-economics CSV by (year_bucket, owner_kind, recipe).
 
     Returns:
@@ -154,8 +206,14 @@ def stream_recipe_economics():
       yearly_owner_take: {year: {owner_kind: total_owner_take}}
       top_recipes: {recipe: (runs, output_value_sum)}
       worst_recipes: {recipe: (runs, owner_loss_sum)}
+
+    If recipe-economics.csv doesn't exist (the burn-in wasn't run
+    with --instruments=recipe-economics), returns three empty dicts
+    and the caller emits a warning in the report.
     """
-    path = f'{BURNIN_DIR}/recipe-economics.csv'
+    path = os.path.join(burnin_dir, 'recipe-economics.csv')
+    if not os.path.isfile(path):
+        return defaultdict(lambda: defaultdict(float)), defaultdict(lambda: defaultdict(float)), defaultdict(lambda: [0, 0.0, 0.0])
     yearly_wages = defaultdict(lambda: defaultdict(float))
     yearly_owner_take = defaultdict(lambda: defaultdict(float))
     recipe_agg = defaultdict(lambda: [0, 0.0, 0.0])  # runs, output_value, owner_take
@@ -194,12 +252,14 @@ def fmt_kc(n):
 # --- Report body ---------------------------------------------------------
 
 def write_section_overview(out, report):
-    """Pop / famine / caravans over the 10y run."""
+    """Pop / famine / caravans over the run."""
     out.append('## 1. Run overview\n')
     s = report['summary']
     v = {sev: sum(1 for x in report.get('violations', []) if x.get('severity') == sev) for sev in ('fatal', 'error', 'warning')}
     out.append(f'- **Seed**: {report["opts"].get("seed", "?")}')
-    out.append(f'- **Years**: 10 (3650 days)')
+    final_day = report.get('finalDay', 0)
+    years = final_day / 365
+    out.append(f'- **Years**: {years:.1f} ({final_day} days)')
     out.append(f'- **Population**: {s["populationAtStart"]:,} → {s["populationAtEnd"]:,} (Δ {(s["populationAtEnd"]/s["populationAtStart"]-1)*100:+.1f} %)')
     out.append(f'- **Settlements**: {s["totalSettlementsAtStart"]:,} → {s["totalSettlementsAtEnd"]:,}')
     out.append(f'- **Total famine deaths**: {s["famineDeaths"]:,}')
@@ -348,44 +408,113 @@ def write_section_economics(out, yearly_wages, yearly_owner_take, recipe_agg):
 
 # --- Main ---
 
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description='Generate a markdown burn-in analysis report.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            'Example:\n'
+            '  python3 scripts/analyze-burnin.py \\\n'
+            '    --dir burnin/v1-9-resolved-10y \\\n'
+            '    --out docs/v1-9-burnin-report.md \\\n'
+            '    --title "v1.9 10y burn-in (resolved)"\n'
+        ),
+    )
+    p.add_argument(
+        '--dir',
+        required=True,
+        help='Burn-in output directory (containing report.json, snap-day-*.json, optionally recipe-economics.csv).',
+    )
+    p.add_argument(
+        '--out',
+        required=True,
+        help='Markdown file to write. Parent directory is created if missing.',
+    )
+    p.add_argument(
+        '--title',
+        default=None,
+        help='Report H1 title. Defaults to "Burn-in analysis — <basename of --dir>".',
+    )
+    p.add_argument(
+        '--max-years',
+        type=int,
+        default=None,
+        help='Cap on number of yearly snapshots to render (default: render every yearly snapshot found).',
+    )
+    return p.parse_args()
+
+
 def main():
+    args = parse_args()
+    burnin_dir = args.dir
+    out_path = args.out
+    title = args.title or f'Burn-in analysis — {os.path.basename(os.path.normpath(burnin_dir))}'
+
+    if not os.path.isdir(burnin_dir):
+        print(f'error: --dir {burnin_dir} is not a directory', file=sys.stderr)
+        sys.exit(2)
+
+    report_path = os.path.join(burnin_dir, 'report.json')
+    if not os.path.isfile(report_path):
+        print(f'error: missing {report_path}', file=sys.stderr)
+        sys.exit(2)
+
+    print(f'Analyzing {burnin_dir}', file=sys.stderr)
     print('Loading snapshots...', file=sys.stderr)
+    years = discover_yearly_snapshot_days(burnin_dir, args.max_years)
+    if not years:
+        print(f'  no yearly snapshots found under {burnin_dir} (was the burn-in run with --snapshots=year ?)', file=sys.stderr)
     snaps = []
-    for label, day in YEARS:
+    for label, day in years:
         try:
-            s = load_snapshot(day)
+            s = load_snapshot(burnin_dir, day)
             snaps.append((label, s))
             print(f'  Y{label} day {day}', file=sys.stderr)
         except FileNotFoundError:
             print(f'  Y{label} day {day} MISSING — skipping', file=sys.stderr)
 
     print('Reading report.json...', file=sys.stderr)
-    with open(f'{BURNIN_DIR}/report.json') as f:
+    with open(report_path) as f:
         report = json.load(f)
 
     print('Streaming recipe-economics CSV...', file=sys.stderr)
-    yearly_wages, yearly_owner_take, recipe_agg = stream_recipe_economics()
+    have_economics = os.path.isfile(os.path.join(burnin_dir, 'recipe-economics.csv'))
+    if not have_economics:
+        print('  recipe-economics.csv missing — sections 7-10 will be omitted', file=sys.stderr)
+    yearly_wages, yearly_owner_take, recipe_agg = stream_recipe_economics(burnin_dir)
 
     print('Writing report...', file=sys.stderr)
     out = []
-    out.append('# v1.6 burn-in analysis — 10-year final\n')
-    out.append('Generated from `burnin-final-10y/` after pass 23 (recipe-yield calibration).\n')
+    out.append(f'# {title}\n')
+    out.append(f'Generated from `{burnin_dir}/`.\n')
 
     write_section_overview(out, report)
-    write_section_population(out, snaps)
-    write_section_stockpiles(out, snaps, ['hamlet', 'village', 'town', 'small_city', 'large_city'])
-    write_section_prices(out, snaps)
-    write_section_caravans(out, snaps)
-    write_section_treasury(out, snaps)
-    write_section_economics(out, yearly_wages, yearly_owner_take, recipe_agg)
+    if snaps:
+        write_section_population(out, snaps)
+        write_section_stockpiles(out, snaps, ['hamlet', 'village', 'town', 'small_city', 'large_city'])
+        write_section_prices(out, snaps)
+        write_section_caravans(out, snaps)
+        write_section_treasury(out, snaps)
+    else:
+        out.append('## 2-6. Per-year breakdowns\n')
+        out.append('_No yearly snapshots found in the burn-in directory; population, stockpile, price, caravan, and treasury time-series sections are omitted._\n')
+
+    if have_economics:
+        write_section_economics(out, yearly_wages, yearly_owner_take, recipe_agg)
+    else:
+        out.append('## 7-10. Recipe economics\n')
+        out.append('_`recipe-economics.csv` not present in the burn-in directory. Re-run the burn-in with `--instruments=recipe-economics` to populate wage / owner-take / recipe-runs sections._\n')
 
     out.append('---\n')
-    out.append(f'_Generated by `scripts/analyze_10y.py` from `{BURNIN_DIR}/`._\n')
+    out.append(f'_Generated by `scripts/analyze-burnin.py --dir {burnin_dir}`._\n')
 
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    with open(OUT, 'w') as f:
+    out_dir = os.path.dirname(out_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    with open(out_path, 'w') as f:
         f.write('\n'.join(out))
-    print(f'wrote {OUT}', file=sys.stderr)
+    print(f'wrote {out_path}', file=sys.stderr)
+
 
 if __name__ == '__main__':
     main()

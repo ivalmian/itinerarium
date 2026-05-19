@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+.venv-imagegen/
 .pnp/
 .pnp.cjs
 .pnp.loader.mjs
@@ -20,8 +21,30 @@ coverage/
 .eslintcache
 .prettiercache
 
-# Project-generated output
+# Project-generated burn-in output.
+# Convention (per CLAUDE.md §"Burn-in output goes under ./burnin/"):
+# every burn-in run lands under `./burnin/<run-name>/`. The legacy
+# `./burnin-out/` and any sibling `./burnin-*/` from older scripts
+# are caught too so one-off invocations stay out of the index.
+burnin/
 burnin-out/
+burnin-*/
+
+# General scratch + tooling caches.
+tmp/
+.playwright-mcp/
+
+# One-off captures at repo root (screenshots, console dumps, infra
+# plans). Anything intentional-but-committed must live under a
+# tracked subdirectory (e.g. `viewer/art/`, `docs/`).
+*.png
+!viewer/**/*.png
+console-*.txt
+infra/aws/tfplan
+infra/**/.terraform/
+infra/**/*.tfstate
+infra/**/*.tfstate.backup
+.claude/scheduled_tasks.lock
 
 # Logs
 logs/
