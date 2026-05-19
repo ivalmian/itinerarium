@@ -221,6 +221,12 @@ export interface Caravan {
    * created at an on-map settlement and bound for an edge hex.
    */
   originSettlement?: SettlementId;
+  /**
+   * Resources this owner tasked the caravan to bring home. This is set at
+   * dispatch from the owner's current, local knowledge; the caravan should
+   * not re-check remote home shortages while away.
+   */
+  importDemand?: Map<ResourceId, Quantity>;
 }
 
 export interface CreateCaravanInput {

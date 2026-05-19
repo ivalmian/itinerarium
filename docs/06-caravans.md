@@ -66,8 +66,9 @@ Crew:
   max 80), not one caravan per settlement; large maps must not boot
   with hundreds of arbitrary merchant units. Explicit top-up calls can
   pass a target total, but existing caravans count toward both that
-  target and each owner's caravan cap, and the province-wide active
-  caravan ceiling still applies.
+  target and each owner's caravan cap. There is no province-wide active
+  caravan slot pool; dispatch pressure is constrained by owner caps,
+  animals, crew, provisions, treasury, and route economics.
 - Replacement merchants prefer a normal mule train, but if transport
   animals are scarce they can launch a smaller pack train once the owner
   has at least one herd-unit (~six animals) plus starter rations. This
@@ -77,10 +78,6 @@ Crew:
   stockpile: assembly can first buy local pack animals from another
   stockpile owner at the observed market price, then transfer those
   animals into the caravan.
-- The live sim also has a province-wide active-caravan ceiling across
-  standing merchants, tax shipments, and edge-hub convoys. When the road
-  network is already saturated, new dispatches queue or wait instead of
-  appearing as a discontinuous wave.
 - During burn-in, wealthy patrician families and optional
   `caravan_owner` actors may assemble replacement caravans when the
   standing merchant fleet falls below the province target. This is
@@ -444,17 +441,17 @@ has effectively infinite buying and selling capacity at the
 [global reference price](08-money-and-trade.md#the-off-map-global-market-locked) —
 a caravan arriving at the edge hex can dump its entire cargo and
 fill its capacity from the global market without slippage. The market
-itself does not impose slippage; the code still keeps high daily and
-active-fleet safety caps around the edge-hub pipeline so it cannot
-exceed the global caravan budget.
+itself does not impose slippage; the code still keeps high per-edge-flow
+daily and active-fleet safety caps around the edge-hub pipeline so it
+cannot appear as one discontinuous burst.
 
 ### What restrains volume
 
 The code has high finite per-day and active-fleet caps on the edge-hub
 pipeline (`20` import spawns/day, `30` export spawns/day, `200` active
-imports, `300` active exports, plus the world caravan ceiling). These
-are safety rails, not the economic throttle. What keeps trade volumes
-from exploding is the **margin gate + bounded actor information**:
+imports, `300` active exports). These are safety rails, not global
+slots and not the economic throttle. What keeps trade volumes from
+exploding is the **margin gate + bounded actor information**:
 
 - A patrician or merchant-guild export dispatcher in City A only knows the prices it has
   seen via its own returning caravans + carrier-piggyback news. A
@@ -637,7 +634,19 @@ shortcut. The cases:
    guild's map gets refreshed whenever any member is on-site, so
    it acts as a same-city aggregation of member knowledge. See
    docs/08 §"Communicated price discovery via guilds".
-5. **Edge-hex observation.** A caravan that touches an edge hex
+5. **City-crier sync.** Each city with a patrician family can
+   maintain one patrician-funded city crier. The crier has his own
+   `knownPrices` map, walks a deterministic greedy nearest-neighbor
+   circuit from the city through the villages and hamlets tied to
+   that city, then returns home to restock. Client villages use their
+   `clientPatron`'s city; other rural stops fall back to the nearest
+   city. At every stop the crier records that settlement's current
+   market snapshot and mutually merges with resident / stockpile-owner
+   actors there. He does **not** know remote shortages or prices until
+   he physically reaches a place or hears them from someone present.
+   If he fails to check back into the city for over 30 days, the
+   city replaces him.
+6. **Edge-hex observation.** A caravan that touches an edge hex
    observes the **global reference price** as a full
    `MarketObservation`, with `quotes` populated from the global
    palette and stamped to today. The owner learns the global
@@ -666,7 +675,7 @@ read (not on store).
 ### What gets written
 
 `knownPrices` is updated **only** by physical-unit events:
-caravan/patrol/news-carrier observations and meets. **It is
+caravan/patrol/news-carrier/city-crier observations and meets. **It is
 NEVER updated by reading a global state directly.** A patrician
 in City A learns City B's market only because someone walked
 there and back, or because someone who walked there and back met
@@ -675,8 +684,9 @@ hidden hands" rule, made literal for prices.
 
 ### Snapshot
 
-`knownPrices` is part of every actor's snapshot. Schema version
-bumps when the type changes.
+`knownPrices` is part of every actor's snapshot, and each persistent
+city crier's own `knownPrices` map is snapshotted with the crier.
+Schema version bumps when either shape changes.
 
 ### Initial state (procgen)
 
@@ -699,9 +709,13 @@ syncs run:
   dispatch. The owner has a day-0 home observation; the caravan
   inherits it. As the caravan walks, it picks up arrival /
   meeting syncs and the owner's map updates accordingly.
+- City criers are spawned by the tick loop after markets clear, not
+  preloaded as a global oracle. Their first act is to observe their
+  home city, then they physically walk the greedy rural circuit and
+  carry only what they learned.
 - No actor knows any other settlement's prices at world start.
   The first wave of seeded standing caravans + villager carts
-  propagates information across the map during Q1.
+  plus city criers propagates information across the map during Q1.
 
 ## Caravan lifecycle in the tick loop (locked)
 
@@ -717,16 +731,18 @@ Per-day, for every NPC caravan in `world.caravans`:
    target, plus any next-leg cargo identified by its planner). All
    asks and bids are integer-coin per docs/08 §"Integer-coin
    prices"; the caravan owns its asks and the trades clear through
-   the standard CDA market alongside resident actors. There is no
-   "direct stockpile transfer" path — a caravan moves goods into a
-   settlement's stockpile only by selling them on the market and
-   conversely it acquires goods only by buying them. The owner's
-   home-market visit similarly remits surplus cash by selling
-   accumulated cargo through the market, not by mailing coin to
+   the standard CDA market alongside resident actors. Cross-settlement
+   trade happens by market purchase and sale. A villager caravan can
+   deliver already-owned imports into its owner's home stockpile on
+   return, but acquisition still happened via a market ask at the
+   visited settlement; this is not a third-party stockpile bypass.
+   The owner's home-market visit similarly remits surplus cash by
+   selling accumulated cargo through the market, not by mailing coin to
    the owner's treasury. Caravan-as-market-participant applies
    uniformly to standing merchants, villager carts, replacement
    caravans, edge-hub returning ventures, and the player. See
-   docs/08 §"Caravans transact via local markets, never stockpile".
+   docs/08 §"Caravans transact via local markets; owned cargo can be
+   delivered home".
 3. **Edge-hex global-market transaction**: if a caravan arrives at
    an edge hex with cargo destined for the global market, it sells
    the cargo at the global reference price (paid in coin from the
@@ -827,17 +843,30 @@ market runs:
 - **surplus run** — village has any exportable inventory (food,
   fibre, wood, hides, livestock, cloth) above ~14 days of local
   use;
-- **import trip** — steward has accumulated ≥200 coin to buy
-  goods (pottery / oil / wine / salt / iron tools) the settlement
-  can't make itself;
+- **import trip** — steward has a home-learned shortage, currently
+  production tools, and either a known affordable source or a sellable
+  surplus trip that can fund the import;
 - **hard-times resupply** — village grain is under 7 days of
   subsistence AND the steward has any cash, so coin drains out
   to fund a buy-back run.
 
 The caravan's ID carries the `villager-` prefix so the viewer
 renders it with the dedicated handcart glyph. Per-owner cap = 3
-active. Separate fleet target (~0.5 × village count, max 120) so
-they don't crowd the standing merchant fleet.
+active. There is no global rural slot pool. Every qualifying steward
+can try to dispatch on its assembly cadence, but the dispatch still has
+to clear local constraints: pack animals, starter rations, operating
+treasury, per-owner cap, and a demand-backed mission.
+
+Villager caravans have one owner-specific import behavior on top of
+normal arbitrage. The owner records import demand before departure from
+its home stockpile state; the caravan does not remotely re-check home
+shortage while away. If that planned demand includes `goods.tools`, the
+caravan may buy whole tool kits at a visited market and route directly
+home. On arrival at the owner's home settlement, any imported cargo is
+unloaded into the owner stockpile before ordinary local sale. The
+purchase still happens through the visited market's bid/ask supply; the
+home unload is delivery of already-owned cargo into the steward's
+physical stockpile.
 
 Long-haul houses additionally use the global-market reference prices
 to evaluate export routes (see
@@ -972,7 +1001,9 @@ unit exists, the normal caravan planner uses the caravan's
 `knownPrices`, bid-depth estimates, route costs, bandit risk, tolls,
 and fallback scouting to choose a destination. A village with stale
 or missing observations can still scout, but it does not receive a
-hidden price oracle.
+hidden price oracle. If the caravan is away from home and can buy whole
+tool kits for a tool-poor home stockpile, that home-import leg can
+override the generic arbitrage plan.
 
 ### Same-hex coexistence is the ONLY zero-tick case
 
@@ -1033,11 +1064,13 @@ local-cartage surcharge is not used for distance >= 1 trade.
 | Dispatched by `free_village` / `hamlet_household` steward | Standing replacement by `patrician_family` / optional `caravan_owner`; outbound edge exports by `patrician_family` / `merchant_guild`; tax shipments by `governor_office`; inbound imports by synthetic `off_map_house` |
 | Usually short because capacity, treasury, and rations are small; no hidden local-trade distance cap | Multi-cluster, multi-day, possibly international (with 20-tick off-map sojourn) |
 | **Real Caravan unit with full movement / food / ambush / disease machinery** | Same |
-| Buys + sells via the destination's CDA market (bid/ask) | Same |
+| Buys + sells via the destination's CDA market (bid/ask); owned imports unload into the home stockpile on return | Same market transaction discipline; no owner-home unload except normal profit/cargo refund on disband |
 | Cheaper to lose (less capital exposed) but proportionally less defended | Bigger losses possible but proportionally better defended |
 
-Both transact through the same per-settlement markets via bid/ask;
-neither directly mutates stockpile. The only difference is size,
+Both buy and sell through the same per-settlement markets via bid/ask.
+Villager caravans additionally unload already-owned imports into the
+steward's home stockpile on return; this is delivery after a market
+purchase, not a cross-settlement trade bypass. The main differences are size,
 dispatcher class, and typical route length. **There is no "local
 trade abstraction"** — every inter-settlement trade is a Caravan
 unit that walked the route.

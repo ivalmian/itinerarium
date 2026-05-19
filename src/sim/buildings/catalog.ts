@@ -303,7 +303,7 @@ const DEFS: readonly BuildingInput[] = [
     category: 'production',
     name: 'Smithy',
     // 100 capacity so tool turnover keeps up with farm + mine + forester
-    // wear at city scale (harvest_grain 0.005, mine 0.1, forester 0.05).
+    // wear at city scale (harvest_grain 0.001, mine 0.1, forester 0.02).
     capacityUnits: 100,
     constructionCost: { 'material.brick_tile': 4, 'material.cut_stone': 2, 'goods.tools': 2 },
     maintenancePerDay: { 'goods.tools': 0.05 },

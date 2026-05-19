@@ -30,12 +30,18 @@ import type { Caravan, CrewMember, PriceObservation } from './caravan/caravan.js
 import { createCaravan } from './caravan/caravan.js';
 import type { Actor } from './politics/actor.js';
 import { createActor } from './politics/actor.js';
-import type { MarketObservation, ResourceQuote } from './politics/knownPrices.js';
+import {
+  createKnownPrices,
+  type KnownPrices,
+  type MarketObservation,
+  type ResourceQuote,
+} from './politics/knownPrices.js';
 import type { Faction } from './politics/faction.js';
 import { createFaction } from './politics/faction.js';
 import type { NamedCharacter } from './politics/character.js';
 import { createCharacter } from './politics/character.js';
 import { createReputationTable, type ReputationTable } from './reputation/table.js';
+import type { CityCrier } from './reputation/cityCrier.js';
 import { poolFromMap } from './population/cohort.js';
 import type { MarketBookLadder, Settlement } from './world/settlement.js';
 import { createSettlement } from './world/settlement.js';
@@ -66,12 +72,13 @@ import type { SettlementSite } from '../procgen/settlements.js';
 
 // --- Serialized shapes ------------------------------------------------------
 
+// v4: persistent city criers, each with its own known-price map.
 // v3 (v1.6 pass 27b): integer-only treasury + stockpile, with new
 //   Actor.stockpileResidue per-(settlement, resource) fractional
 //   accumulator. v2 snapshots rejected (no silent shim per CLAUDE.md).
 // v2 (v1.6 realism pass): Actor.knownPrices added per docs/06 §"Caravan
 //   information model".
-const SCHEMA_VERSION = 3 as const;
+const SCHEMA_VERSION = 4 as const;
 
 interface SerializedHex {
   readonly q: number;
@@ -159,6 +166,18 @@ interface SerializedSettlement {
   readonly jobAllocations?: ReadonlyArray<readonly [string, number]>;
 }
 
+type SerializedKnownPrices = ReadonlyArray<
+  readonly [
+    string,
+    {
+      readonly observedDay: number;
+      readonly quotes: ReadonlyArray<
+        readonly [string, { readonly bestAsk: number; readonly bestBid: number }]
+      >;
+    },
+  ]
+>;
+
 interface SerializedActor {
   readonly id: string;
   readonly kind: Actor['kind'];
@@ -178,18 +197,22 @@ interface SerializedActor {
    * settlement. Serialized as `[settlementId, { observedDay, quotes:
    * [[resourceId, {bestAsk, bestBid}], ...] }][]`. Required in schema v2+.
    */
-  readonly knownPrices: ReadonlyArray<
-    readonly [
-      string,
-      {
-        readonly observedDay: number;
-        readonly quotes: ReadonlyArray<
-          readonly [string, { readonly bestAsk: number; readonly bestBid: number }]
-        >;
-      },
-    ]
-  >;
+  readonly knownPrices: SerializedKnownPrices;
   readonly treasury: number;
+}
+
+interface SerializedCityCrier {
+  readonly id: string;
+  readonly city: string;
+  readonly position: SerializedHex;
+  readonly destination: SerializedHex;
+  readonly movementPointsPerDay: number;
+  readonly startedOnDay: number;
+  readonly lastCityCheckinDay: number;
+  readonly route: readonly string[];
+  readonly routeIndex: number;
+  readonly paidBy: readonly string[];
+  readonly knownPrices: SerializedKnownPrices;
 }
 
 interface SerializedFaction {
@@ -240,6 +263,8 @@ interface SerializedCaravan {
   readonly offMapUntil?: number;
   /** v1.6 dispatch origin for the return trip home. */
   readonly originSettlement?: string;
+  /** Owner-known import mission set at dispatch. */
+  readonly importDemand?: ReadonlyArray<readonly [string, number]>;
 }
 
 interface SerializedReputationEntry {
@@ -284,6 +309,7 @@ export interface SerializedWorldState {
   readonly factions: ReadonlyArray<readonly [string, SerializedFaction]>;
   readonly characters: ReadonlyArray<readonly [string, SerializedNamedCharacter]>;
   readonly caravans: ReadonlyArray<readonly [string, SerializedCaravan]>;
+  readonly cityCriers?: ReadonlyArray<readonly [string, SerializedCityCrier]>;
   readonly persons?: ReadonlyArray<SerializedPerson>;
   readonly personEquipment?: ReadonlyArray<SerializedPersonEquipment>;
   readonly reputation: readonly SerializedReputationEntry[];
@@ -313,6 +339,45 @@ const stringMapToArray = <K extends string, V>(
   const out: [string, V][] = [];
   for (const [k, v] of m) out.push([String(k), v]);
   return out;
+};
+
+const serializeKnownPrices = (knownPrices: KnownPrices): SerializedKnownPrices => {
+  const out: Array<
+    readonly [
+      string,
+      {
+        readonly observedDay: number;
+        readonly quotes: ReadonlyArray<
+          readonly [string, { readonly bestAsk: number; readonly bestBid: number }]
+        >;
+      },
+    ]
+  > = [];
+  for (const [sId, obs] of knownPrices) {
+    const quotes: Array<readonly [string, { readonly bestAsk: number; readonly bestBid: number }]> =
+      [];
+    for (const [r, q] of obs.quotes) {
+      quotes.push([String(r), { bestAsk: q.bestAsk, bestBid: q.bestBid }] as const);
+    }
+    out.push([String(sId), { observedDay: obs.observedDay, quotes }] as const);
+  }
+  return out;
+};
+
+const deserializeKnownPrices = (entries: SerializedKnownPrices): KnownPrices => {
+  const knownPrices = createKnownPrices();
+  for (const [sIdStr, ser] of entries) {
+    const sId = settlementId(sIdStr);
+    const quotes = new Map<ResourceId, ResourceQuote>();
+    for (const [r, q] of ser.quotes) {
+      quotes.set(resourceId(r), { bestAsk: q.bestAsk, bestBid: q.bestBid });
+    }
+    if (quotes.size > 0) {
+      const obs: MarketObservation = { quotes, observedDay: ser.observedDay as Day };
+      knownPrices.set(sId, obs);
+    }
+  }
+  return knownPrices;
 };
 
 const marketBookLadderToArray = (
@@ -564,25 +629,6 @@ const serializeActor = (a: Actor): SerializedActor => {
     for (const [r, q] of slice) entries.push([String(r), q] as const);
     stockpile.push([String(sId), entries] as const);
   }
-  const knownPrices: Array<
-    readonly [
-      string,
-      {
-        readonly observedDay: number;
-        readonly quotes: ReadonlyArray<
-          readonly [string, { readonly bestAsk: number; readonly bestBid: number }]
-        >;
-      },
-    ]
-  > = [];
-  for (const [sId, obs] of a.knownPrices) {
-    const quotes: Array<readonly [string, { readonly bestAsk: number; readonly bestBid: number }]> =
-      [];
-    for (const [r, q] of obs.quotes) {
-      quotes.push([String(r), { bestAsk: q.bestAsk, bestBid: q.bestBid }] as const);
-    }
-    knownPrices.push([String(sId), { observedDay: obs.observedDay, quotes }] as const);
-  }
   const stockpileResidue: Array<readonly [string, ReadonlyArray<readonly [string, number]>]> = [];
   for (const [sId, slice] of a.stockpileResidue) {
     const entries: Array<readonly [string, number]> = [];
@@ -596,7 +642,7 @@ const serializeActor = (a: Actor): SerializedActor => {
     ...(a.homeSettlement !== undefined ? { homeSettlement: String(a.homeSettlement) } : {}),
     stockpile,
     stockpileResidue,
-    knownPrices,
+    knownPrices: serializeKnownPrices(a.knownPrices),
     treasury: a.treasury,
   };
 };
@@ -621,17 +667,7 @@ const deserializeActor = (a: SerializedActor): Actor => {
     for (const [r, n] of entries) slice.set(resourceId(r), n);
     if (slice.size > 0) actor.stockpileResidue.set(sId, slice);
   }
-  for (const [sIdStr, ser] of a.knownPrices) {
-    const sId = settlementId(sIdStr);
-    const quotes = new Map<ResourceId, ResourceQuote>();
-    for (const [r, q] of ser.quotes) {
-      quotes.set(resourceId(r), { bestAsk: q.bestAsk, bestBid: q.bestBid });
-    }
-    if (quotes.size > 0) {
-      const obs: MarketObservation = { quotes, observedDay: ser.observedDay as Day };
-      actor.knownPrices.set(sId, obs);
-    }
-  }
+  for (const [sId, obs] of deserializeKnownPrices(a.knownPrices)) actor.knownPrices.set(sId, obs);
   return actor;
 };
 
@@ -753,6 +789,9 @@ const serializeCaravan = (c: Caravan): SerializedCaravan => {
     ...(c.originSettlement !== undefined
       ? { originSettlement: String(c.originSettlement) }
       : {}),
+    ...(c.importDemand !== undefined && c.importDemand.size > 0
+      ? { importDemand: stringMapToArray(c.importDemand) }
+      : {}),
   };
 };
 
@@ -774,6 +813,9 @@ const deserializeCaravan = (c: SerializedCaravan): Caravan => {
   caravan.health = c.health;
   if (c.offMapUntil !== undefined) caravan.offMapUntil = c.offMapUntil as Day;
   for (const [r, n] of c.cargo) caravan.cargo.set(resourceId(r), n);
+  if (c.importDemand !== undefined && c.importDemand.length > 0) {
+    caravan.importDemand = new Map(c.importDemand.map(([r, n]) => [resourceId(r), n]));
+  }
   for (const [res, inner] of c.priceBook) {
     const innerMap = new Map<string, PriceObservation>();
     for (const [hexK, obs] of inner) {
@@ -790,6 +832,34 @@ const deserializeCaravan = (c: SerializedCaravan): Caravan => {
   }
   return caravan;
 };
+
+const serializeCityCrier = (c: CityCrier): SerializedCityCrier => ({
+  id: c.id,
+  city: String(c.city),
+  position: serHex(c.position),
+  destination: serHex(c.destination),
+  movementPointsPerDay: c.movementPointsPerDay,
+  startedOnDay: c.startedOnDay,
+  lastCityCheckinDay: c.lastCityCheckinDay,
+  route: c.route.map(String),
+  routeIndex: c.routeIndex,
+  paidBy: c.paidBy.map(String),
+  knownPrices: serializeKnownPrices(c.knownPrices),
+});
+
+const deserializeCityCrier = (c: SerializedCityCrier): CityCrier => ({
+  id: c.id,
+  city: settlementId(c.city),
+  position: deserHex(c.position),
+  destination: deserHex(c.destination),
+  movementPointsPerDay: c.movementPointsPerDay,
+  startedOnDay: c.startedOnDay as Day,
+  lastCityCheckinDay: c.lastCityCheckinDay as Day,
+  route: c.route.map(settlementId),
+  routeIndex: c.routeIndex,
+  paidBy: c.paidBy.map(actorId),
+  knownPrices: deserializeKnownPrices(c.knownPrices),
+});
 
 // --- Reputation -------------------------------------------------------------
 
@@ -854,6 +924,12 @@ export const serializeWorld = (world: WorldState, capturedAtDay: Day): WorldSnap
   for (const [id, c] of world.caravans) {
     caravans.push([String(id), serializeCaravan(c)]);
   }
+  const cityCriers: [string, SerializedCityCrier][] = [];
+  if (world.cityCriers !== undefined) {
+    for (const [id, c] of world.cityCriers) {
+      cityCriers.push([id, serializeCityCrier(c)]);
+    }
+  }
   const persons: SerializedPerson[] = [];
   if (world.persons !== undefined) {
     for (const p of world.persons.values()) persons.push(serializePerson(p));
@@ -878,6 +954,7 @@ export const serializeWorld = (world: WorldState, capturedAtDay: Day): WorldSnap
       factions,
       characters,
       caravans,
+      ...(cityCriers.length > 0 ? { cityCriers } : {}),
       ...(persons.length > 0 ? { persons } : {}),
       ...(personEquipment.length > 0 ? { personEquipment } : {}),
       reputation: serializeReputation(world.reputation),
@@ -918,6 +995,10 @@ export const deserializeWorld = (snap: WorldSnapshot): WorldState => {
   for (const [id, c] of w.caravans) {
     caravans.set(caravanId(id), deserializeCaravan(c));
   }
+  const cityCriers = new Map<string, CityCrier>();
+  if (w.cityCriers !== undefined) {
+    for (const [id, c] of w.cityCriers) cityCriers.set(id, deserializeCityCrier(c));
+  }
   const persons = new Map<PersonId, Person>();
   if (w.persons !== undefined) {
     for (const p of w.persons) persons.set(personId(p.id), deserializePerson(p));
@@ -942,6 +1023,7 @@ export const deserializeWorld = (snap: WorldSnapshot): WorldState => {
     banditCamps: new Map(),
     banditParties: new Map(),
     newsCarriers: new Map(),
+    cityCriers,
     persons,
     personEquipment,
     reputation: deserializeReputation(w.reputation),

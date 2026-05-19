@@ -50,6 +50,7 @@ import {
 } from '../sim/politics/index.js';
 import { createReputationTable, type ReputationTable } from '../sim/reputation/table.js';
 import type { NewsCarrier } from '../sim/reputation/news.js';
+import type { CityCrier } from '../sim/reputation/cityCrier.js';
 import type { Caravan } from '../sim/caravan/caravan.js';
 import type { Patrol } from '../sim/conflict/patrol.js';
 import type { BanditCamp } from '../sim/bandit/camp.js';
@@ -116,6 +117,12 @@ export interface WorldState {
    */
   readonly banditParties?: Map<BanditPartyId, BanditParty>;
   readonly newsCarriers?: Map<string, NewsCarrier>;
+  /**
+   * One patrician-funded price-news walker per city. Optional for
+   * back-compat with handcrafted tests and snapshots that pre-date the
+   * city-crier phase; seedWorld initializes it.
+   */
+  readonly cityCriers?: Map<string, CityCrier>;
   /** Merchant guilds (per docs/15 §C17). Keyed by their Actor id. */
   readonly guilds?: Map<ActorId, Guild>;
   /**
@@ -1179,6 +1186,7 @@ export const seedWorld = (opts: SeedOpts): WorldState => {
     banditCamps,
     banditParties: new Map<BanditPartyId, BanditParty>(),
     newsCarriers: new Map<string, NewsCarrier>(),
+    cityCriers: new Map<string, CityCrier>(),
     guilds,
     persons,
     personEquipment,

@@ -27,7 +27,6 @@
 
 import { createActor, removeStockAt } from '../politics/actor.js';
 import { getMarketObservation } from '../politics/knownPrices.js';
-import { MAX_ACTIVE_WORLD_CARAVANS } from '../caravan/limits.js';
 import {
   tickEdgeHubs,
   DEFAULT_GLOBAL_PRICES,
@@ -57,10 +56,9 @@ const OFF_MAP_HOUSE_OWNER_PREFIX = 'off-map-house-';
 // bloat measured in Q8 burn-ins — cities accumulated 25,000+ t of
 // grain while the export pipeline could drain ~180 t/year worldwide.
 //
-// Caps below are intentionally large but still finite so the world
-// caravan ceiling MAX_ACTIVE_WORLD_CARAVANS remains the binding
-// constraint when the network saturates. Daily dispatch (interval 1)
-// + many spawns/day let real arbitrage flow through.
+// Caps below are intentionally large but still finite per edge-flow type.
+// Daily dispatch (interval 1) + many spawns/day let real arbitrage flow
+// through while avoiding discontinuous off-map bursts.
 const EDGE_HUB_MAX_ACTIVE_IMPORT_CARAVANS = 200;
 const EDGE_HUB_MAX_ACTIVE_EXPORT_CARAVANS = 300;
 const EDGE_HUB_DISPATCH_INTERVAL_DAYS = 1;
@@ -165,9 +163,6 @@ const selectEdgeHubGates = (edgeHexes: readonly Hex[]): readonly Hex[] => {
   return out;
 };
 
-const remainingWorldCaravanSlots = (world: WorldState, plannedSpawns = 0): number =>
-  Math.max(0, MAX_ACTIVE_WORLD_CARAVANS - world.caravans.size - plannedSpawns);
-
 export const edgeHubPhase = (
   world: WorldState,
   season: Season,
@@ -245,8 +240,6 @@ export const edgeHubPhase = (
   if (cityImportTargets.length === 0 && cityExportSources.length === 0) return;
 
   const activeEdgeCaravans = activeEdgeHubCaravanCounts(world);
-  const worldRoom = remainingWorldCaravanSlots(world);
-  if (worldRoom <= 0) return;
   const result = tickEdgeHubs({
     config: {
       edgeHexes,
@@ -257,10 +250,8 @@ export const edgeHubPhase = (
       activeExportCaravans: activeEdgeCaravans.exports,
       maxImportSpawnsPerDay: EDGE_HUB_MAX_IMPORT_SPAWNS_PER_DAY,
       maxExportSpawnsPerDay: EDGE_HUB_MAX_EXPORT_SPAWNS_PER_DAY,
-      maxTotalSpawnsPerDay: Math.min(
+      maxTotalSpawnsPerDay:
         EDGE_HUB_MAX_IMPORT_SPAWNS_PER_DAY + EDGE_HUB_MAX_EXPORT_SPAWNS_PER_DAY,
-        worldRoom,
-      ),
       maxActiveImportCaravans: EDGE_HUB_MAX_ACTIVE_IMPORT_CARAVANS,
       maxActiveExportCaravans: EDGE_HUB_MAX_ACTIVE_EXPORT_CARAVANS,
       importPalette: DEFAULT_IMPORT_PALETTE,

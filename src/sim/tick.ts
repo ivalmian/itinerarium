@@ -39,6 +39,7 @@ import { annualPhase } from './phases/annual.js';
 import { civilUnrestPhase } from './phases/civilUnrest.js';
 import { constructionPhase } from './phases/construction.js';
 import { consumptionPhase } from './phases/consumption.js';
+import { cityCrierPhase } from './phases/cityCrier.js';
 import { demographicsPhase } from './phases/demographics.js';
 import { demolitionPhase } from './phases/demolition.js';
 import { fiscalRedistributionPhase } from './phases/fiscalRedistribution.js';
@@ -81,7 +82,7 @@ import {
 import { initializeSubsistenceAccess } from './world/subsistence.js';
 import { crossGuildRumorPhase } from './politics/guildLedger.js';
 // tickCaravanMovement moved out with the movement phase.
-// MAX_ACTIVE_WORLD_CARAVANS + caravan/ai + caravan/goal moved with caravan cluster.
+// caravan/ai + caravan/goal moved with caravan cluster.
 // Bandit camp + party types/helpers moved out with the bandit phase.
 // politics/actor primitives (getStockAt, addStockAt etc) moved out
 // with the phase clusters that use them.
@@ -226,6 +227,14 @@ export type TickEvent =
       readonly coin: number;
     }
   | {
+      readonly type: 'caravan_unloaded_home';
+      readonly caravan: CaravanId;
+      readonly ownerActor: ActorId;
+      readonly settlement: SettlementId;
+      readonly resource: ResourceId;
+      readonly quantity: number;
+    }
+  | {
       readonly type: 'caravan_exported_off_map';
       readonly caravan: CaravanId;
       readonly resource: ResourceId;
@@ -263,6 +272,29 @@ export type TickEvent =
       readonly settlement: SettlementId;
       readonly receiverCount: number;
       readonly deltasApplied: number;
+    }
+  | {
+      readonly type: 'city_crier_spawned';
+      readonly crier: string;
+      readonly city: SettlementId;
+      readonly reason: 'initial' | 'missing';
+      readonly routeStops: number;
+      readonly costCoin: number;
+      readonly paidBy: readonly ActorId[];
+    }
+  | {
+      readonly type: 'city_crier_checked_in';
+      readonly crier: string;
+      readonly city: SettlementId;
+      readonly costCoin: number;
+      readonly paidBy: readonly ActorId[];
+    }
+  | {
+      readonly type: 'city_crier_price_synced';
+      readonly crier: string;
+      readonly settlement: SettlementId;
+      readonly actorCount: number;
+      readonly knownSettlements: number;
     }
   | {
       readonly type: 'patrol_dispatched';
@@ -604,6 +636,13 @@ export const tick = (inputs: TickInputs): TickResult => {
   // forum prices today."
   homePresenceSyncPhase(world, today);
 
+  // --- Phase 4c2: City-crier price-news walk ------------------------------
+  // Each city keeps one patrician-funded crier walking a greedy rural
+  // circuit through tied villages/hamlets, then back home to restock.
+  // He only syncs prices he physically learned, preserving the
+  // no-global-price-oracle rule while giving villages a local news channel.
+  cityCrierPhase(world, season, today, events);
+
   // --- Phase 4d: Mobile-unit price syncs ----------------------------------
   // Caravan arrival: every caravan currently parked at a settlement anchor
   // writes a fresh MarketObservation into its owner's knownPrices map.
@@ -756,10 +795,9 @@ const politicsPhase = (world: WorldState, rng: Rng, today: Day, events: TickEven
   // settlement-count target. This keeps trade alive over long burn-ins
   // without injecting discontinuous random fleets.
   merchantCaravanAssemblyPhase(world, rng.derive('merchant-caravan-assembly'), today, events);
-  // Per docs/15 §C31: villages / hamlets with surplus, import cash, or
-  // hard-times staple needs dispatch low-capacity villager caravans. Separate
-  // fleet target from merchants so local runs and long-haul trade don't
-  // compete for the same caravan slots.
+  // Per docs/15 §C31: villages / hamlets with sellable surplus,
+  // home-learned import demand, or hard-times staple needs dispatch
+  // low-capacity villager caravans when they can fund the trip.
   villagerCaravanAssemblyPhase(world, rng.derive('villager-caravan-assembly'), today, events);
   // Bandit emergence + decisions + raid resolution. Without this loop,
   // the seeded bandit camps are inert decorations — see docs/12

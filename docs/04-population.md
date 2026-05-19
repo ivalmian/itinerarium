@@ -397,10 +397,15 @@ the gap between the autumn harvest and the spring planting without
 being so generous that the village never participates in trade. Above
 the reserve, the village's stockpile is freely sellable.
 
-The reserve only applies to **subsistence resources** (food.grain,
+The reserve applies to **subsistence resources** (food.grain,
 food.bread, food.legumes, mineral.salt, material.wood — anything in
-the SUBSISTENCE_NEEDS_FREE table). Non-subsistence outputs (cheese,
-wool, oil, etc.) have no reserve and flow to market normally.
+the SUBSISTENCE_NEEDS_FREE table). `free_village` and
+`hamlet_household` actors also retain a production-tool reserve for
+`goods.tools` (`max(10, adult_equivalent_total × 0.2)` units) before
+listing any tools for sale. Those tools are productive capital for
+farms, fishing, forestry, and rural workshops, not disposable surplus.
+Other non-subsistence outputs (cheese, wool, oil, etc.) have no reserve
+and flow to market normally.
 
 Effect: villages stop draining their granaries to zero during Y1
 winter even when a wealthy city is offering 12× procurement premium.
@@ -550,7 +555,7 @@ around it (a Roman _pagus_ with its dependent hamlets is the
 canonical case). They are still separate entities — separate
 populations, separate elders / patrons, separate stockpiles —
 but **travel time between same-hex settlements is zero ticks**, so
-caravans, news carriers, and labor moving between them sync
+caravans, news carriers, city criers, and labor moving between them sync
 immediately in the same pass. This is locality, not aggregation:
 same-hex settlements feel like one community to the people who live
 in them, but the political economy stays granular.

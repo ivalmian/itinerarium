@@ -496,7 +496,7 @@ import {
       expect(getStock(family, resourceId('livestock.equines'))).toBeLessThan(1);
     });
 
-    it('does not assemble replacement merchants when temporary convoys fill the world cap', () => {
+    it('assembles replacement merchants even when temporary convoys exceed the old world cap', () => {
       const w = buildOneSettlementWorld({ populationByClass: { plebeian: 100 } });
       const settlement = w.settlements.get(settlementId('settle-1'))!;
       const familyId = actorId('capped-replacement-family');
@@ -509,6 +509,7 @@ import {
       });
       setStock(family, resourceId('livestock.equines'), 50);
       setStock(family, resourceId('goods.cart'), 10);
+      setStock(family, resourceId('food.grain'), 100);
       w.actors.set(familyId, family);
 
       for (let i = 0; i < 96; i++) {
@@ -526,12 +527,12 @@ import {
         w.caravans.set(cId, c);
       }
 
-      const r = tick({ world: w, rng: createRng('merchant-global-cap') });
+      const r = tick({ world: w, rng: createRng('merchant-no-global-cap') });
       const dispatched = eventsOfType(r.events, 'merchant_caravan_dispatched');
 
-      expect(dispatched).toEqual([]);
-      expect(family.treasury).toBe(10_000);
-      expect(w.caravans.size).toBeLessThanOrEqual(96);
+      expect(dispatched).toHaveLength(1);
+      expect(family.treasury).toBeLessThan(10_000);
+      expect(w.caravans.size).toBeGreaterThan(96);
     });
 
     it('remits standing caravan profits to the owner when back at the home market', () => {
@@ -563,6 +564,193 @@ import {
       expect(remitted?.coin).toBeCloseTo(2_000, 6);
       expect(owner.treasury).toBeCloseTo(beforeOwnerTreasury + 2_000, 6);
       expect(c.treasury).toBeCloseTo(3_000, 6);
+    });
+
+    it('unloads villager caravan imports into the owner stockpile at home', () => {
+      const w = buildOneSettlementWorld({ populationByClass: { plebeian: 1 } });
+      const settlement = w.settlements.get(settlementId('settle-1'))!;
+      const tools = resourceId('goods.tools');
+      const ownerId = actorId('village-owner');
+      const owner = createActor({
+        id: ownerId,
+        kind: 'free_village',
+        name: 'Village Owner',
+        homeSettlement: settlement.id,
+        treasury: 100,
+      });
+      w.actors.set(ownerId, owner);
+      settlement.stockpileOwners.push(ownerId);
+
+      const cId = caravanId('villager-import-home');
+      const c = createCaravan({
+        id: cId,
+        ownerActor: owner.id,
+        position: settlement.anchor,
+        destination: settlement.anchor,
+        crew: [{ kind: 'drover', count: 1, weapons: 0, armor: 0 }],
+        animals: { mule: 2 },
+        vehicles: {},
+        treasury: 30,
+      });
+      c.cargo.set(tools, 3);
+      w.caravans.set(cId, c);
+
+      const r = tick({ world: w, rng: createRng('villager-home-unload') });
+      const unloaded = eventsOfType(r.events, 'caravan_unloaded_home').find(
+        (e) => e.caravan === cId && e.resource === tools,
+      );
+
+      expect(unloaded).toBeDefined();
+      expect(unloaded?.ownerActor).toBe(owner.id);
+      expect(unloaded?.settlement).toBe(settlement.id);
+      expect(unloaded?.quantity).toBe(3);
+      expect(getStock(owner, tools)).toBe(3);
+      expect(c.cargo.has(tools)).toBe(false);
+    });
+
+    it('buys needed tools for the owner and routes home from an away market', () => {
+      const w = buildEmptyWorld();
+      for (let q = -1; q <= 6; q++) {
+        for (let r = -1; r <= 1; r++) w.grid.set(hex(q, r), makeTile('plains'));
+      }
+
+      const tools = resourceId('goods.tools');
+      const homeId = settlementId('tool-poor-village');
+      const marketId = settlementId('tool-market');
+      const home = createSettlement({
+        id: homeId,
+        tier: 'village',
+        name: 'Tool Poor Village',
+        anchor: hex(0, 0),
+        urbanHexes: [hex(0, 0)],
+        catchmentHexes: [],
+      });
+      const market = createSettlement({
+        id: marketId,
+        tier: 'town',
+        name: 'Tool Market',
+        anchor: hex(5, 0),
+        urbanHexes: [hex(5, 0)],
+        catchmentHexes: [],
+      });
+      const villageOwner = createActor({
+        id: actorId('tool-poor-owner'),
+        kind: 'free_village',
+        name: 'Tool Poor Owner',
+        homeSettlement: home.id,
+        treasury: 300,
+      });
+      const seller = createActor({
+        id: actorId('tool-seller'),
+        kind: 'city_corporation',
+        name: 'Tool Seller',
+        homeSettlement: market.id,
+        treasury: 1000,
+      });
+      home.stockpileOwners.push(villageOwner.id);
+      market.stockpileOwners.push(seller.id);
+      market.market.lastClearingPrice.set(tools, 20);
+      setStock(seller, tools, 20);
+      w.settlements.set(home.id, home);
+      w.settlements.set(market.id, market);
+      w.actors.set(villageOwner.id, villageOwner);
+      w.actors.set(seller.id, seller);
+
+      const cId = caravanId('villager-tool-importer');
+      const c = createCaravan({
+        id: cId,
+        ownerActor: villageOwner.id,
+        position: market.anchor,
+        destination: market.anchor,
+        crew: [{ kind: 'drover', count: 1, weapons: 0, armor: 0 }],
+        animals: { mule: 2 },
+        vehicles: {},
+        treasury: 150,
+      });
+      c.importDemand = new Map([[tools, 5]]);
+      w.caravans.set(cId, c);
+
+      const r = tick({ world: w, rng: createRng('villager-tool-import') });
+      const bought = eventsOfType(r.events, 'caravan_traded').find(
+        (e) => e.caravan === cId && e.side === 'bought' && e.resource === tools,
+      );
+
+      expect(bought).toBeDefined();
+      expect(c.cargo.get(tools)).toBeGreaterThanOrEqual(1);
+      expect(c.destination).toEqual(home.anchor);
+      expect(c.goalStack).toEqual([{ type: 'return_home', home: home.anchor }]);
+      expect(getStock(seller, tools)).toBeLessThan(20);
+      expect(c.treasury).toBeLessThan(150);
+    });
+
+    it('does not remotely infer home tool shortages for an unassigned villager caravan', () => {
+      const w = buildEmptyWorld();
+      for (let q = -1; q <= 6; q++) {
+        for (let r = -1; r <= 1; r++) w.grid.set(hex(q, r), makeTile('plains'));
+      }
+
+      const tools = resourceId('goods.tools');
+      const home = createSettlement({
+        id: settlementId('unassigned-tool-poor-village'),
+        tier: 'village',
+        name: 'Unassigned Tool Poor Village',
+        anchor: hex(0, 0),
+        urbanHexes: [hex(0, 0)],
+        catchmentHexes: [],
+      });
+      const market = createSettlement({
+        id: settlementId('unassigned-tool-market'),
+        tier: 'town',
+        name: 'Unassigned Tool Market',
+        anchor: hex(5, 0),
+        urbanHexes: [hex(5, 0)],
+        catchmentHexes: [],
+      });
+      const villageOwner = createActor({
+        id: actorId('unassigned-tool-poor-owner'),
+        kind: 'free_village',
+        name: 'Unassigned Tool Poor Owner',
+        homeSettlement: home.id,
+        treasury: 300,
+      });
+      const seller = createActor({
+        id: actorId('unassigned-tool-seller'),
+        kind: 'city_corporation',
+        name: 'Unassigned Tool Seller',
+        homeSettlement: market.id,
+        treasury: 1000,
+      });
+      home.stockpileOwners.push(villageOwner.id);
+      market.stockpileOwners.push(seller.id);
+      market.market.lastClearingPrice.set(tools, 20);
+      setStock(seller, tools, 20);
+      w.settlements.set(home.id, home);
+      w.settlements.set(market.id, market);
+      w.actors.set(villageOwner.id, villageOwner);
+      w.actors.set(seller.id, seller);
+
+      const cId = caravanId('unassigned-villager-tool-importer');
+      const c = createCaravan({
+        id: cId,
+        ownerActor: villageOwner.id,
+        position: market.anchor,
+        destination: market.anchor,
+        crew: [{ kind: 'drover', count: 1, weapons: 0, armor: 0 }],
+        animals: { mule: 2 },
+        vehicles: {},
+        treasury: 150,
+      });
+      w.caravans.set(cId, c);
+
+      const r = tick({ world: w, rng: createRng('unassigned-villager-tool-import') });
+      const bought = eventsOfType(r.events, 'caravan_traded').find(
+        (e) => e.caravan === cId && e.side === 'bought' && e.resource === tools,
+      );
+
+      expect(bought).toBeUndefined();
+      expect(c.cargo.get(tools)).toBeUndefined();
+      expect(c.goalStack).toBeUndefined();
+      expect(getStock(seller, tools)).toBe(20);
     });
 
     it('loads profitable cargo before departing for a dearer observed market', () => {

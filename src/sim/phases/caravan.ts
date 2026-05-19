@@ -14,11 +14,9 @@
  *     caravans up to a per-world target derived from settlement count.
  *
  *   - **villagerCaravanAssemblyPhase** (docs/15 §C31) — every 3
- *     days, free villages / hamlet households with surplus, import
- *     cash, or hard-times staple needs dispatch low-capacity caravans.
- *     Separate fleet target from the merchant target so village /
- *     hamlet runs and long-haul trade don't compete for the same
- *     caravan slots.
+ *     days, free villages / hamlet households with sellable surplus,
+ *     home-learned import demand, or hard-times staple needs dispatch
+ *     low-capacity caravans when they can fund the trip.
  *
  *   - **caravanReplanPhase** — every tick, NPC caravans sitting at
  *     their destination observe local prices, restock their price
@@ -26,9 +24,8 @@
  *     pass trade circulates exactly zero after the seeded caravans
  *     complete their first leg.
  *
- * Also includes the small `goalDestination` GoalStack lookup and
- * the `remainingWorldCaravanSlots` spawn-pressure cap — both used
- * exclusively inside the caravan cluster.
+ * Also includes the small `goalDestination` GoalStack lookup used by
+ * goal-bearing caravan movement.
  *
  * Originally lived inline in `src/sim/tick.ts`.
  */
@@ -53,9 +50,9 @@ import {
 } from '../caravan/caravan.js';
 import { expectedRiskOnApproximatePath, planCaravanRoute, travelCost } from '../caravan/ai.js';
 import { isGoalComplete, peekGoal, popGoal, type Goal } from '../caravan/goal.js';
-import { MAX_ACTIVE_WORLD_CARAVANS } from '../caravan/limits.js';
 import { wholeUnitsForTransaction } from '../market/wholeUnits.js';
 import { syncCaravanWithLocalGuild } from '../politics/guildLedger.js';
+import { iterFreshKnownPrices } from '../politics/knownPrices.js';
 import { addCoin, getStockAt, subtractCoin, type Actor } from '../politics/actor.js';
 import { getResource } from '../resources/catalog.js';
 import type { Rng } from '../rng.js';
@@ -110,13 +107,6 @@ const goalDestination = (
       return null;
   }
 };
-
-// --- Caravan spawn pressure ------------------------------------------
-
-const remainingWorldCaravanSlots = (world: WorldState, plannedSpawns = 0): number =>
-  Math.max(0, MAX_ACTIVE_WORLD_CARAVANS - world.caravans.size - plannedSpawns);
-
-
 
 const CARAVAN_RATION_RESERVE_DAYS = 21;
 
@@ -279,32 +269,51 @@ const localRationSellerQuotes = (
   return quotes;
 };
 
-/**
- * Per docs/15 §C22 + C19: collect each candidate destination's residual
- * bid depth (best-bid quantity) per resource so the caravan planner can
- * cap planned cargo at what the destination market can actually absorb.
- * Returns a Map keyed by `hexKey(candidate.hex)` → resource → quantity.
- * Candidates without quoted bids contribute no entry → the planner treats
- * those resources as effectively unlimited (it has no evidence either
- * way), preserving back-compat with fixtures that don't populate books.
- */
-const buildDestinationBidDepthMap = (
-  world: WorldState,
-  candidates: readonly { readonly id: SettlementId; readonly hex: Hex }[],
+const destinationBidDepthFromPriceBook = (
+  priceBook: Caravan['priceBook'],
 ): ReadonlyMap<string, ReadonlyMap<ResourceId, Quantity>> => {
   const out = new Map<string, Map<ResourceId, Quantity>>();
-  for (const candidate of candidates) {
-    const settlement = world.settlements.get(candidate.id);
-    if (settlement === undefined) continue;
-    const market = settlement.market;
-    if (market.bidDepth.size === 0) continue;
-    const byResource = new Map<ResourceId, Quantity>();
-    for (const [resource, depth] of market.bidDepth) {
-      if (Number.isFinite(depth) && depth > 0) byResource.set(resource, depth);
+  for (const [resource, perHex] of priceBook) {
+    for (const [hexK, obs] of perHex) {
+      if (obs.bidDepth === undefined || obs.bidDepth <= 0) continue;
+      let byResource = out.get(hexK);
+      if (byResource === undefined) {
+        byResource = new Map<ResourceId, Quantity>();
+        out.set(hexK, byResource);
+      }
+      byResource.set(resource, obs.bidDepth);
     }
-    if (byResource.size > 0) out.set(hexKey(candidate.hex), byResource);
   }
   return out;
+};
+
+const copyActorKnownPricesToCaravan = (
+  world: WorldState,
+  actor: Actor,
+  caravan: Caravan,
+  today: Day,
+): void => {
+  for (const [settlementId, obs] of iterFreshKnownPrices(actor, today)) {
+    const settlement = world.settlements.get(settlementId);
+    if (settlement === undefined) continue;
+    const key = hexKey(settlement.anchor);
+    for (const [resource, quote] of obs.quotes) {
+      const ask = quote.bestAsk;
+      const bid = quote.bestBid;
+      if (!Number.isFinite(ask) || ask <= 0 || !Number.isFinite(bid) || bid <= 0) continue;
+      let perHex = caravan.priceBook.get(resource);
+      if (perHex === undefined) {
+        perHex = new Map<string, PriceObservation>();
+        caravan.priceBook.set(resource, perHex);
+      }
+      perHex.set(key, {
+        price: (ask + bid) / 2,
+        askPrice: ask,
+        bidPrice: bid,
+        observedOnDay: obs.observedDay,
+      });
+    }
+  }
 };
 
 const localSupplyAvailabilityByResource = (
@@ -665,6 +674,111 @@ const remitStandingCaravanProfitAtHome = (
   return coin;
 };
 
+const unloadVillagerCaravanCargoAtHome = (
+  world: WorldState,
+  caravan: Caravan,
+  settlements: readonly Settlement[],
+  events: TickEvent[],
+): number => {
+  if (!isVillagerCaravan(caravan)) return 0;
+  const owner = world.actors.get(caravan.ownerActor);
+  if (owner === undefined || owner.homeSettlement === undefined) return 0;
+  const home = settlements.find((settlement) => settlement.id === owner.homeSettlement);
+  if (home === undefined) return 0;
+
+  let unloaded = 0;
+  for (const [resource, currentQty] of Array.from(caravan.cargo.entries())) {
+    const qty = wholeUnitsForTransaction(
+      resource,
+      caravanSellableQuantity(caravan, resource, currentQty),
+    );
+    if (qty <= 0) continue;
+    const remaining = currentQty - qty;
+    if (remaining >= 1) caravan.cargo.set(resource, remaining);
+    else caravan.cargo.delete(resource);
+    receiveResourceOrCoin(owner, home.id, resource, qty);
+    if (caravan.importDemand !== undefined) {
+      const remainingDemand = (caravan.importDemand.get(resource) ?? 0) - qty;
+      if (remainingDemand >= 1) caravan.importDemand.set(resource, remainingDemand);
+      else caravan.importDemand.delete(resource);
+      if (caravan.importDemand.size === 0) delete caravan.importDemand;
+    }
+    recordImport(home, resource, qty);
+    unloaded += qty;
+    events.push({
+      type: 'caravan_unloaded_home',
+      caravan: caravan.id,
+      ownerActor: owner.id,
+      settlement: home.id,
+      resource,
+      quantity: qty,
+    });
+  }
+  return unloaded;
+};
+
+const VILLAGER_HOME_TOOL_IMPORT_MIN_TARGET = 5;
+const VILLAGER_HOME_TOOL_IMPORT_MAX_TARGET = 30;
+const VILLAGER_HOME_TOOL_IMPORT_PER_CAPITA = 0.05;
+
+const villagerHomeSettlementForCaravan = (
+  world: WorldState,
+  caravan: Caravan,
+): { readonly owner: Actor; readonly home: Settlement } | null => {
+  if (!isVillagerCaravan(caravan)) return null;
+  const owner = world.actors.get(caravan.ownerActor);
+  if (owner === undefined || owner.homeSettlement === undefined) return null;
+  if (owner.kind !== 'free_village' && owner.kind !== 'hamlet_household') return null;
+  const home = world.settlements.get(owner.homeSettlement);
+  if (home === undefined) return null;
+  return { owner, home };
+};
+
+const villagerHomeToolTarget = (home: Settlement): number => {
+  const scaled = Math.ceil(home.population.total() * VILLAGER_HOME_TOOL_IMPORT_PER_CAPITA);
+  return Math.max(
+    VILLAGER_HOME_TOOL_IMPORT_MIN_TARGET,
+    Math.min(VILLAGER_HOME_TOOL_IMPORT_MAX_TARGET, scaled),
+  );
+};
+
+const buyVillagerPlannedImports = (
+  world: WorldState,
+  caravan: Caravan,
+  settlements: readonly Settlement[],
+  events: TickEvent[],
+): boolean => {
+  const homeInfo = villagerHomeSettlementForCaravan(world, caravan);
+  if (homeInfo === null) return false;
+  if (hexEquals(caravan.position, homeInfo.home.anchor)) return false;
+  if (caravan.importDemand === undefined || caravan.importDemand.size === 0) return false;
+
+  const wanted = new Map<ResourceId, Quantity>();
+  for (const [resource, targetQty] of caravan.importDemand) {
+    const remaining = Math.ceil(targetQty - (caravan.cargo.get(resource) ?? 0));
+    if (remaining >= 1) wanted.set(resource, remaining);
+  }
+  if (wanted.size === 0) {
+    caravan.destination = { q: homeInfo.home.anchor.q, r: homeInfo.home.anchor.r };
+    caravan.goalStack = [{ type: 'return_home', home: caravan.destination }];
+    return true;
+  }
+
+  const bought = buyPlannedCargoAtLocalMarkets(
+    world,
+    caravan,
+    settlements,
+    wanted,
+    events,
+  );
+  if (bought < 1) return false;
+
+  caravan.destination = { q: homeInfo.home.anchor.q, r: homeInfo.home.anchor.r };
+  caravan.goalStack = [{ type: 'return_home', home: caravan.destination }];
+  caravan.noProfitableRouteDays = 0;
+  return true;
+};
+
 const increaseCaravanCargo = (caravan: Caravan, resource: ResourceId, qty: Quantity): void => {
   if (qty <= 0) return;
   caravan.cargo.set(resource, (caravan.cargo.get(resource) ?? 0) + qty);
@@ -932,9 +1046,6 @@ const VILLAGER_CARAVAN_PREFIX = 'villager-';
 // 3 days with cap 3 per village so village / hamlet trade flow has real
 // bandwidth instead of relying on the abstract daily-pass teleportation.
 const VILLAGER_CARAVAN_ASSEMBLY_INTERVAL_DAYS = 3;
-const VILLAGER_CARAVAN_MAX_DISPATCHED_PER_INTERVAL = 20;
-const VILLAGER_CARAVAN_TARGET_PER_VILLAGE = 0.5;
-const VILLAGER_CARAVAN_TARGET_MAX = 120;
 const VILLAGER_CARAVAN_OWNER_CAP = 3;
 const VILLAGER_CARAVAN_MIN_OPERATING_TREASURY = 30;
 const VILLAGER_CARAVAN_MIN_STARTER_RATION_DAYS = 4;
@@ -1142,8 +1253,6 @@ export const merchantCaravanAssemblyPhase = (
   events: TickEvent[],
 ): void => {
   if (today % MERCHANT_CARAVAN_ASSEMBLY_INTERVAL_DAYS !== 0) return;
-  const worldRoom = remainingWorldCaravanSlots(world);
-  if (worldRoom <= 0) return;
   const activeByOwner = standingMerchantCaravanCountByOwner(world);
   const active = Array.from(activeByOwner.values()).reduce((sum, n) => sum + n, 0);
   const target = merchantCaravanTarget(world);
@@ -1151,11 +1260,7 @@ export const merchantCaravanAssemblyPhase = (
 
   const eligible = rng.shuffle(eligibleMerchantCaravanOwners(world, activeByOwner));
   if (eligible.length === 0) return;
-  const toDispatch = Math.min(
-    MERCHANT_CARAVAN_MAX_DISPATCHED_PER_INTERVAL,
-    target - active,
-    worldRoom,
-  );
+  const toDispatch = Math.min(MERCHANT_CARAVAN_MAX_DISPATCHED_PER_INTERVAL, target - active);
   let dispatched = 0;
   for (let i = 0; i < eligible.length && dispatched < toDispatch; i++) {
     const slot = eligible[i];
@@ -1189,7 +1294,7 @@ export const merchantCaravanAssemblyPhase = (
 /**
  * Count active villager caravans per owner. Villager caravans use the
  * `villager-` ID prefix so we can distinguish them from standing merchant
- * caravans (which fill a separate fleet target).
+ * caravans.
  */
 const villagerCaravanCountByOwner = (world: WorldState): Map<ActorId, number> => {
   const out = new Map<ActorId, number>();
@@ -1198,16 +1303,6 @@ const villagerCaravanCountByOwner = (world: WorldState): Map<ActorId, number> =>
     out.set(caravan.ownerActor, (out.get(caravan.ownerActor) ?? 0) + 1);
   }
   return out;
-};
-
-const villagerCaravanTarget = (world: WorldState): number => {
-  // Roughly half the villages can have a villager caravan out at any time.
-  let villageCount = 0;
-  for (const s of world.settlements.values()) {
-    if (s.tier === 'village') villageCount += 1;
-  }
-  const raw = Math.floor(villageCount * VILLAGER_CARAVAN_TARGET_PER_VILLAGE);
-  return Math.max(0, Math.min(VILLAGER_CARAVAN_TARGET_MAX, raw));
 };
 
 /**
@@ -1240,67 +1335,160 @@ const VILLAGER_EXPORTABLE_RESOURCES: ReadonlyArray<ResourceId> = [
   resourceId('goods.clothing'),
 ];
 
-/**
- * Per docs/15 §C31: enough treasury that a village steward could
- * realistically fund an import-only round-trip — fully-paid cart + 4-day
- * starter rations + city-side purchase of pots/oil/tools/salt to bring
- * home. Below this threshold the steward can't really afford an
- * import-driven trip; we still let the caravan launch on a surplus
- * trigger so it can earn coin on the way.
- */
-const VILLAGER_CARAVAN_IMPORT_TRIP_MIN_TREASURY = 200;
+interface VillagerCaravanDemand {
+  readonly importDemand: Map<ResourceId, Quantity>;
+}
 
-/**
- * Per docs/15 §C31: is it worth sending a villager caravan out THIS
- * cycle? Three village / hamlet market-run motivations:
- *  1. Surplus run — the village has any meaningful exportable inventory
- *     (food, fibre, wood, livestock, cloth) above a small per-capita
- *     threshold. The caravan planner can carry it to a profitable market
- *     and return with coin and/or bought goods.
- *  2. Import trip — the steward has accumulated treasury and wants to
- *     buy what it can't make itself (oil, wine, salt, pottery, tools).
- *  3. Hard-times resupply — the village's own subsistence stocks are
- *     critically low AND it has any cash, so the steward drains some
- *     treasury and sends the caravan to buy back food/staples from the
- *     market.
- *
- * Each case is a "yes, dispatch a caravan" — the planner picks the
- * cargo + direction once the caravan exists.
- */
-const villageWantsCaravan = (settlement: Settlement, steward: Actor): boolean => {
+const villagerExportAvailabilityByResource = (
+  settlement: Settlement,
+  steward: Actor,
+): Map<ResourceId, Quantity> => {
+  const out = new Map<ResourceId, Quantity>();
   const pop = settlement.population.total();
-  if (pop <= 0) return false;
-  // Case 1: any exportable above a small per-capita day threshold.
+  if (pop <= 0) return out;
   for (const r of VILLAGER_EXPORTABLE_RESOURCES) {
     const stock = getStockAt(steward, settlement.id, r);
     if (stock <= 0) continue;
-    // Loose threshold: stock equivalent to ≥ N days of the village's own
+    // Loose threshold: stock equivalent to >= N days of the village's own
     // subsistence-style consumption of that resource. Per-resource rate
-    // varies, but 0.02/adult/day is a safe lower bound across the list
-    // (grain alone is 0.06; bulky materials less). The planner makes the
-    // tight cargo decision; this is just a "do you have meaningful
-    // inventory?" filter.
+    // varies, but 0.02/adult/day is a safe lower bound across the list.
     const daysOfLocalUse = stock / Math.max(1, pop * 0.02);
-    if (daysOfLocalUse >= VILLAGER_CARAVAN_SURPLUS_DAYS_THRESHOLD) return true;
+    if (daysOfLocalUse >= VILLAGER_CARAVAN_SURPLUS_DAYS_THRESHOLD) out.set(r, stock);
   }
-  // Case 2: import trip — steward has accumulated coin and wants
-  // city-made goods. Even with empty granary, this funds a "go buy us
-  // something useful" run.
-  if (steward.treasury >= VILLAGER_CARAVAN_IMPORT_TRIP_MIN_TREASURY) return true;
-  // Case 3: hard-times resupply — village grain stock under 7 days of
-  // subsistence AND steward has any cash to spend. Caravan goes to city
-  // and buys staples back.
+  return out;
+};
+
+const plannedVillagerImportDemand = (
+  settlement: Settlement,
+  steward: Actor,
+): Map<ResourceId, Quantity> => {
+  const out = new Map<ResourceId, Quantity>();
+  const tools = resourceId('goods.tools');
+  const wantedTools = Math.ceil(villagerHomeToolTarget(settlement) - getStockAt(steward, settlement.id, tools));
+  if (wantedTools >= 1) out.set(tools, wantedTools);
+  return out;
+};
+
+const hasFreshNonHomeMarketObservation = (
+  steward: Actor,
+  home: SettlementId,
+  today: Day,
+): boolean => {
+  for (const [settlement] of iterFreshKnownPrices(steward, today)) {
+    if (settlement !== home) return true;
+  }
+  return false;
+};
+
+const stewardCanAffordKnownImport = (
+  steward: Actor,
+  home: SettlementId,
+  today: Day,
+  demand: ReadonlyMap<ResourceId, Quantity>,
+): boolean => {
+  const spendable = Math.max(0, steward.treasury - VILLAGER_CARAVAN_MIN_OPERATING_TREASURY);
+  if (spendable <= 0) return false;
+  for (const [settlement, obs] of iterFreshKnownPrices(steward, today)) {
+    if (settlement === home) continue;
+    for (const [resource] of demand) {
+      const ask = obs.quotes.get(resource)?.bestAsk;
+      if (ask !== undefined && Number.isFinite(ask) && ask > 0 && ask <= spendable) return true;
+    }
+  }
+  return false;
+};
+
+const villagerKnownProfitableExportPlan = (
+  world: WorldState,
+  settlement: Settlement,
+  steward: Actor,
+  today: Day,
+  rng: Rng,
+): boolean => {
+  const originAvailableQuantity = villagerExportAvailabilityByResource(settlement, steward);
+  if (originAvailableQuantity.size === 0) return false;
+  const candidates = settlementAnchorIndexForWorld(world).candidates;
+  if (candidates.length < 2) return false;
+  const probe = createCaravan({
+    id: makeCaravanIdLocal(`villager-probe-${String(steward.id)}`),
+    ownerActor: steward.id,
+    position: settlement.anchor,
+    destination: settlement.anchor,
+    crew: [{ kind: 'drover', count: 1, weapons: 0, armor: 0 }],
+    animals: { mule: VILLAGER_CARAVAN_MIN_PACK_ANIMALS },
+    vehicles: { pack_saddle: 1 },
+    treasury: Math.max(0, steward.treasury - VILLAGER_CARAVAN_MIN_OPERATING_TREASURY),
+  });
+  copyActorKnownPricesToCaravan(world, steward, probe, today);
+  const plan = planCaravanRoute({
+    caravan: probe,
+    candidateSettlements: candidates,
+    knownPrices: probe.priceBook,
+    knownBanditDensity: new Map(),
+    knownToll: () => 0,
+    cargoConstraints: {
+      maxSpendCoin: probe.treasury,
+      reserveTripOperatingCost: true,
+      originAvailableQuantity,
+      destinationBidDepth: destinationBidDepthFromPriceBook(probe.priceBook),
+    },
+    minNetProfitCoin: CARAVAN_MIN_NET_PROFIT_COIN,
+    minNetProfitFraction: CARAVAN_MIN_NET_PROFIT_FRACTION,
+    includeReason: false,
+    rng,
+  });
+  return plan !== null;
+};
+
+/**
+ * Per docs/15 §C31: is it worth sending a villager caravan out THIS
+ * cycle? Dispatch must be demand-backed: actual sellable surplus, an
+ * import shortage learned at home before departure, or hard-times staple
+ * need. Accumulated treasury alone is not demand. Known-price maps gate
+ * obvious bad trips; if the steward has no non-home observations yet, a
+ * surplus-backed trip may still scout because that is how it learns.
+ */
+const villageCaravanDemand = (
+  world: WorldState,
+  settlement: Settlement,
+  steward: Actor,
+  today: Day,
+  rng: Rng,
+): VillagerCaravanDemand | null => {
+  const pop = settlement.population.total();
+  if (pop <= 0) return null;
+  const exportAvailability = villagerExportAvailabilityByResource(settlement, steward);
+  const hasExportSurplus = exportAvailability.size > 0;
+  const hasNonHomeObservation = hasFreshNonHomeMarketObservation(steward, settlement.id, today);
+  const exportDemandViable =
+    hasExportSurplus &&
+    (!hasNonHomeObservation ||
+      villagerKnownProfitableExportPlan(world, settlement, steward, today, rng.derive('export')));
+
+  const importDemand = plannedVillagerImportDemand(settlement, steward);
+  const importDemandViable =
+    importDemand.size > 0 &&
+    (exportDemandViable ||
+      stewardCanAffordKnownImport(steward, settlement.id, today, importDemand));
+
   const grainStock = getStockAt(steward, settlement.id, resourceId('food.grain'));
   const grainDays = grainStock / Math.max(1, pop * 0.06);
-  if (grainDays < 7 && steward.treasury >= VILLAGER_CARAVAN_MIN_OPERATING_TREASURY) return true;
-  return false;
+  const hardTimesDemandViable =
+    grainDays < 7 &&
+    steward.treasury >= VILLAGER_CARAVAN_MIN_OPERATING_TREASURY &&
+    (hasNonHomeObservation || hasExportSurplus);
+
+  if (!exportDemandViable && !importDemandViable && !hardTimesDemandViable) return null;
+  return { importDemand: importDemandViable ? importDemand : new Map() };
 };
 
 const eligibleVillagerCaravanOwners = (
   world: WorldState,
   activeByOwner: ReadonlyMap<ActorId, number>,
-): { readonly actor: Actor; readonly settlement: Settlement }[] => {
-  const out: { actor: Actor; settlement: Settlement }[] = [];
+  today: Day,
+  rng: Rng,
+): { readonly actor: Actor; readonly settlement: Settlement; readonly demand: VillagerCaravanDemand }[] => {
+  const out: { actor: Actor; settlement: Settlement; demand: VillagerCaravanDemand }[] = [];
   for (const actor of world.actors.values()) {
     // v1.7 cleanup (pass 29): hamlet_household actors at hamlet-tier
     // settlements also dispatch villager-style caravans. Per the 10y
@@ -1316,8 +1504,15 @@ const eligibleVillagerCaravanOwners = (
     const settlement = world.settlements.get(actor.homeSettlement);
     if (settlement === undefined) continue;
     if (settlement.tier !== 'village' && settlement.tier !== 'hamlet') continue;
-    if (!villageWantsCaravan(settlement, actor)) continue;
-    out.push({ actor, settlement });
+    const demand = villageCaravanDemand(
+      world,
+      settlement,
+      actor,
+      today,
+      rng.derive(String(actor.id)),
+    );
+    if (demand === null) continue;
+    out.push({ actor, settlement, demand });
   }
   // Stable order: deterministic by id; shuffled later when picking the
   // dispatch slice.
@@ -1330,6 +1525,7 @@ const createVillagerCaravan = (
   today: Day,
   owner: Actor,
   origin: Settlement,
+  demand: VillagerCaravanDemand,
   rng: Rng,
   index: number,
   events: TickEvent[],
@@ -1407,7 +1603,10 @@ const createVillagerCaravan = (
     animals: { mule: muleCount, donkey: donkeyCount },
     vehicles: { pack_saddle: 1 },
     treasury: operatingTreasury,
+    originSettlement: origin.id,
   });
+  copyActorKnownPricesToCaravan(world, owner, caravan, today);
+  if (demand.importDemand.size > 0) caravan.importDemand = new Map(demand.importDemand);
   if (!world.grid.has(caravan.position)) return null;
   const minStarterRationKg =
     dailyCarriedFoodReserveKg(caravan) * VILLAGER_CARAVAN_MIN_STARTER_RATION_DAYS;
@@ -1429,22 +1628,11 @@ export const villagerCaravanAssemblyPhase = (
   events: TickEvent[],
 ): void => {
   if (today % VILLAGER_CARAVAN_ASSEMBLY_INTERVAL_DAYS !== 0) return;
-  const worldRoom = remainingWorldCaravanSlots(world);
-  if (worldRoom <= 0) return;
   const activeByOwner = villagerCaravanCountByOwner(world);
-  const active = Array.from(activeByOwner.values()).reduce((sum, n) => sum + n, 0);
-  const target = villagerCaravanTarget(world);
-  if (active >= target) return;
-
-  const eligible = rng.shuffle(eligibleVillagerCaravanOwners(world, activeByOwner));
+  const eligible = rng.shuffle(eligibleVillagerCaravanOwners(world, activeByOwner, today, rng));
   if (eligible.length === 0) return;
-  const toDispatch = Math.min(
-    VILLAGER_CARAVAN_MAX_DISPATCHED_PER_INTERVAL,
-    target - active,
-    worldRoom,
-  );
   let dispatched = 0;
-  for (let i = 0; i < eligible.length && dispatched < toDispatch; i++) {
+  for (let i = 0; i < eligible.length; i++) {
     const slot = eligible[i];
     if (slot === undefined) continue;
     const currentForOwner = activeByOwner.get(slot.actor.id) ?? 0;
@@ -1454,7 +1642,8 @@ export const villagerCaravanAssemblyPhase = (
       today,
       slot.actor,
       slot.settlement,
-      rng.derive(`villager-dispatch-${i}`),
+      slot.demand,
+      rng.derive(`dispatch-${i}`),
       dispatched,
       events,
     );
@@ -1749,11 +1938,6 @@ export const caravanReplanPhase = (
           byDestination.set(toKey, risk);
           return risk;
         };
-  // Market bid-depth books are produced in the trade phase and are not
-  // mutated by caravan replan cargo transfers, so one phase-level snapshot is
-  // equivalent to rebuilding it for every arrived caravan.
-  const destinationBidDepth = buildDestinationBidDepthMap(world, candidates);
-
   // Build a city-anchor lookup once per phase for goal-completion checks.
   const settlementAnchorByCity = new Map<SettlementId, Hex>();
   for (const s of world.settlements.values()) settlementAnchorByCity.set(s.id, s.anchor);
@@ -1811,9 +1995,11 @@ export const caravanReplanPhase = (
         }
         book.set(`${c.position.q},${c.position.r}`, averageObservedMarket(entry, today));
       }
+      unloadVillagerCaravanCargoAtHome(world, c, localBucket, events);
       sellCaravanCargoAtLocalMarkets(world, c, localBucket, events);
       buyCaravanRationsAtLocalMarkets(world, c, localBucket, events);
       if (routeOffMapImportHomeIfDelivered(world, c, localBucket, edgeHexKeys)) continue;
+      if (buyVillagerPlannedImports(world, c, localBucket, events)) continue;
       remitStandingCaravanProfitAtHome(world, c, localBucket, events);
     }
 
@@ -1828,10 +2014,9 @@ export const caravanReplanPhase = (
     const originAvailability =
       localBucket === undefined ? undefined : localSupplyAvailabilityByResource(world, localBucket);
     const missingRationKg = caravanMissingRationReserveKg(c);
-    // Per docs/15 §C22 + C19: pre-build a destination → resource → bid
-    // depth map for the candidates so the planner can cap cargo at what
-    // each destination market can actually absorb. Without this the
-    // planner over-loads goods that won't clear on arrival.
+    // Per docs/15 §C22 + C19: cap expected destination volume from the
+    // caravan's own observed bid-depth book. Do not read the current remote
+    // market book here; the caravan only knows markets it has learned about.
     // 2. Plan next route.
     // Per docs/15 §C25: require a meaningful margin, not just netProfit>0.
     // CARAVAN_MIN_NET_PROFIT_COIN sets an absolute floor representing the
@@ -1856,7 +2041,7 @@ export const caravanReplanPhase = (
         ...(originAvailability !== undefined
           ? { originAvailableQuantity: originAvailability }
           : {}),
-        destinationBidDepth,
+        destinationBidDepth: destinationBidDepthFromPriceBook(c.priceBook),
       },
       minNetProfitCoin: CARAVAN_MIN_NET_PROFIT_COIN,
       minNetProfitFraction: CARAVAN_MIN_NET_PROFIT_FRACTION,
