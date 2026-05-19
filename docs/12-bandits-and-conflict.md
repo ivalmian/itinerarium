@@ -233,7 +233,7 @@ A settlement under attack defends with: garrison soldiers, local
 militia (idle adults grabbing whatever they have), walls (a major
 factor — see [03 — Production](03-production.md) for `build_walls`).
 
-## Bandit raid parties (docs/15 §C32)
+## Bandit raid parties
 
 Per pillar §1 (no hidden hands), every camp-originated action that
 touches another hex is a **physical, movable unit** — not an instant
@@ -264,7 +264,7 @@ targets ≤3-4 hexes from the home camp.
 returning party founds a new camp at its arrival hex. This is the
 only way a wiped camp's faction survives.
 
-**Patrol intercepts** (landed, docs/15 §C32):
+**Patrol intercepts**:
 
 - Patrols scan for visible bandit camps + parties within
   `PATROL_SIGHT_HEXES = 2`. If a target is in sight AND the

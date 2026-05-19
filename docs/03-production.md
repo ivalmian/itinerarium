@@ -243,8 +243,8 @@ caravan_transport:                               # see also [06 — Caravans]
 
 `smelt_copper` and `smelt_tin` refine ore into `metal.copper` and
 `metal.tin`; `alloy_bronze` then consumes those intermediates plus
-charcoal. The old direct copper/tin-ore → bronze shortcut was removed
-in docs/15 §C13 and in `src/sim/production/recipes.ts`.
+charcoal. Direct copper/tin-ore to bronze conversion is not part of
+the recipe model.
 
 **Manufacture:** `weave_cloth`, `weave_linen_cloth`,
 `tailor_clothing`, `forge_tools`, `forge_gladius`, `forge_hasta`,

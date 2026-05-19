@@ -55,7 +55,10 @@ for the full locked list.
 14. [14 — Debug strategies](14-debug-strategies.md) — how to figure out
     *why* a burn-in is failing; instruments, failure patterns, triage
     checklist.
-15. [10 — Current scope, decisions, risks, next steps](10-scope-and-questions.md)
+15. [15 — Viewer](15-viewer.md) — canonical viewer/rendering direction:
+    burn-in inspection, fixed-isometric generated map art, topology-owned
+    roads/rivers, seasons, and six-direction unit animation.
+16. [10 — Current scope, decisions, risks, next steps](10-scope-and-questions.md)
     — the locked v1.5/current cut + the full table of design decisions +
     risks + ordered build plan.
 
@@ -64,8 +67,8 @@ for the full locked list.
 - TypeScript, browser-first (Vite or similar), Electron later.
 - Hexagonal grid (1 km hexes, pointy-top, axial coordinates),
   turn-based with daily ticks and Vagrus-style player turns.
-- WebGL/PixiJS map rendering, viewport-culled. Initial terrain,
-  settlement, and glyph assets may be SVG-backed.
+- WebGL/PixiJS map rendering, viewport-culled, using the generated
+  fixed-isometric raster pipeline in [15 — Viewer](15-viewer.md).
 - Deterministic sim with seeded RNG.
 - Data-oriented (Structure-of-Arrays) layout — we want to scale
   to ~250k hexes and ~3,000–8,000 settlement entities + roughly
