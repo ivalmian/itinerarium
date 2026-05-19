@@ -7,19 +7,25 @@
  * prints a one-line summary to stdout, and exits with code 0 on success
  * or 1 if any fatal invariant fired.
  *
+ * Output convention (see CLAUDE.md §"Burn-in output goes under
+ * ./burnin/"): every burn-in writes under `./burnin/<run-name>/`.
+ * The `./burnin/` tree is .gitignored. The default `--out` is
+ * `./burnin/default`; pass `--out=./burnin/v1-9-10y` (or similar)
+ * to keep multiple runs side-by-side.
+ *
  * Example:
  *   npm run burnin -- \
  *     --seed=foo --years=5 \
  *     --width=200 --height=200 \
  *     --cities=5 --towns=15 --villages=300 --hamlets=200 \
  *     --invariants=week --snapshots=year \
- *     --out=./burnin-out
+ *     --out=./burnin/foo-5y
  *
  * Debug instrument example (writes per-(settlement, resource) CSVs):
  *   npm run burnin -- \
  *     --seed=debug --days=365 \
  *     --width=32 --height=32 --cities=1 --towns=2 --villages=4 --hamlets=2 \
- *     --out=./burnin-debug \
+ *     --out=./burnin/debug \
  *     --instruments=time-series
  *
  * Note: `--instruments=time-series` writes one CSV per (settlement, resource)
@@ -82,7 +88,7 @@ const DEFAULTS: ParsedFlags = {
   years: 5,
   invariants: 'month',
   snapshots: 'year',
-  out: './burnin-out',
+  out: './burnin/default',
   silent: false,
   instruments: [],
 };

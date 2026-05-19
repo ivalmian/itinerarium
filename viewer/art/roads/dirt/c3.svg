@@ -1,4 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 148" preserveAspectRatio="xMidYMid meet">
-  <defs><clipPath id="hex"><polygon points="64,0 128,37 128,111 64,148 0,111 0,37"/></clipPath></defs>
-  <g clip-path="url(#hex)"><path d="M 134.00 74.00 C 102.47 74.00 83.25 40.62 99.00 13.30" fill="none" stroke="#7a5a30" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M 134.00 74.00 C 102.47 74.00 83.25 40.62 99.00 13.30" fill="none" stroke="#a07a3e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.75"/><path d="M 134.00 74.00 C 102.47 74.00 83.25 40.62 99.00 13.30" fill="none" stroke="#5a4022" stroke-width="0.5" opacity="0.55"/></g>
-</svg>

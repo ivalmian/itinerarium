@@ -39,9 +39,8 @@ class's household cash and wage receipts so food, fuel, and comfort
 purchases are paid by workers rather than by the city corporation.
 Each class bids and accumulates wages independently — so when an
 empty plebeian pocket suppresses bread bids, a freedman with savings
-can still buy a clay pot. See docs/15 §C21 for the disaggregation
-rationale (prior `common_household` consolidation merged all three
-classes into one ledger, dampening per-class demand). Free villages
+can still buy a clay pot. A single aggregate household ledger would
+dampen per-class demand. Free villages
 and hamlets use their village/hamlet household actor directly,
 because those are political entities (with land, elders, patron
 relations), not class aggregates. None of these household actors
@@ -148,9 +147,8 @@ Two main forms.
 - The village itself has its own `free_village` actor — the
   village commons / steward fund. This actor owns the village's
   buildings, runs production, holds the village's grain reserves,
-  and pays its plebeian workers' wages. Per docs/15 §C29 the
-  patron is **not** a stockpile owner of the village; per docs/15
-  §C30 inventory is physical-by-settlement.
+  and pays its plebeian workers' wages. The patron is **not** a stockpile
+  owner of the village; inventory is physical by settlement.
 - Workers are coloni-style tenants whose surplus is gathered by
   the village steward and converted to coin at the local market.
 - The family directs production goals (more grain this year,
@@ -173,7 +171,7 @@ Two main forms.
 - More resilient politically but typically poorer than
   patron-client villages.
 
-### Village / hamlet trade — the villager caravan (docs/15 §C31)
+### Village / hamlet trade — the villager caravan
 
 Village and hamlet stewards can dispatch low-capacity villager pack
 caravans when local conditions justify a market run. This is not the
@@ -236,9 +234,9 @@ forest hex, quarry, river weir) is owned by a specific actor:
 
 When a recipe runs at a catchment hex, output goes to the
 **building's `ownerActor` stockpile at this settlement**, not to a
-generic settlement pool. Per docs/15 §C30 inventory is keyed by
-settlement, so the same actor's stockpile in city A and village B
-are separate physical pools. For patron-client villages this
+generic settlement pool. Inventory is keyed by settlement, so the same
+actor's stockpile in city A and village B are separate physical pools. For
+patron-client villages this
 distinction matters: the building owner is the village steward
 (the village's `free_village` actor), not the patron. The patron
 owns the LAND (`tile.ownerActor`) but the steward owns the

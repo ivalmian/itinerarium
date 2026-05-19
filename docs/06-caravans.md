@@ -833,8 +833,8 @@ Family caravans (run by a patrician family) have additional
 priorities: moving family goods to market, supplying the family
 town house, returning rents in kind from owned villages.
 
-**Villager caravans** (docs/15 §C31) are a separate low-capacity
-sub-type dispatched by `free_village` and `hamlet_household`
+**Villager caravans** are a separate low-capacity sub-type dispatched
+by `free_village` and `hamlet_household`
 stewards. Same planner logic, but smaller: 2-4 mules, optional
 donkey, 1 drover + 1 guard, no light cart, operating treasury
 50-250 coin. The dispatch trigger covers everyday village / hamlet
@@ -936,8 +936,8 @@ settlement trade flow goes through a **real caravan unit** with a
 position on the map, a goal stack, food consumption, ambush
 exposure, and a snapshot identity.
 
-The existing **villager caravan** subsystem (docs/15 §C31) is the
-implemented low-capacity local-trade vehicle. Free-village and
+The **villager caravan** subsystem is the implemented low-capacity
+local-trade vehicle. Free-village and
 hamlet stewards spawn real caravans; the normal caravan planner then
 chooses routes from known prices / fallback scouting. There is no
 separate hidden daily-pass for adjacent settlements.
@@ -950,7 +950,7 @@ size, dispatcher, and typical route length:
 
 | Tier | Cargo cap | Crew + animals | Typical dispatcher | Typical range |
 |------|-----------|----------------|---------------------|---------------|
-| **Villager pack caravan** | ~200–450 kg gross before rations | 1 drover + 1 guard, 2–4 mules plus optional donkey, pack saddle | `free_village` / `hamlet_household` steward (docs/15 §C31) | usually short because treasury/capacity are small; no abstract 6-hex daily-pass cap |
+| **Villager pack caravan** | ~200–450 kg gross before rations | 1 drover + 1 guard, 2–4 mules plus optional donkey, pack saddle | `free_village` / `hamlet_household` steward | usually short because treasury/capacity are small; no abstract 6-hex daily-pass cap |
 | **Standing merchant** | 500 – 1,500 kg | full crew + escort, 10–50 mules or wagons | warm-start: `patrician_family` / `governor_office`; replacement: `patrician_family` / optional `caravan_owner` | multi-cluster, multi-day |
 | **International venture** | 500 – 1,500 kg | full crew + escort | outbound: `patrician_family` / `merchant_guild`; inbound: synthetic `off_map_house` | export: home → edge hex → 20-tick sojourn → home; import: edge → city → edge |
 

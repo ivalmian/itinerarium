@@ -23,7 +23,7 @@
 import type { ResourceId } from '../types.js';
 import type { WorldState } from '../../procgen/seed.js';
 
-const RECENT_FLOW_DECAY_FACTOR = Math.exp(-1 / 30);
+export const RECENT_FLOW_DECAY_FACTOR = Math.exp(-1 / 30);
 const RECENT_FLOW_PRUNE_BELOW = 0.5;
 
 const decayFlowMap = (m: Map<ResourceId, number>): void => {

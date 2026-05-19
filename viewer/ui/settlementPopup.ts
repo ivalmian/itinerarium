@@ -52,6 +52,7 @@ export const renderSettlementPopup = (opts: SettlementPopupOpts): SettlementPopu
   const root = document.createElement('div');
 
   root.appendChild(renderHeader(world, s, state));
+  root.appendChild(renderHistorySection(s, history));
   root.appendChild(renderPopulationSection(s));
   root.appendChild(renderTreasurySection(world, s));
   root.appendChild(renderBuildingsSection(s));
@@ -141,6 +142,91 @@ const renderHeader = (world: WorldState, s: Settlement, state: ViewerState): HTM
   }
 
   return section;
+};
+
+// --- History: population, treasury, grain stockpile sparklines -------------
+
+const HISTORY_KEY_RESOURCES: readonly string[] = [
+  'food.grain',
+  'food.bread',
+  'food.flour',
+  'goods.tools',
+];
+
+const renderHistorySection = (s: Settlement, history: ViewerHistory): HTMLElement => {
+  const section = popupSection('History');
+  const buf = history.settlements.get(s.id);
+  if (buf === undefined || buf.length < 2) {
+    section.appendChild(popupEmpty('(not enough history yet)'));
+    return section;
+  }
+
+  // Pull series from ring buffer (last 100 ticks by default).
+  const popSeries = buf.map((b) => b.population);
+  const buildingsSeries = buf.map((b) => b.buildings);
+  const treasurySeries = buf.map((b) => b.settlementTreasury);
+  const lastSnap = buf[buf.length - 1]!;
+
+  const grid = document.createElement('div');
+  grid.style.display = 'grid';
+  grid.style.gridTemplateColumns = 'repeat(auto-fit, minmax(220px, 1fr))';
+  grid.style.gap = '10px';
+
+  grid.appendChild(historyCell('Population', popSeries, popSeries[popSeries.length - 1] ?? 0));
+  grid.appendChild(
+    historyCell('Buildings', buildingsSeries, buildingsSeries[buildingsSeries.length - 1] ?? 0),
+  );
+  grid.appendChild(
+    historyCell('Treasury (sum)', treasurySeries, treasurySeries[treasurySeries.length - 1] ?? 0),
+  );
+
+  // Stockpile sparklines for the key resources, if the settlement holds any.
+  for (const keyStr of HISTORY_KEY_RESOURCES) {
+    const series = buf.map((b) => b.stockpiles.get(keyStr as ResourceId) ?? 0);
+    const hasAny = series.some((v) => v > 0);
+    if (!hasAny) continue;
+    const lastVal = lastSnap.stockpiles.get(keyStr as ResourceId) ?? 0;
+    grid.appendChild(historyCell(`${stockpileLabel(keyStr)} stockpile`, series, lastVal));
+  }
+
+  section.appendChild(grid);
+  return section;
+};
+
+const historyCell = (label: string, series: number[], current: number): HTMLElement => {
+  const cell = document.createElement('div');
+  cell.style.background = 'var(--panel-2)';
+  cell.style.border = '1px solid var(--border)';
+  cell.style.padding = '6px 8px';
+  cell.style.borderRadius = '3px';
+  const top = document.createElement('div');
+  top.style.display = 'flex';
+  top.style.justifyContent = 'space-between';
+  top.style.alignItems = 'baseline';
+  const labelEl = document.createElement('div');
+  labelEl.textContent = label;
+  labelEl.style.color = 'var(--muted)';
+  labelEl.style.fontSize = '10px';
+  labelEl.style.textTransform = 'uppercase';
+  labelEl.style.letterSpacing = '0.05em';
+  top.appendChild(labelEl);
+  const valEl = document.createElement('div');
+  valEl.style.color = 'var(--text)';
+  valEl.style.fontVariantNumeric = 'tabular-nums';
+  valEl.style.fontSize = '12px';
+  valEl.textContent = fmtCompact(current);
+  top.appendChild(valEl);
+  cell.appendChild(top);
+  const sparkHost = document.createElement('div');
+  sparkHost.style.marginTop = '4px';
+  sparkHost.appendChild(createSparkline(series, { width: 200, height: 24 }));
+  cell.appendChild(sparkHost);
+  return cell;
+};
+
+const stockpileLabel = (r: string): string => {
+  const idx = r.indexOf('.');
+  return idx >= 0 ? r.slice(idx + 1) : r;
 };
 
 // --- Population: class totals + age × sex pyramid --------------------------

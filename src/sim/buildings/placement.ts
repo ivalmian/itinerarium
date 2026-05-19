@@ -49,6 +49,100 @@ export const isTerrainBuildable = (terrain: Terrain): boolean => {
 };
 
 /**
+ * Per-building placement family. Drives the **uniform** hard-gate that
+ * `terrainAffinity` applies before any per-building scoring. Every
+ * building belongs to exactly one family; adding a new building means
+ * picking a family (or, rarely, adding one). Without an explicit
+ * mapping in `PLACEMENT_FAMILY_BY_BUILDING`, a building falls back to
+ * `urban` — the strictest family — so unconfigured buildings are
+ * forbidden on lake / river / mountains / dense_forest.
+ *
+ * Categories:
+ *   - `urban`: standard above-ground civic / craft / storage. Forbidden
+ *     on lake / river / mountains / dense_forest.
+ *   - `rural`: catchment land use (farm, pasture, vineyard, olive_grove,
+ *     orchard). Same hard bans as urban; per-building scoring further
+ *     down-ranks the urban hex.
+ *   - `forest`: forester_camp + similar. Same hard bans; per-building
+ *     scoring up-ranks forest hexes.
+ *   - `mining`: mine + quarry. Can sit on hills / mountains / dense_forest
+ *     (the buildings physically excavate terrain). Forbidden on
+ *     lake / river / urban / ruin.
+ *   - `water`: fishery + similar water-extraction. Forbidden on lake
+ *     (the building sits on land BESIDE water, not in it) and on the
+ *     normal unbuildable set; the per-building scorer enforces
+ *     "needs water adjacency."
+ *   - `infrastructure`: aqueducts, road segments. Any passable terrain.
+ */
+export type PlacementFamily =
+  | 'urban'
+  | 'rural'
+  | 'forest'
+  | 'mining'
+  | 'water'
+  | 'infrastructure';
+
+const PLACEMENT_FAMILY_BY_BUILDING: ReadonlyMap<string, PlacementFamily> = new Map([
+  // Rural land use
+  ['farm', 'rural'],
+  ['pasture', 'rural'],
+  ['vineyard', 'rural'],
+  ['olive_grove', 'rural'],
+  ['orchard', 'rural'],
+  // Forest
+  ['forester_camp', 'forest'],
+  ['sawmill', 'forest'],
+  ['charcoal_kiln', 'forest'],
+  // Mining
+  ['mine', 'mining'],
+  ['quarry', 'mining'],
+  // Water-adjacent
+  ['fishery', 'water'],
+  ['mill', 'water'],
+  ['tannery', 'water'],
+  // Infrastructure (routed by other code; if asked here, any passable terrain)
+  ['aqueduct_segment', 'infrastructure'],
+  ['road_segment', 'infrastructure'],
+  // Everything else falls through to 'urban' via the lookup default.
+]);
+
+const placementFamilyFor = (buildingId: BuildingId): PlacementFamily =>
+  PLACEMENT_FAMILY_BY_BUILDING.get(String(buildingId)) ?? 'urban';
+
+/**
+ * **Uniform hard gate.** Returns true iff the terrain is categorically
+ * compatible with the building's placement family. This runs BEFORE any
+ * per-building scoring — every building goes through this check, so
+ * we can never silently place a quarry on a lake again.
+ *
+ * Per-building scorers (the switch inside `terrainAffinity`) trust
+ * this gate and don't re-check the same conditions.
+ */
+export const isTerrainAllowedFor = (buildingId: BuildingId, terrain: Terrain): boolean => {
+  const family = placementFamilyFor(buildingId);
+  switch (family) {
+    case 'mining':
+      // Mines / quarries bypass the lake / mountains / dense_forest ban
+      // because they LITERALLY excavate terrain. But they still must
+      // not sit on water or in a city core.
+      return terrain !== 'lake' && terrain !== 'river' && terrain !== 'urban' && terrain !== 'ruin';
+    case 'water':
+      // Fishery / water-mill / tannery: built on LAND beside water, so
+      // the hex itself must be buildable (no on-lake). The "needs water"
+      // requirement is enforced by the per-building scorer below.
+      return isTerrainBuildable(terrain);
+    case 'infrastructure':
+      // Roads / aqueducts run on any passable terrain.
+      return isTerrainBuildable(terrain);
+    case 'urban':
+    case 'rural':
+    case 'forest':
+      // Standard above-ground placement uses the default unbuildable set.
+      return isTerrainBuildable(terrain);
+  }
+};
+
+/**
  * Score how well a building fits a given hex. 0 = unsuitable (do not
  * place); >0 = suitable, higher is better. Callers pick the highest-
  * scoring free hex among candidates.
@@ -76,17 +170,21 @@ export const terrainAffinity = (
   const wet = options.waterAdjacent || tile.hasRiver;
   const urban = options.isUrban === true || t === 'urban';
 
-  // Mines and quarries can sit on terrain that's otherwise unbuildable
-  // (mountains, dense forest) — they're geology-led, not land-use-led.
-  // Caller still gates on a matching deposit.
+  // Uniform top-level hard gate: every building goes through here,
+  // regardless of its scoring rules. Mines + quarries opt in to the
+  // 'mining' family which keeps them off water + city cores while
+  // allowing mountain / dense-forest placement.
+  if (!isTerrainAllowedFor(buildingId, t)) return 0;
+
+  // Mining-family ranking: caller separately requires a matching
+  // deposit on the hex (this fn doesn't have access to the deposit
+  // map). Score by physical fit.
   if (String(buildingId) === 'mine') {
     return mineScore(t);
   }
   if (String(buildingId) === 'quarry') {
     return quarryScore(t);
   }
-
-  if (!isTerrainBuildable(t)) return 0;
 
   // Land-use buildings (farm, pasture, vineyard, olive_grove, orchard,
   // forester_camp) make no sense inside the city core: the urban hex
@@ -244,6 +342,11 @@ export const terrainAffinity = (
   }
 };
 
+/**
+ * Mine + quarry ranking. The `isTerrainAllowedFor` gate above has
+ * already rejected lake / river / urban / ruin, so this fn only sees
+ * terrains where mining is plausibly viable and ranks them.
+ */
 const mineScore = (t: Terrain): number => {
   // Caller separately requires a matching mineable deposit on the hex.
   if (t === 'hills') return 10;
@@ -256,6 +359,8 @@ const mineScore = (t: Terrain): number => {
 const quarryScore = (t: Terrain): number => {
   if (t === 'hills') return 10;
   if (t === 'mountains') return 8;
+  // Plains / fertile valley can host a shallow stone pit but the score
+  // is low so a hilly hex always beats them.
   return 3;
 };
 

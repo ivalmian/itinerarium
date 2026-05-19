@@ -124,3 +124,61 @@ reflects current intent.
 - This is still a design phase. Expect more iteration; don't
   assume a doc is locked just because it has been written —
   scan the latest git history first.
+
+## Burn-in output goes under `./burnin/`
+
+Every burn-in run writes to `./burnin/<run-name>/`. The whole
+`./burnin/` tree is `.gitignore`d — nothing inside is ever
+committed. Use descriptive names so multiple runs coexist:
+`./burnin/v1-9-10y`, `./burnin/v1-8-comparison`, `./burnin/debug`,
+etc. The CLI default is `./burnin/default`; override with
+`--out=./burnin/<name>`.
+
+Reasons for the convention:
+- One place for all output → easy to `rm -rf burnin/` to free
+  disk between sessions.
+- The `.gitignore` rule is a single line (`burnin/`) and can't
+  accidentally let a sibling `burnin-foo/` slip into the index.
+- Analysis scripts take the burn-in directory as a CLI flag — see
+  `scripts/analyze-burnin.py --help`. The canonical invocation is
+  `python3 scripts/analyze-burnin.py --dir burnin/<name> --out docs/<name>-report.md`.
+
+Sibling legacy patterns (`./burnin-out/`, `./burnin-*/`) are also
+ignored as a safety net, but new runs should use the canonical
+`./burnin/<name>/` form.
+
+## Scratch goes under `./tmp/`
+
+One-off / removable / experimental files belong under `./tmp/`,
+not at the repo root or inside `src/`. `tmp/` is `.gitignore`d so
+nothing inside is ever committed. Examples of what belongs here:
+- Throwaway scripts you wrote to investigate one specific bug.
+- Generated test data, debug dumps, log captures.
+- Intermediate output of analysis pipelines you'll feed back into
+  the sim.
+- One-off prompt files, image-gen experiments, scratch notes you
+  don't want to commit but also don't want to lose mid-session.
+
+If something in `tmp/` graduates to permanent value (a useful
+script, a generator), MOVE it into `scripts/` or a real source
+directory at that point — not before. The corollary: if you're
+not sure something should be committed, write it in `tmp/` first.
+
+## Never commit to this repo
+
+- **Burn-in output** (`./burnin/`, `./burnin-*/`, `./burnin-out/`).
+- **Scratch** (`./tmp/`) — by design.
+- **Screenshots / one-off captures** at repo root (`*.png`,
+  `*.cpuprofile`, `console-*.txt`). Intentional images live under
+  a tracked subdirectory like `viewer/art/`.
+- **Infra working state** (`infra/aws/tfplan`, `infra/**/.terraform/`,
+  `*.tfstate*`).
+- **Secrets** (`.env`, `.env.*` except `.env.example`).
+- **Editor / OS junk** (`.DS_Store`, `.idea/`, `.vscode/*` except
+  the few whitelisted files).
+- **Scheduler / agent scratch** (`.claude/scheduled_tasks.lock`,
+  `.claude/worktrees/`).
+
+All of the above are covered by `.gitignore`. If you need to
+generate something that doesn't fit the patterns above, prefer
+`./tmp/` or `./burnin/` over the repo root.

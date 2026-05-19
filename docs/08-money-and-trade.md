@@ -1200,8 +1200,8 @@ ledger. Slave subsistence demand bids through `patrician_family` /
 `city_corporation` / `governor_office` / `temple` / `hamlet_household`
 / `free_village` as appropriate to who owns them.
 
-This is the C21 disaggregation. See docs/15 §C21 for the
-implementation details and the diagnosis that motivated it.
+This class-level disaggregation keeps worker demand from collapsing into
+one aggregate household ledger.
 
 ## In-settlement money flows (locked)
 
@@ -1304,7 +1304,7 @@ Building a new bloomery or warehouse is a multi-week investment:
   exists as `pendingBuilding` but produces zero. Typical times:
   simple hamlet-scale structures ~30 worker-days, village / town
   workshops ~60, and larger industrial or civic builds ~90.
-- **Demolition is also slow** (planned, see docs/15 §C8): a
+- **Demolition is also slow** (planned): a
   settlement that wants to repurpose a hex should spend ~10–20% of
   construction time tearing the existing building down (some
   materials recoverable, some lost). Not yet implemented.
@@ -1335,5 +1335,4 @@ abstract labor for free.
 Enslaved construction labor advances projects without a cash wage only
 when the owner can command that labor; it still has owner-funded upkeep
 demand. Construction worker-days are role-specific in v1.5 (mason and
-carpenter pools drain independently). Demolition remains the follow-up
-(docs/15 §C8).
+carpenter pools drain independently). Demolition remains a follow-up.
