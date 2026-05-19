@@ -64,6 +64,19 @@ export type KnownPrices = Map<SettlementId, MarketObservation>;
 /** Empty-but-valid KnownPrices for actor creation. */
 export const createKnownPrices = (): KnownPrices => new Map();
 
+export const cloneMarketObservation = (obs: MarketObservation): MarketObservation => ({
+  observedDay: obs.observedDay,
+  quotes: new Map(obs.quotes),
+});
+
+export const cloneKnownPrices = (prices: KnownPrices): KnownPrices => {
+  const out = createKnownPrices();
+  for (const [settlement, obs] of prices) {
+    out.set(settlement, cloneMarketObservation(obs));
+  }
+  return out;
+};
+
 /** True if `obs` is older than the max age relative to `today`. */
 export const isMarketObservationStale = (obs: MarketObservation, today: Day): boolean => {
   return today - obs.observedDay > KNOWN_PRICE_MAX_AGE_DAYS;
@@ -110,9 +123,17 @@ export const recordMarketObservation = (
   settlement: SettlementId,
   obs: MarketObservation,
 ): void => {
-  const existing = actor.knownPrices.get(settlement);
+  recordKnownPriceObservation(actor.knownPrices, settlement, obs);
+};
+
+export const recordKnownPriceObservation = (
+  knownPrices: KnownPrices,
+  settlement: SettlementId,
+  obs: MarketObservation,
+): void => {
+  const existing = knownPrices.get(settlement);
   if (existing !== undefined && existing.observedDay > obs.observedDay) return;
-  actor.knownPrices.set(settlement, obs);
+  knownPrices.set(settlement, obs);
 };
 
 /**
@@ -121,9 +142,11 @@ export const recordMarketObservation = (
  * atomically. Used by piggyback/meeting syncs.
  */
 export const mergeKnownPrices = (target: Actor, source: Actor): void => {
-  for (const [s, obs] of source.knownPrices) {
-    recordMarketObservation(target, s, obs);
-  }
+  mergeKnownPriceMaps(target.knownPrices, source.knownPrices);
+};
+
+export const mergeKnownPriceMaps = (target: KnownPrices, source: KnownPrices): void => {
+  for (const [s, obs] of source) recordKnownPriceObservation(target, s, obs);
 };
 
 /**

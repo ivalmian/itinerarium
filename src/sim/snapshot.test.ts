@@ -10,6 +10,7 @@ import { addStockAt, createActor } from './politics/actor.js';
 import { createFaction } from './politics/faction.js';
 import { createCharacter } from './politics/character.js';
 import { createCaravan } from './caravan/caravan.js';
+import { createCityCrier } from './reputation/cityCrier.js';
 import { createReputationTable } from './reputation/table.js';
 import { generateTerrain } from '../procgen/terrain.js';
 import { siteSettlements } from '../procgen/settlements.js';
@@ -164,10 +165,10 @@ describe('serializeWorld → JSON-friendly snapshot', () => {
     expect(parsed).toEqual(snap);
   });
 
-  it('records schemaVersion=1 and capturedAtDay', () => {
+  it('records schemaVersion and capturedAtDay', () => {
     const w = buildTinyWorld();
     const snap = serializeWorld(w, 99);
-    expect(snap.schemaVersion).toBe(3);
+    expect(snap.schemaVersion).toBe(4);
     expect(snap.capturedAtDay).toBe(99);
     expect(snap.world.day).toBe(7);
   });
@@ -304,6 +305,36 @@ describe('deserializeWorld → round-trip', () => {
     expect(pb?.get(hexKey(hex(0, 0)))?.observedOnDay).toBe(1);
   });
 
+  it('preserves city criers and their known-price maps', () => {
+    const original = buildTinyWorld();
+    const settlement = original.settlements.get(settlementId('s.tiny'));
+    expect(settlement).toBeDefined();
+    if (settlement === undefined) return;
+    const crier = createCityCrier({
+      id: 'city-crier:s.tiny',
+      city: settlement.id,
+      route: [settlement.id],
+      spawnHex: settlement.anchor,
+      destination: settlement.anchor,
+      spawnDay: 7,
+      paidBy: [actorId('a.headman')],
+    });
+    crier.knownPrices.set(settlement.id, {
+      observedDay: 7,
+      quotes: new Map([[resourceId('food.grain'), { bestAsk: 5, bestBid: 4 }]]),
+    });
+    (original as WorldState & { cityCriers: NonNullable<WorldState['cityCriers']> }).cityCriers =
+      new Map([[crier.id, crier]]);
+
+    const restored = deserializeWorld(serializeWorld(original, 7));
+    const restoredCrier = restored.cityCriers?.get(crier.id);
+    expect(restoredCrier?.route).toEqual([settlement.id]);
+    expect(restoredCrier?.paidBy).toEqual([actorId('a.headman')]);
+    expect(restoredCrier?.knownPrices.get(settlement.id)?.quotes.get(resourceId('food.grain'))).toEqual(
+      { bestAsk: 5, bestBid: 4 },
+    );
+  });
+
   it('preserves reputation pairs and values', () => {
     const original = buildTinyWorld();
     const snap = serializeWorld(original, 0);
@@ -437,7 +468,7 @@ describe('writeSnapshot / readSnapshot', () => {
       const path = join(tmp, 'snap.json');
       await writeSnapshot(snap, path);
       const back = await readSnapshot(path);
-      expect(back.schemaVersion).toBe(3);
+      expect(back.schemaVersion).toBe(4);
       expect(back.capturedAtDay).toBe(w.day);
       expect(back.world.gridTiles.length).toBe(snap.world.gridTiles.length);
     } finally {

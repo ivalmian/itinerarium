@@ -41,6 +41,14 @@ export interface NewsTickWithGridInputs {
   readonly today: Day;
 }
 
+export interface FootTravelerAdvanceInputs {
+  readonly position: Hex;
+  readonly destination: Hex;
+  readonly movementPointsPerDay: number;
+  readonly grid: HexGrid;
+  readonly season: Season;
+}
+
 /**
  * Routing profile for a news carrier on foot. Costs are calibrated so a
  * carrier with `movementPointsPerDay = 20` covers ~20 hexes/day on a Roman
@@ -120,7 +128,14 @@ const advance = (
 export const tickCarrierWithGrid = (inputs: NewsTickWithGridInputs): NewsCarrier => {
   const { carrier, grid, season } = inputs;
   if (carrier.arrived) return carrier;
-  if (hexEquals(carrier.position, carrier.destination)) {
+  const next = advanceFootTravelerWithGrid({
+    position: carrier.position,
+    destination: carrier.destination,
+    movementPointsPerDay: carrier.movementPointsPerDay,
+    grid,
+    season,
+  });
+  if (next.arrived && hexEquals(carrier.position, carrier.destination)) {
     // 0-day arrival per docs/05 §"Same-hex coexistence" / docs/15 §C9: a
     // carrier whose destination is its own hex (the pagus pattern, where
     // village + hamlet share a hex) arrives within the same tick. Note
@@ -129,25 +144,29 @@ export const tickCarrierWithGrid = (inputs: NewsTickWithGridInputs): NewsCarrier
     // without flipping arrived" defensive case.
     return { ...carrier, arrived: true };
   }
-  if (!grid.has(carrier.position) || !grid.has(carrier.destination)) {
-    return carrier;
-  }
-  const result = findPath(grid, carrier.position, carrier.destination, REFUGEE_PROFILE, season, 0);
-  if (result.path.length <= 1) {
-    // Unreachable today (e.g. seasonal closure with no detour). Stay put.
-    return carrier;
-  }
-  const nextPos = advance(
-    carrier.position,
-    result.path,
-    carrier.movementPointsPerDay,
-    grid,
-    season,
-  );
-  const arrived = hexEquals(nextPos, carrier.destination);
   return {
     ...carrier,
+    position: next.position,
+    arrived: next.arrived,
+  };
+};
+
+export const advanceFootTravelerWithGrid = (
+  inputs: FootTravelerAdvanceInputs,
+): { readonly position: Hex; readonly arrived: boolean } => {
+  const { position, destination, movementPointsPerDay, grid, season } = inputs;
+  if (hexEquals(position, destination)) return { position, arrived: true };
+  if (!grid.has(position) || !grid.has(destination)) {
+    return { position, arrived: false };
+  }
+  const result = findPath(grid, position, destination, REFUGEE_PROFILE, season, 0);
+  if (result.path.length <= 1) {
+    // Unreachable today (e.g. seasonal closure with no detour). Stay put.
+    return { position, arrived: false };
+  }
+  const nextPos = advance(position, result.path, movementPointsPerDay, grid, season);
+  return {
     position: nextPos,
-    arrived,
+    arrived: hexEquals(nextPos, destination),
   };
 };

@@ -10,7 +10,6 @@ import { createActor } from '../sim/politics/actor.js';
 import { hex } from '../sim/world/hex.js';
 import { actorId, resourceId, settlementId, type Day } from '../sim/types.js';
 import { dailyCrewRationKg, totalCargoWeightKg, totalCarryKg } from '../sim/caravan/caravan.js';
-import { MAX_ACTIVE_WORLD_CARAVANS } from '../sim/caravan/limits.js';
 import { getResource } from '../sim/resources/catalog.js';
 
 const buildWorld = (worldSeed: string, terrainSeed = 'world-terrain'): WorldState => {
@@ -79,7 +78,7 @@ describe('seedCaravans — basic seeding', () => {
     expect(w.caravans.size).toBeGreaterThan(0);
   });
 
-  it('caps explicit top-ups at the province active-caravan ceiling', () => {
+  it('does not apply a province-wide active-caravan ceiling to explicit top-ups', () => {
     const w = buildEmptyWorld();
     for (let i = 0; i < 140; i++) {
       const sId = settlementId(`cap-settlement-${i}`);
@@ -113,7 +112,8 @@ describe('seedCaravans — basic seeding', () => {
       shareOwnedByGovernor: 0,
     });
 
-    expect(w.caravans.size).toBe(MAX_ACTIVE_WORLD_CARAVANS);
+    expect(w.caravans.size).toBeGreaterThan(96);
+    expect(w.caravans.size).toBeLessThanOrEqual(500);
   });
 
   it('fills up to the requested total instead of appending another warm-start batch', () => {

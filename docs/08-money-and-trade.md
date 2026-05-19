@@ -645,6 +645,14 @@ every cross-hex settlement trade is a real unit on the map):
    after real wages, fodder, rations, cart wear, and risk; there is
    no hidden fixed local-cartage price band.
 
+The same villager caravan can make an import leg. If its home
+`free_village` / `hamlet_household` stockpile is below the production
+tool target, a caravan away from home may buy whole `goods.tools` kits
+from the current market and route home. The buy side is still an
+ordinary local market purchase from an actor's ask; on return, the
+caravan unloads its already-owned cargo into the steward's physical
+home stockpile.
+
 This makes "rural producers, urban consumers, integrated through trade"
 emerge from the price gradient instead of being scripted. It also
 keeps cities richer than villages on net (their tax inflows and
@@ -812,6 +820,9 @@ caravan traffic** (per docs/10 §43). Short-haul **villager caravans**
 (implemented as low-capacity pack caravans with
 a drover, guard, and 2-4 mules) carry small loads when a village or
 hamlet steward has surplus, import cash, or hard-times staple needs.
+They also bring already-purchased imports, especially whole tool kits,
+back to the steward's home stockpile when local productive capital is
+below target.
 Standing merchant caravans handle larger arbitrages. The abstract
 daily-pass "local trade petty merchant" model that previously
 teleported goods between adjacent hexes is deleted; every distance
@@ -890,7 +901,15 @@ even if a prior observation had one.
    performs a meeting sync against the guild's map; the guild's
    home-presence sync keeps its map fresh as long as members are
    on-site.
-5. **Edge-hex observation.** A caravan touching an edge hex
+5. **City-crier sync.** One patrician-funded crier per city walks a
+   greedy nearest-neighbor circuit through the villages and hamlets
+   tied to that city, then returns to the city to restock. He carries
+   his own `knownPrices` map. At each stop he records the local market
+   and mutually merges with local resident / stockpile-owner actors.
+   Client villages tie to their patron's city; otherwise rural stops
+   use nearest-city fallback. If the crier does not check back into
+   the city within 30 days, the city funds a replacement.
+6. **Edge-hex observation.** A caravan touching an edge hex
    records a `MarketObservation` with the global reference price
    palette into its owner's map. Procgen seeds guild maps with a
    day-0 global observation; non-members learn through guild
@@ -1020,12 +1039,12 @@ Imports and exports are related but not identical:
 
 Current code caps are intentionally large, not load-bearing economic
 rules: 200 active import caravans, 300 active export caravans, 20
-import spawns/day, and 30 export spawns/day, all still subject to the
-world caravan limit. Real throttling comes from bounded information,
-finite treasuries / stockpiles, local prices moving against the trade,
-and the margin gates.
+import spawns/day, and 30 export spawns/day. There is no global active
+caravan slot pool. Real throttling comes from bounded information,
+finite treasuries / stockpiles, animals, provisions, local prices moving
+against the trade, and the margin gates.
 
-### Caravans transact via local markets, never stockpile
+### Caravans transact via local markets; owned cargo can be delivered home
 
 Caravans are **market participants** in every settlement they
 visit. There is no path that pulls goods directly out of an
@@ -1035,6 +1054,13 @@ other buyer. Same for sales on arrival: the caravan posts an ask
 on the destination's market and clears with it. This rule applies
 to standing merchants, villager carts, replacement caravans,
 international ventures, and the player.
+
+The allowed exception is owner-home delivery. A villager caravan that
+has already bought cargo through a market can unload that owned cargo
+into its `free_village` / `hamlet_household` owner's home stockpile on
+return. This preserves the physical inventory-by-settlement rule while
+letting villages bring home imported tool kits instead of re-selling
+them into their own market.
 
 ### Why imports and exports are dominated by luxuries (emergent)
 

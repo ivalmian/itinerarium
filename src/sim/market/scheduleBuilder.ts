@@ -1026,6 +1026,9 @@ const COMMUNITY_FOOD_PROVIDER_KINDS: ReadonlySet<ActorKind> = new Set([
   'hamlet_household',
 ]);
 
+const RURAL_PRODUCTION_TOOL_RESERVE_MIN = 10;
+const RURAL_PRODUCTION_TOOL_RESERVE_PER_ADULT_EQ = 0.2;
+
 /**
  * True when the buyer + seller at this settlement form a community
  * subsistence pool — the village's grain feeding the village's
@@ -1082,6 +1085,19 @@ const communitySubsistenceReserve = (
     dailyNeed += perAdult * adultEqCount;
   }
   return dailyNeed * COMMUNITY_RESERVE_DAYS;
+};
+
+const ruralProductionToolReserve = (
+  resource: ResourceId,
+  context: SettlementScheduleContext,
+  ownerKind: ActorKind | undefined,
+): number => {
+  if (String(resource) !== 'goods.tools') return 0;
+  if (ownerKind === undefined || !COMMUNITY_FOOD_PROVIDER_KINDS.has(ownerKind)) return 0;
+  return Math.max(
+    RURAL_PRODUCTION_TOOL_RESERVE_MIN,
+    context.adultEquivalentTotal * RURAL_PRODUCTION_TOOL_RESERVE_PER_ADULT_EQ,
+  );
 };
 
 const subsistenceBudgetForActor = (
@@ -2480,6 +2496,7 @@ const supplyForResource = (
       kind,
       inputs.settlement.tier,
     );
+    const productionToolReserve = ruralProductionToolReserve(resource, context, kind);
     // For resources with a real producing recipe: MC is the floor.
     // For purely-extracted resources (timber, ore, raw fish) the
     // recipe has nominal/zero priced inputs, so MC ≈ 0; fall back to
@@ -2503,7 +2520,7 @@ const supplyForResource = (
         `supply:${String(inputs.settlement.id)}:${String(ownerActor)}:${String(resource)}`,
         ownerActor,
         qty,
-        communityReserve,
+        Math.max(communityReserve, productionToolReserve),
         productionCost,
         reservationFloor,
         expectedFuturePrice,

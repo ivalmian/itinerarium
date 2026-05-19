@@ -1624,6 +1624,31 @@ describe('buildSettlementSchedules — community self-provision (docs/04 §"Comm
     expect(villageSupply.availableToSell).toBeLessThan(300);
   });
 
+  it('free_village reserves production tools from market supply', () => {
+    const s = baseSettlement('village-tool-reserve', 'Village Tool Reserve', 'village');
+    setSegment(s, 'plebeian', 100);
+    const stockpilesByOwner = new Map([
+      [VILLAGE, new Map<ResourceId, number>([[RES.tools, 25]])],
+    ]);
+    const result = buildSettlementSchedules({
+      settlement: s,
+      stockpilesByOwner,
+      resources: [RES.tools],
+      recentLocalPrices: new Map([[RES.tools, 20]]),
+      today: 0 as Day,
+      season: 'spring',
+      ownerKindByActor: new Map([[VILLAGE, 'free_village']]),
+      actorTreasuryByActor: new Map([[VILLAGE, 100]]),
+    });
+    const pair = result.schedulesByResource.get(RES.tools);
+    if (!pair) throw new Error('missing tools schedule');
+    const villageSupply = pair.supply.sources.find((src) => src.ownerActor === VILLAGE);
+    if (!villageSupply) throw new Error('expected village supply source');
+
+    expect(villageSupply.availableToSell).toBeLessThan(25);
+    expect(villageSupply.availableToSell).toBeGreaterThanOrEqual(0);
+  });
+
   it('patrician stockpile does NOT reserve community grain (only profit-max participation)', () => {
     const s = baseSettlement('patrician-no-reserve');
     setSegment(s, 'plebeian', 100);

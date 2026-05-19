@@ -59,16 +59,16 @@ const NOMINAL_INPUT: Readonly<Record<string, Quantity>> = {};
 // Tool inputs model depreciation of durable capital, not one-shot consumed
 // materials. A `goods.tools` unit is an ~8 kg kit; extraction jobs wear out
 // a small fraction of a kit per worker-day, while agriculture is lighter.
-const LIGHT_TOOL_WEAR = 0.005;
-const FISHING_TOOL_WEAR = 0.005;
-const FORESTRY_TOOL_WEAR = 0.01;
+const LIGHT_TOOL_WEAR = 0.001;
+const FISHING_TOOL_WEAR = 0.001;
+const FORESTRY_TOOL_WEAR = 0.002;
 const QUARRY_TOOL_WEAR = 0.02;
 const MINING_TOOL_WEAR = 0.02;
 
 const DEFS: readonly RecipeInput[] = [
   // --- Agriculture (seasonal) ---
-  // Ordinary crop tools wear slowly: ~1 sickle/hoe replacement per
-  // farmer per working year, represented as 0.005 tool units per
+  // Ordinary crop tools wear slowly. `goods.tools` is an 8 kg mixed kit,
+  // so sickle/hoe depreciation is a small fraction of a kit per
   // farmer-day. Mining and heavy craft recipes keep higher tool wear.
   {
     id: 'sow_grain',
@@ -82,10 +82,9 @@ const DEFS: readonly RecipeInput[] = [
   },
   {
     id: 'harvest_grain',
-    // Tools wear: ~1 sickle replaced per farmer per year ≈ 0.005/day
-    // (working ~200 farmer-days per year per sickle). This restores the
-    // realistic per-recipe wear rate and makes the smithy/forge_tools
-    // chain load-bearing for the world's tool supply.
+    // Tools wear: crop work depreciates light hand tools, not an entire
+    // 8 kg kit every few hundred farmer-days. The smithy/forge_tools
+    // chain still remains load-bearing for the world's tool supply.
     inputs: { 'goods.tools': LIGHT_TOOL_WEAR },
     labor: { farmer: 1 },
     building: 'farm',

@@ -155,7 +155,7 @@ forge_tools:
 
 ```
 olive_and_grape_harvest:                         # seasonal
-  inputs:   { goods.tools: small wear }          # ~0.005 tool units / farmer-day
+  inputs:   { goods.tools: small wear }          # ~0.001 8kg tool-kit units / farmer-day
   labor:    { farmer: fractional }
   building: olive grove / vineyard
   outputs:  { food.olives / food.grapes }
@@ -165,15 +165,17 @@ olive_and_grape_harvest:                         # seasonal
 
 Ordinary crop recipes (`sow_grain`, `harvest_grain`, `grow_flax`,
 `grow_legumes`, olive/vine tending) use the same low daily tool-wear
-rate: about one sickle/hoe replacement per farmer per working year
-(modeled as ~0.005 tool units per farmer-day). Mining, quarrying,
-forestry, and heavy craft recipes keep higher wear because picks, axes,
-and industrial tools break faster under load. This keeps tools
-load-bearing without making farms consume a province's tool stock in a
-few months. `sow_grain` is a seed-and-labor upkeep pass, not a market
-output recipe: it consumes seed grain in spring but does not mint any
-symbolic `service.*` output or public-works capacity. Harvest output is
-represented by `harvest_grain`.
+rate. A `goods.tools` unit represents an ~8 kg mixed tool kit, so
+crop, fishing, and forestry depreciation consume only small fractions
+of a kit per worker-day (`0.001` for crop/fishing, `0.002` for
+forestry/sawmill). Mining, quarrying, and heavy craft recipes keep
+higher wear because picks and industrial tools break faster under load.
+This keeps tools load-bearing without making farms, fishing, or timber
+work consume a province's tool stock in a few months. `sow_grain` is a
+seed-and-labor upkeep pass, not a market output recipe: it consumes
+seed grain in spring but does not mint any symbolic `service.*` output
+or public-works capacity. Harvest output is represented by
+`harvest_grain`.
 
 ```
 press_olives:                                    # seasonal

@@ -263,6 +263,15 @@ Update channels are physical-sync events:
    against the guild's map; the guild's resident-presence sync
    keeps its map fresh as long as any member is on-site. See
    docs/08 §"Communicated price discovery via guilds".
+4. **City crier:** each city can maintain one patrician-funded
+   crier whose job is price news rather than reputation testimony.
+   He walks a deterministic greedy route from the city through tied
+   villages and hamlets, records the market at each stop, mutually
+   merges his own `knownPrices` with actors present there, and
+   returns to the city to restock. Client villages tie to their
+   patron's city; other rural stops use nearest-city fallback. If he
+   fails to check back into the city for over 30 days, the city funds
+   a replacement.
 
 All shared observations are **authoritative** — there is no
 "hostile actors deliberately misinform" path. Hostile actors

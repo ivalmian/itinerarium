@@ -14,7 +14,6 @@
  * an empty queue.
  */
 
-import { MAX_ACTIVE_WORLD_CARAVANS } from '../caravan/limits.js';
 import { caravanId as makeCaravanIdLocal } from '../types.js';
 import {
   assessTaxes,
@@ -128,9 +127,6 @@ const takeTaxDispatchBatch = (
   return null;
 };
 
-const remainingWorldCaravanSlots = (world: WorldState, plannedSpawns = 0): number =>
-  Math.max(0, MAX_ACTIVE_WORLD_CARAVANS - world.caravans.size - plannedSpawns);
-
 export const taxShipmentPhase = (
   world: WorldState,
   today: Day,
@@ -206,8 +202,7 @@ export const taxShipmentPhase = (
   while (
     pending.length > 0 &&
     dispatched < MAX_TAX_SHIPMENT_CARAVANS_DISPATCHED_PER_DAY &&
-    activeTaxShipments + dispatched < MAX_ACTIVE_TAX_SHIPMENT_CARAVANS &&
-    remainingWorldCaravanSlots(world, dispatched) > 0
+    activeTaxShipments + dispatched < MAX_ACTIVE_TAX_SHIPMENT_CARAVANS
   ) {
     const batch = takeTaxDispatchBatch(world, pending);
     if (batch === null) break;

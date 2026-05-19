@@ -198,10 +198,12 @@ The caravan's id carries the `villager-` prefix and the viewer
 renders it with a dedicated peasant-with-handcart glyph. It uses
 the same planner as merchant caravans, so direction + cargo emerge
 from known prices, bid depth, route cost, and fallback scouting; the
-dispatch trigger is just "this steward wants a trip out this cycle."
-Per-owner cap = 3 active villager caravans. Separate fleet target
-from merchants so the two
-flows don't crowd each other out.
+dispatch trigger is demand-backed: sellable surplus, a home-learned
+import shortage, or a hard-times staple need. Accumulated treasury alone
+does not launch a trip. Per-owner cap = 3 active villager caravans.
+There is no global rural slot pool; dispatch is constrained by the
+steward's animals, rations, operating cash, current demand, known prices,
+and route economics.
 
 ### Hamlets
 

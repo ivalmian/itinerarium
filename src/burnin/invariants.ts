@@ -30,7 +30,6 @@ import {
   totalCarryKg,
   totalCrewCount,
 } from '../sim/caravan/caravan.js';
-import { MAX_ACTIVE_WORLD_CARAVANS } from '../sim/caravan/limits.js';
 import { hexKey } from '../sim/world/hex.js';
 
 // --- Types ------------------------------------------------------------------
@@ -152,17 +151,6 @@ export const caravanCrewPositive: Invariant = ({ world }) => {
     }
   }
   return out;
-};
-
-export const activeCaravanCountWithinCap: Invariant = ({ world }) => {
-  if (world.caravans.size <= MAX_ACTIVE_WORLD_CARAVANS) return [];
-  return [
-    violation(
-      'activeCaravanCountWithinCap',
-      `${world.caravans.size} active caravans exceeds province cap ${MAX_ACTIVE_WORLD_CARAVANS}`,
-      'error',
-    ),
-  ];
 };
 
 export const caravanCargoNonNegative: Invariant = ({ world }) => {
@@ -496,7 +484,6 @@ export const STANDARD_INVARIANTS: readonly Invariant[] = Object.freeze([
   stockpileNonNegative,
   treasuryNonNegative,
   caravanCrewPositive,
-  activeCaravanCountWithinCap,
   caravanCargoNonNegative,
   priceFinite,
   noPathologicalZeroPrices,

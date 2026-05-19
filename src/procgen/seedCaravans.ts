@@ -3,10 +3,10 @@
  *
  * `seedWorld` (T26) leaves `world.caravans` empty, so a fresh burn-in
  * starts with zero commerce on the road. This module gives the world a
- * warm-start: fill the world up to a bounded standing-fleet target and place
- * those caravans at sensible origins with planned destinations and small
- * starter cargo. Burn-in then has actual trade flowing from day 1 without
- * injecting one random caravan per generated settlement on large maps.
+ * warm-start: create a bounded initial standing fleet and place those
+ * caravans at sensible origins with planned destinations and small starter
+ * cargo. Burn-in then has actual trade flowing from day 1 without injecting
+ * one random caravan per generated settlement on large maps.
  *
  * What we do NOT do here:
  *   - Drain origin stockpiles. Cargo is fabricated from thin air (a
@@ -21,9 +21,9 @@
  *
  * Re-entry rule: the default warm-start is a one-shot no-op on worlds that
  * already have caravans. Callers that explicitly pass `totalCaravans` can
- * top up to that target total, but existing caravans still count toward
- * both the target and each owner's cap. This prevents viewer/debug
- * warm-start code from accidentally injecting another full random batch.
+ * top up to that target total, but existing caravans still count toward the
+ * target and each owner's cap. This prevents viewer/debug warm-start code
+ * from accidentally injecting another full random batch.
  *
  * Determinism: every random pick flows through `Rng.derive(label)`. Same
  * `(seed, world)` → same caravans.
@@ -51,7 +51,6 @@ import {
 } from '../sim/politics/character.js';
 import { parseDemoKey } from '../sim/population/demographics.js';
 import type { Actor } from '../sim/politics/actor.js';
-import { MAX_ACTIVE_WORLD_CARAVANS } from '../sim/caravan/limits.js';
 import {
   createCaravan,
   dailyCarriedFoodReserveKg,
@@ -75,7 +74,7 @@ export interface SeedCaravansOpts {
   readonly seed: string;
   readonly world: WorldState;
   /**
-   * Total caravans to attempt to seed. Defaults to a bounded standing-fleet
+   * Total caravans to attempt to seed. Defaults to an initial standing-fleet
    * target, not one per settlement. The actual count may be lower if eligible
    * owners are scarce or the per-owner cap kicks in.
    */
@@ -402,7 +401,7 @@ export const seedCaravans = (opts: SeedCaravansOpts): void => {
     0,
     Math.floor(opts.totalCaravans ?? defaultWarmStartTarget(settlementCount)),
   );
-  const targetTotal = Math.min(MAX_ACTIVE_WORLD_CARAVANS, requestedTarget);
+  const targetTotal = requestedTarget;
   if (targetTotal === 0 || world.caravans.size >= targetTotal) return;
 
   const shares = computeShares(opts);

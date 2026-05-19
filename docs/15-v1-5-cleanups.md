@@ -1080,14 +1080,19 @@ ownership", `src/sim/politics/actor.ts`,
 > low-capacity vehicle for local inter-settlement trade beyond
 > same-hex. In the current code, `free_village` and
 > `hamlet_household` stewards can dispatch 2-4-mule pack caravans
-> every 3 days when they have exportable surplus, enough import-trip
-> treasury, or hard-times staple needs. Dispatch does not hard-code a
+> every 3 days when they have demand: exportable surplus, a
+> home-learned import shortage, or hard-times staple needs. Accumulated
+> treasury alone is not demand. Dispatch does not hard-code a
 > nearest-city / adjacent-village / ≤6-hex destination set; once the
 > unit exists, the normal caravan planner picks routes from
 > `knownPrices`, bid depth, route cost, bandit risk, tolls, and
-> fallback scouting. There is no separate 1-person handcart tier in
-> the implementation. These villager caravans share the SAME
-> movement / food / ambush / disease machinery as long-haul caravans.
+> fallback scouting. There is no global rural slot pool. A villager
+> caravan can carry a planned "buy tools" demand learned at home before
+> departure, buy whole tool kits through a visited market, then unload
+> the already-owned cargo at home.
+> There is no separate 1-person handcart tier in the implementation.
+> These villager caravans share the SAME movement / food / ambush /
+> disease machinery as long-haul caravans.
 
 **Motivation:** after §C30 the famine regression revealed that the
 trade system wasn't moving enough food and other rural production
@@ -1107,18 +1112,19 @@ of three reasons:
    needs. Carry it to a market, sell, come home with coin and/or
    bought goods (oil, wine, pottery, salt, iron tools) the
    settlement can't make itself.
-2. **Import trip.** The village has accumulated coin from prior
-   trips. The headman wants pottery / tools / oil / salt that the
-   market sells cheap, brings them back, distributes them locally,
-   or stockpiles for the off-season.
+2. **Import trip.** The village has a known home shortage, currently
+   production tools, and either knows an affordable source or has a
+   sellable surplus trip that can fund the import. The headman sends a
+   goal like "sell grain, buy tools"; the caravan does not discover the
+   home shortage remotely while away.
 3. **Hard-times resupply.** The village's own subsistence grain is
    running low (bad harvest, locusts, plague), and the headman
    drains some treasury to send the caravan to buy staples back.
 
 All three are the same caravan with different cargo + direction.
-We model the dispatch trigger as "settlement has meaningful
-exportable inventory OR has treasury to fund an import / resupply
-trip"; the planner picks the actual cargo and route each leg.
+We model the dispatch trigger as "settlement has meaningful exportable
+inventory OR a home-learned import/resupply need"; the planner picks the
+actual cargo and route each leg from known prices and local observations.
 
 **v1.5 mechanics (landed):**
 
@@ -1134,11 +1140,13 @@ trip"; the planner picks the actual cargo and route each leg.
    - any of `VILLAGER_EXPORTABLE_RESOURCES` (food, fibre, wood,
      hides, livestock, cloth) at ≥14 days of local subsistence
      equivalent, OR
-   - treasury ≥ 200 coin (import-trip threshold), OR
+   - planned import demand, currently `goods.tools` below the home
+     production-tool target, and a known affordable source or sellable
+     export trip to fund it, OR
    - grain stock <7 days AND any treasury (hard-times resupply)
 
-   ...the steward can dispatch a villager caravan (owner cap 3,
-   global per-interval dispatch cap 20, world target max 120).
+   ...the steward can dispatch a villager caravan (owner cap 3). There
+   is no global rural slot pool or world target.
 
 3. Caravan composition: 2-4 mules + 0-1 donkeys, 1 drover + 1
    guard, no light cart, 4-day starter rations. Operating
@@ -1148,15 +1156,19 @@ trip"; the planner picks the actual cargo and route each leg.
    shared planner finds profitable arbitrage (village exports →
    city; city imports → village, depending on price gradient).
    Same 5% profit floor (§C28) + 45-day no-profit disband (§C25).
-5. Villager caravans count toward a separate fleet target
-   (~0.5 × villageCount) so they don't compete with the standing
-   merchant fleet (~0.25 × settlements).
-6. Profit remittance: when a villager caravan returns to its
+5. No global rural slots: every qualifying steward can try to launch on
+   its cadence, but the unit must be funded and provisioned locally.
+6. Import delivery: if a villager caravan was dispatched with planned
+   `goods.tools` demand, it can buy whole tool kits through the current
+   market's ask book and route home.
+   On return, owned cargo unloads into the steward's home stockpile
+   before any ordinary local sale.
+7. Profit remittance: when a villager caravan returns to its
    village home with surplus coin, the same
    `remitStandingCaravanProfitAtHome` logic that handles
    merchants pays the steward — coin accumulates at the village
    for tribute (§C29), wages, or future trips.
-7. New `tribute_paid` companion event `villager_caravan_dispatched`
+8. New `tribute_paid` companion event `villager_caravan_dispatched`
    for telemetry.
 
 **Why the 5% profit floor still works for local runs:**
@@ -1305,6 +1317,43 @@ side-effect of more caravans surviving + fewer instant raids.)
 parties", `src/sim/bandit/party.ts`, `src/sim/tick.ts`
 `banditPartyPhase` + `spawnBanditParty`, `viewer/map/movers.ts`.
 
+## C33 — City criers for rural price news (landed, v1.9)
+
+**Motivation:** villager caravans should be demand-driven, but rural
+settlements still need a believable way to learn about city prices
+without a global oracle. A city-funded crier gives the city and its
+tied villages / hamlets a slow, physical price-news channel.
+
+**Landed mechanics:**
+
+1. `WorldState.cityCriers` holds persistent `CityCrier` units, one per
+   city that has patrician funding and at least one rural stop.
+2. Each crier has his own `knownPrices` map. He records the market at
+   every stop and mutually merges with resident / stockpile-owner
+   actors there. He does not read any remote market or home shortage
+   directly.
+3. Route construction is deterministic greedy nearest-neighbor:
+   start at the city, repeatedly visit the closest unvisited tied
+   village/hamlet, then wrap back to the city. Client villages tie to
+   their `clientPatron`'s city; other rural settlements use nearest
+   city fallback.
+4. Patrician families at the city pay a small restock cost when the
+   crier is spawned and when he checks back into the city. If the
+   city has no funded patrician family, no free crier appears.
+5. If a crier fails to check back into the city for over 30 days, the
+   city deletes the missing crier and spawns a replacement when it can
+   pay. This covers death, combat disappearance, unreachable routes,
+   and any other "never came home" failure without magical tracking.
+6. The phase runs after markets clear and resident home-price syncs,
+   before other mobile price syncs. The crier's information therefore
+   enters the same `knownPrices` model as caravans and guilds.
+
+**Cross-refs:** `docs/06-caravans.md` §"Caravan information model",
+`docs/08-money-and-trade.md` §"Information",
+`docs/13-reputation-and-relationships.md` §"News-carrier price
+piggyback", `src/sim/phases/cityCrier.ts`,
+`src/sim/reputation/cityCrier.ts`.
+
 ## C16 — Cascading consequences of price explosion [TODO]
 
 **Current state:** prices are capped at a sane multiple of base
@@ -1388,7 +1437,7 @@ order:
   RecipeDef; shear_wool + milk_dairy now check herd presence
   without consuming. Steady-state pasture demand dropped 3x.
 - ✅ C2 — Realistic recipe ratios: smelt_iron 60+100→15, bake_bread
-  5 wood, harvest_grain 0.005 tools, fell_timber 1.5 wood. Plus
+  5 wood, harvest_grain 0.001 tools, fell_timber 1.5 wood. Plus
   forester_camp / charcoal_kiln / bloomery / farm / mill capacities
   bumped to absorb the load.
 - ✅ C3 — Dynamic catchment recompute: settlements that grow or
