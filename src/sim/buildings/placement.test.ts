@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { buildingId } from '../types.js';
 import type { HexTile } from '../world/terrain.js';
 
-import { pickBestHex, terrainAffinity, isTerrainBuildable } from './placement.js';
+import { pickBestHex, terrainAffinity, isTerrainBuildable, isTerrainAllowedFor } from './placement.js';
 
 const tile = (overrides: Partial<HexTile>): HexTile => ({
   terrain: 'plains',
@@ -91,6 +91,58 @@ describe('terrainAffinity', () => {
     const alpine = terrainAffinity(og, tile({ terrain: 'hills', climate: 'alpine' }));
     expect(med).toBeGreaterThan(alpine);
     expect(alpine).toBeLessThanOrEqual(3);
+  });
+
+  it('uniform hard gate (isTerrainAllowedFor) rejects water for urban / rural / forest', () => {
+    // Every non-mining building must refuse lake outright.
+    for (const id of ['farm', 'pasture', 'forester_camp', 'smithy', 'temple', 'mill', 'fishery']) {
+      expect(isTerrainAllowedFor(buildingId(id), 'lake')).toBe(false);
+    }
+    // Mountains / dense_forest are unbuildable for everything except mining.
+    for (const id of ['farm', 'forester_camp', 'smithy', 'fishery']) {
+      expect(isTerrainAllowedFor(buildingId(id), 'mountains')).toBe(false);
+      expect(isTerrainAllowedFor(buildingId(id), 'dense_forest')).toBe(false);
+    }
+    // Mining family DOES accept mountains + dense_forest but NOT water / urban / ruin.
+    for (const id of ['mine', 'quarry']) {
+      expect(isTerrainAllowedFor(buildingId(id), 'mountains')).toBe(true);
+      expect(isTerrainAllowedFor(buildingId(id), 'dense_forest')).toBe(true);
+      expect(isTerrainAllowedFor(buildingId(id), 'lake')).toBe(false);
+      expect(isTerrainAllowedFor(buildingId(id), 'river')).toBe(false);
+      expect(isTerrainAllowedFor(buildingId(id), 'urban')).toBe(false);
+      expect(isTerrainAllowedFor(buildingId(id), 'ruin')).toBe(false);
+    }
+  });
+
+  it('unknown / unmapped buildings fall back to the urban family (strict)', () => {
+    // An unmapped building should refuse the water + wildland terrains
+    // rather than silently scoring on lakes (defensive against future
+    // additions to the catalog).
+    const novel = buildingId('totally_new_workshop');
+    expect(isTerrainAllowedFor(novel, 'lake')).toBe(false);
+    expect(isTerrainAllowedFor(novel, 'mountains')).toBe(false);
+    expect(isTerrainAllowedFor(novel, 'dense_forest')).toBe(false);
+    expect(isTerrainAllowedFor(novel, 'plains')).toBe(true);
+  });
+
+  it('quarries refuse to sit on water or urban / ruin terrain', () => {
+    const q = buildingId('quarry');
+    expect(terrainAffinity(q, tile({ terrain: 'lake' }))).toBe(0);
+    expect(terrainAffinity(q, tile({ terrain: 'river' }))).toBe(0);
+    expect(terrainAffinity(q, tile({ terrain: 'urban' }))).toBe(0);
+    expect(terrainAffinity(q, tile({ terrain: 'ruin' }))).toBe(0);
+    expect(terrainAffinity(q, tile({ terrain: 'hills' }))).toBeGreaterThan(0);
+    expect(terrainAffinity(q, tile({ terrain: 'mountains' }))).toBeGreaterThan(0);
+  });
+
+  it('mines refuse to sit on water or urban / ruin terrain', () => {
+    const m = buildingId('mine');
+    expect(terrainAffinity(m, tile({ terrain: 'lake' }))).toBe(0);
+    expect(terrainAffinity(m, tile({ terrain: 'river' }))).toBe(0);
+    expect(terrainAffinity(m, tile({ terrain: 'urban' }))).toBe(0);
+    expect(terrainAffinity(m, tile({ terrain: 'ruin' }))).toBe(0);
+    expect(terrainAffinity(m, tile({ terrain: 'hills' }))).toBeGreaterThan(0);
+    expect(terrainAffinity(m, tile({ terrain: 'mountains' }))).toBeGreaterThan(0);
   });
 
   it('forester camp wants forest', () => {
