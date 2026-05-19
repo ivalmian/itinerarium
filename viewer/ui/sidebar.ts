@@ -17,6 +17,7 @@ import { createBanditCampPanel, type BanditCampPanel } from './banditCampPanel.j
 import { createHexPanel, type HexPanel } from './hexPanel.js';
 import { createResourcePanel, type ResourcePanel } from './resourcePanel.js';
 import { createEventLog, type EventLog } from './eventLog.js';
+import { createWorldHistoryPanel, type WorldHistoryPanel } from './worldHistoryPanel.js';
 import type { ViewerHistory } from '../state/history.js';
 
 interface RollingCounts {
@@ -41,6 +42,7 @@ export interface Sidebar {
   readonly hexPanel: HexPanel;
   readonly resourcePanel: ResourcePanel;
   readonly eventLog: EventLog;
+  readonly worldHistoryPanel: WorldHistoryPanel;
 }
 
 const fmt = (n: number): string => {
@@ -98,6 +100,13 @@ export const createSidebar = (opts: SidebarOpts): Sidebar => {
   const resourceSection = section('Resources');
   const resourcePanel = createResourcePanel({ host: resourceSection.root });
   host.appendChild(resourceSection.root);
+
+  // Collapsible world-history section. Default closed because it grows
+  // tall as the run progresses.
+  const worldHistorySection = collapsibleSection('World history', false);
+  const worldHistoryPanel = createWorldHistoryPanel({ history: opts.history });
+  worldHistorySection.body.appendChild(worldHistoryPanel.root);
+  host.appendChild(worldHistorySection.root);
 
   const selectedSection = section('Selected');
   const selectedHost = document.createElement('div');
@@ -222,6 +231,7 @@ export const createSidebar = (opts: SidebarOpts): Sidebar => {
     banditCampPanel.update(world);
     hexPanel.update(world);
     eventLog.append(world, events);
+    worldHistoryPanel.update();
   };
 
   const pushEvents = (world: WorldState, events: readonly TickEvent[]): void => {
@@ -238,6 +248,7 @@ export const createSidebar = (opts: SidebarOpts): Sidebar => {
     hexPanel,
     resourcePanel,
     eventLog,
+    worldHistoryPanel,
   };
 };
 
@@ -252,6 +263,28 @@ const section = (title: string): Section => {
   h.textContent = title;
   root.appendChild(h);
   return { root };
+};
+
+interface CollapsibleSection {
+  readonly root: HTMLElement;
+  readonly body: HTMLElement;
+}
+
+const collapsibleSection = (title: string, openByDefault: boolean): CollapsibleSection => {
+  const root = document.createElement('details');
+  root.className = 'section';
+  if (openByDefault) root.open = true;
+  const summary = document.createElement('summary');
+  summary.style.cursor = 'pointer';
+  summary.style.fontSize = '13px';
+  summary.style.fontWeight = '600';
+  summary.style.opacity = '0.9';
+  summary.textContent = title;
+  root.appendChild(summary);
+  const body = document.createElement('div');
+  body.style.marginTop = '6px';
+  root.appendChild(body);
+  return { root, body };
 };
 
 const stat = (s: Section, label: string, value: string): HTMLElement => {

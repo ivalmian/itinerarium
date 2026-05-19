@@ -48,12 +48,81 @@ export const MAX_TICKS_PER_ENTITY = 100;
 /** Max number of recent events retained per entity. */
 export const MAX_EVENTS_PER_ENTITY = 20;
 
+/**
+ * Global history is sampled (not every tick) so we can carry 10+
+ * in-game years of trajectory without ballooning memory. With a 10-day
+ * sample interval and 500 retained samples we get ~13.7y of coverage.
+ */
+export const GLOBAL_HISTORY_SAMPLE_DAYS = 10;
+export const GLOBAL_HISTORY_MAX_SAMPLES = 500;
+
 export interface SettlementSnapshot {
   readonly day: Day;
   readonly population: number;
   readonly buildings: number;
   /** ResourceId → last clearing price observed at this tick. Sparse. */
   readonly clearingPrices: ReadonlyMap<ResourceId, number>;
+  /** Total stockpile per resource summed across all owners at this settlement. Sparse. */
+  readonly stockpiles: ReadonlyMap<ResourceId, number>;
+  /** Aggregate treasury of all stockpile-owner actors at this settlement. */
+  readonly settlementTreasury: number;
+}
+
+/**
+ * Per-tier population aggregate. The viewer's tally panel renders
+ * this as a stacked line over time so the user can see e.g. "cities
+ * grow, villages collapse" patterns at a glance.
+ */
+export interface TierPopulation {
+  readonly hamlet: number;
+  readonly village: number;
+  readonly town: number;
+  readonly small_city: number;
+  readonly large_city: number;
+  readonly total: number;
+}
+
+/**
+ * Aggregate coin holdings by actor kind. Mirrors the burn-in report's
+ * "Treasury by actor kind" table but live and updated as the sim
+ * advances. Sparse — only kinds that have at least one alive actor.
+ */
+export type TreasuryByKind = ReadonlyMap<string, number>;
+
+/** Caravan counts by ID-prefix category. */
+export interface CaravanCounts {
+  readonly villager: number;
+  readonly merchant: number;
+  readonly export_: number;
+  readonly import_: number;
+  readonly tax: number;
+  readonly other: number;
+  readonly total: number;
+}
+
+/**
+ * Per-tick global aggregate snapshot. Sampled every
+ * `GLOBAL_HISTORY_SAMPLE_DAYS` days to cap memory.
+ */
+export interface GlobalSnapshot {
+  readonly day: Day;
+  readonly population: TierPopulation;
+  readonly caravans: CaravanCounts;
+  readonly banditCampCount: number;
+  readonly banditTotalCount: number;
+  readonly treasuryByKind: TreasuryByKind;
+  /** Median clearing price across all settlements that cleared this resource recently. */
+  readonly medianPrices: ReadonlyMap<ResourceId, number>;
+  /** Cumulative famine deaths since the run started. */
+  readonly cumulativeFamineDeaths: number;
+  /** Cumulative disease deaths since the run started. */
+  readonly cumulativeDiseaseDeaths: number;
+  /** Cumulative recipe runs since the run started. */
+  readonly cumulativeRecipeRuns: number;
+  /** Cumulative market clearings since the run started. */
+  readonly cumulativeMarketClearings: number;
+  /** Settlement count at this tick. */
+  readonly settlementCount: number;
 }
 
 export interface CaravanSnapshot {
@@ -92,6 +161,15 @@ export interface ViewerHistory {
   readonly settlementEvents: Map<SettlementId, EntityEvent[]>;
   readonly caravanEvents: Map<CaravanId, EntityEvent[]>;
   readonly banditCampEvents: Map<BanditCampId, EntityEvent[]>;
+  /** Sampled global aggregates over time. */
+  readonly global: GlobalSnapshot[];
+  /** Per-tick stats accumulator. Carried across ticks so cumulative counters survive. */
+  cumulativeStats: {
+    famineDeaths: number;
+    diseaseDeaths: number;
+    recipeRuns: number;
+    marketClearings: number;
+  };
 }
 
 export const createViewerHistory = (): ViewerHistory => ({
@@ -101,6 +179,13 @@ export const createViewerHistory = (): ViewerHistory => ({
   settlementEvents: new Map(),
   caravanEvents: new Map(),
   banditCampEvents: new Map(),
+  global: [],
+  cumulativeStats: {
+    famineDeaths: 0,
+    diseaseDeaths: 0,
+    recipeRuns: 0,
+    marketClearings: 0,
+  },
 });
 
 /** Wipe all per-entity history. Called on world reset. */
@@ -111,6 +196,11 @@ export const clearHistory = (h: ViewerHistory): void => {
   h.settlementEvents.clear();
   h.caravanEvents.clear();
   h.banditCampEvents.clear();
+  h.global.length = 0;
+  h.cumulativeStats.famineDeaths = 0;
+  h.cumulativeStats.diseaseDeaths = 0;
+  h.cumulativeStats.recipeRuns = 0;
+  h.cumulativeStats.marketClearings = 0;
 };
 
 const pushBounded = <T>(buf: T[], snap: T): void => {
@@ -129,6 +219,43 @@ const pushBoundedEvents = (buf: EntityEvent[], evt: EntityEvent): void => {
  */
 export const recordTick = (history: ViewerHistory, world: WorldState): void => {
   // Settlements.
+  // Precompute per-settlement stockpile totals + actor-treasury sums by
+  // iterating actors once (used by both per-settlement snapshots and
+  // global aggregates below).
+  const stockpileBySettlement = new Map<SettlementId, Map<ResourceId, number>>();
+  const treasuryBySettlement = new Map<SettlementId, number>();
+  const treasuryByKind = new Map<string, number>();
+  let banditTotalCount = 0;
+  for (const [, a] of world.actors) {
+    treasuryByKind.set(a.kind, (treasuryByKind.get(a.kind) ?? 0) + (a.treasury ?? 0));
+    if (a.kind === 'bandit_camp') {
+      // Skip: bandit_count is on banditCamps, not treasury sum.
+    }
+    for (const [sId, byRes] of a.stockpile) {
+      let agg = stockpileBySettlement.get(sId);
+      if (agg === undefined) {
+        agg = new Map<ResourceId, number>();
+        stockpileBySettlement.set(sId, agg);
+      }
+      for (const [r, q] of byRes) {
+        agg.set(r, (agg.get(r) ?? 0) + q);
+      }
+    }
+  }
+  if (world.banditCamps !== undefined) {
+    for (const [, camp] of world.banditCamps) {
+      banditTotalCount += camp.banditCount;
+    }
+  }
+  for (const [sId, s] of world.settlements) {
+    let tSum = 0;
+    for (const ownerId of s.stockpileOwners) {
+      const a = world.actors.get(ownerId);
+      if (a !== undefined) tSum += a.treasury ?? 0;
+    }
+    treasuryBySettlement.set(sId, tSum);
+  }
+
   const settlementSeen = new Set<SettlementId>();
   for (const [id, s] of world.settlements) {
     settlementSeen.add(id);
@@ -139,11 +266,14 @@ export const recordTick = (history: ViewerHistory, world: WorldState): void => {
     }
     // Copy the prices (small Map: ~6 entries in practice).
     const prices = new Map<ResourceId, number>(s.market.lastClearingPrice);
+    const stockpiles = stockpileBySettlement.get(id) ?? new Map<ResourceId, number>();
     pushBounded(buf, {
       day: world.day,
       population: s.population.total(),
       buildings: s.buildings.length,
       clearingPrices: prices,
+      stockpiles,
+      settlementTreasury: treasuryBySettlement.get(id) ?? 0,
     });
   }
   for (const id of history.settlements.keys()) {
@@ -207,6 +337,124 @@ export const recordTick = (history: ViewerHistory, world: WorldState): void => {
       history.banditCampEvents.delete(id);
     }
   }
+
+  // Global aggregates — sampled every GLOBAL_HISTORY_SAMPLE_DAYS days.
+  if (world.day % GLOBAL_HISTORY_SAMPLE_DAYS === 0) {
+    pushGlobalSnapshot(history, world, treasuryByKind, banditTotalCount);
+  }
+};
+
+const pushGlobalSnapshot = (
+  history: ViewerHistory,
+  world: WorldState,
+  treasuryByKind: Map<string, number>,
+  banditTotalCount: number,
+): void => {
+  // Aggregate population by tier.
+  let hamletPop = 0;
+  let villagePop = 0;
+  let townPop = 0;
+  let smallCityPop = 0;
+  let largeCityPop = 0;
+  for (const [, s] of world.settlements) {
+    const pop = s.population.total();
+    switch (s.tier) {
+      case 'hamlet':
+        hamletPop += pop;
+        break;
+      case 'village':
+        villagePop += pop;
+        break;
+      case 'town':
+        townPop += pop;
+        break;
+      case 'small_city':
+        smallCityPop += pop;
+        break;
+      case 'large_city':
+        largeCityPop += pop;
+        break;
+    }
+  }
+  const tierPop: TierPopulation = {
+    hamlet: hamletPop,
+    village: villagePop,
+    town: townPop,
+    small_city: smallCityPop,
+    large_city: largeCityPop,
+    total: hamletPop + villagePop + townPop + smallCityPop + largeCityPop,
+  };
+
+  // Caravan counts by ID prefix.
+  let villager = 0;
+  let merchant = 0;
+  let exportC = 0;
+  let importC = 0;
+  let tax = 0;
+  let other = 0;
+  for (const [id] of world.caravans) {
+    const s = String(id);
+    if (s.startsWith('villager-')) villager += 1;
+    else if (s.startsWith('export-')) exportC += 1;
+    else if (s.startsWith('import-')) importC += 1;
+    else if (s.startsWith('tax-')) tax += 1;
+    else if (s.startsWith('merchant-')) merchant += 1;
+    else other += 1;
+  }
+  const caravans: CaravanCounts = {
+    villager,
+    merchant,
+    export_: exportC,
+    import_: importC,
+    tax,
+    other,
+    total: villager + merchant + exportC + importC + tax + other,
+  };
+
+  // Median clearing prices across settlements that have a recent price.
+  const priceLists = new Map<ResourceId, number[]>();
+  for (const [, s] of world.settlements) {
+    for (const [r, p] of s.market.lastClearingPrice) {
+      if (!Number.isFinite(p) || p <= 0) continue;
+      let arr = priceLists.get(r);
+      if (arr === undefined) {
+        arr = [];
+        priceLists.set(r, arr);
+      }
+      arr.push(p);
+    }
+  }
+  const medianPrices = new Map<ResourceId, number>();
+  for (const [r, arr] of priceLists) {
+    arr.sort((a, b) => a - b);
+    const mid = Math.floor(arr.length / 2);
+    const med =
+      arr.length % 2 === 0 && arr.length > 0
+        ? ((arr[mid - 1] ?? 0) + (arr[mid] ?? 0)) / 2
+        : (arr[mid] ?? 0);
+    medianPrices.set(r, med);
+  }
+
+  const banditCampCount = world.banditCamps?.size ?? 0;
+
+  const snap: GlobalSnapshot = {
+    day: world.day,
+    population: tierPop,
+    caravans,
+    banditCampCount,
+    banditTotalCount,
+    treasuryByKind: new Map(treasuryByKind),
+    medianPrices,
+    cumulativeFamineDeaths: history.cumulativeStats.famineDeaths,
+    cumulativeDiseaseDeaths: history.cumulativeStats.diseaseDeaths,
+    cumulativeRecipeRuns: history.cumulativeStats.recipeRuns,
+    cumulativeMarketClearings: history.cumulativeStats.marketClearings,
+    settlementCount: world.settlements.size,
+  };
+  history.global.push(snap);
+  if (history.global.length > GLOBAL_HISTORY_MAX_SAMPLES) {
+    history.global.shift();
+  }
 };
 
 /**
@@ -228,6 +476,24 @@ export const recordEvents = (
 ): void => {
   for (const e of events) {
     routeEvent(history, day, e, world);
+    accumulateGlobalStats(history, e);
+  }
+};
+
+const accumulateGlobalStats = (history: ViewerHistory, e: TickEvent): void => {
+  switch (e.type) {
+    case 'cohort_deaths':
+      if (e.cause === 'famine') history.cumulativeStats.famineDeaths += e.deaths;
+      else if (e.cause === 'disease') history.cumulativeStats.diseaseDeaths += e.deaths;
+      return;
+    case 'recipe_ran':
+      history.cumulativeStats.recipeRuns += 1;
+      return;
+    case 'market_cleared':
+      history.cumulativeStats.marketClearings += 1;
+      return;
+    default:
+      return;
   }
 };
 
